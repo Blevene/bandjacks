@@ -5,13 +5,16 @@ description = "Cyber Threat Defense World Modeling System"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "beautifulsoup4>=4.13.4",
     "fastapi>=0.116.1",
     "httpx>=0.28.1",
+    "markdown>=3.8.2",
     "neo4j>=5.28.2",
     "opensearch-py>=3.0.0",
     "orjson>=3.11.2",
     "pydantic>=2.5.0",
     "pydantic-settings>=2.10.1",
+    "pypdf2>=3.0.1",
     "python-multipart>=0.0.6",
     "sentence-transformers>=5.1.0",
     "torch>=2.8.0",
