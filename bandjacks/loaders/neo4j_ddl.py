@@ -16,7 +16,7 @@ class Neo4jDDL:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:IntrusionSet) REQUIRE n.stix_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Software) REQUIRE n.stix_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Mitigation) REQUIRE n.stix_id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Tactic) REQUIRE n.stix_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Tactic) REQUIRE n.shortname IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:DataSource) REQUIRE n.stix_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackEpisode) REQUIRE n.episode_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackAction) REQUIRE n.action_id IS UNIQUE",
@@ -35,7 +35,6 @@ class Neo4jDDL:
             "CREATE INDEX IF NOT EXISTS FOR (n:Software) ON (n.name)",
             "CREATE INDEX IF NOT EXISTS FOR (n:Mitigation) ON (n.name)",
             "CREATE INDEX IF NOT EXISTS FOR (n:Tactic) ON (n.name)",
-            "CREATE INDEX IF NOT EXISTS FOR (n:Tactic) ON (n.x_mitre_shortname)",
             "CREATE INDEX IF NOT EXISTS FOR (n:DataSource) ON (n.name)",
             "CREATE INDEX IF NOT EXISTS FOR (n:AttackEpisode) ON (n.created)",
             "CREATE INDEX IF NOT EXISTS FOR (n:AttackAction) ON (n.timestamp)"
