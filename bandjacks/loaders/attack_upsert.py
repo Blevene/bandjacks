@@ -4,9 +4,10 @@ import httpx
 import orjson
 from typing import Tuple
 from neo4j import GraphDatabase
-from .attack_catalog import fetch_catalog
-from .opensearch_index import upsert_node_embedding
-from .embedder import encode
+from bandjacks.loaders.attack_catalog import fetch_catalog
+from bandjacks.loaders.opensearch_index import upsert_node_embedding
+from bandjacks.loaders.embedder import encode
+from bandjacks.loaders.edge_embeddings import upsert_edge_doc
 
 # ATT&CK object type constants
 AP = "attack-pattern"
@@ -14,6 +15,15 @@ INTRUSION_SET = "intrusion-set"
 SOFTWARE_TYPES = {"tool", "malware", "software"}  # ATT&CK 'software' is umbrella
 MITIGATION = "course-of-action"  # ATT&CK Mitigations are STIX COA
 RELATIONSHIP = "relationship"
+TACTIC_TYPES = {"x-mitre-tactic", "tactic"}
+
+def _count_from_summary(summary) -> Tuple[int, int]:
+    """Extract insert/update counts from Neo4j summary."""
+    # returns (nodes_created, nodes_updated) as a proxy for updated
+    nc = summary.counters.nodes_created
+    # if node created = inserted; else treat as updated when properties set
+    # you can refine per-type if you want
+    return nc, 0 if nc > 0 else 1
 
 def resolve_bundle(index_url: str, collection: str, version: str | None) -> Tuple[str,str|None,str|None]:
     cat = fetch_catalog(index_url)
@@ -66,15 +76,32 @@ def upsert_to_graph_and_vectors(
     
     objs = bundle.get("objects", [])
     
-    # Pre-collect tactics (ATT&CK has 'x-mitre-tactic' or 'tactic' in some exports)
-    tactics_by_short = {}
-    for o in objs:
-        if o.get("type") in ("x-mitre-tactic", "tactic"):
-            short = o.get("x_mitre_shortname") or o.get("name")
-            if short:
-                tactics_by_short[short] = o
+    # Build index by id for lookups
+    by_id = {o["id"]: o for o in objs if "id" in o}
     
     with driver.session() as s:
+        # Tactic nodes
+        tactics = [o for o in objs if o.get("type") in TACTIC_TYPES]
+        for o in tactics:
+            stix_id = o["id"]
+            name = o.get("name","")
+            short = o.get("x_mitre_shortname") or name.lower().replace(" ", "-")
+            desc = o.get("description","")
+            revoked = o.get("revoked", False)
+            modified = o.get("modified","")
+            res = s.run("""
+                MERGE (t:Tactic {shortname:$short})
+                ON CREATE SET t.created_ts=timestamp(), t.stix_id=$id
+                SET t.type='tactic', t.name=$name, t.description=$desc,
+                    t.revoked=$revoked, t.modified=$modified,
+                    t.source_collection=$collection, t.source_version=$version, t.source_url=$url
+                """,
+                id=stix_id, name=name, short=short, desc=desc, revoked=revoked, modified=modified,
+                collection=collection, version=version, url=f"ATT&CK:{collection}:{version}"
+            )
+            ins, upd = _count_from_summary(res.consume())
+            inserted += ins
+            updated += upd
         # 1) AttackPattern nodes
         aps = [o for o in objs if o.get("type") == AP]
         for obj in aps:
@@ -91,16 +118,14 @@ def upsert_to_graph_and_vectors(
                 ON CREATE SET n.created_ts=timestamp()
                 SET n.type='attack-pattern', n.name=$name, n.description=$desc, n.revoked=$revoked,
                     n.x_mitre_is_subtechnique=$x_is_sub, n.modified=$modified,
-                    n.source_collection=$collection, n.source_version=$version
-                RETURN n.created_ts IS NOT NULL AS created
+                    n.source_collection=$collection, n.source_version=$version, n.source_url=$url
                 """,
                 stix_id=stix_id, name=name, desc=desc, revoked=revoked, x_is_sub=x_is_sub,
-                modified=modified, collection=collection, version=version
+                modified=modified, collection=collection, version=version, url=f"ATT&CK:{collection}:{version}"
             )
-            if res.single()["created"]:
-                inserted += 1
-            else:
-                updated += 1
+            ins, upd = _count_from_summary(res.consume())
+            inserted += ins
+            updated += upd
             
             # HAS_TACTIC edges from kill_chain_phases
             tactic_names = []
@@ -110,16 +135,12 @@ def upsert_to_graph_and_vectors(
                     if not short: 
                         continue
                     tactic_names.append(short)
-                    s.run(
-                        """
-                        MERGE (t:Tactic {shortname:$short})
-                        ON CREATE SET t.name=$short, t.type='tactic', t.created_ts=timestamp()
-                        WITH t
+                    # match by shortname (stable across bundles)
+                    s.run("""
                         MATCH (ap:AttackPattern {stix_id:$stix_id})
+                        MERGE (t:Tactic {shortname:$short})
                         MERGE (ap)-[:HAS_TACTIC]->(t)
-                        """,
-                        short=short, stix_id=stix_id
-                    )
+                    """, stix_id=stix_id, short=short)
             
             # upsert node embedding with real vectors
             txt = _ap_text(obj, tactic_names)
@@ -150,45 +171,75 @@ def upsert_to_graph_and_vectors(
                 MERGE (g:IntrusionSet {stix_id:$id})
                 ON CREATE SET g.created_ts=timestamp()
                 SET g.type='intrusion-set', g.name=$name, g.description=$desc, g.revoked=$revoked,
-                    g.modified=$modified, g.source_collection=$collection, g.source_version=$version
-                RETURN g.created_ts IS NOT NULL AS created
+                    g.modified=$modified, g.source_collection=$collection, g.source_version=$version, g.source_url=$url
                 """,
                 id=obj["id"], name=obj.get("name",""), desc=obj.get("description",""),
                 revoked=obj.get("revoked", False), modified=obj.get("modified",""),
-                collection=collection, version=version
+                collection=collection, version=version, url=f"ATT&CK:{collection}:{version}"
             )
-            # track counts roughly (MERGE doesn't tell created easily here)
-            # optional: query exists; for sprint-1 ok to skip precise counts
+            ins, upd = _count_from_summary(res.consume())
+            inserted += ins
+            updated += upd
+            
+            # Add embeddings for IntrusionSet
+            txt = f"{obj.get('name','')}\n{obj.get('description','')}"
+            try:
+                vec = encode(txt)
+                if vec is not None and len(vec) == 768:
+                    upsert_node_embedding(os_url=os_url, index=os_index, doc={
+                        "id": obj["id"], "kb_type": "IntrusionSet", "attack_version": version,
+                        "revoked": obj.get("revoked", False), "text": txt, "embedding": vec
+                    })
+            except Exception as e:
+                print(f"[embedding] group embed fail {obj['id']}: {e}")
         
         # 3) Software (Tool/Malware/Software umbrella)
         software = [o for o in objs if o.get("type") in SOFTWARE_TYPES]
         for obj in software:
-            s.run(
+            res = s.run(
                 """
                 MERGE (sw:Software {stix_id:$id})
                 ON CREATE SET sw.created_ts=timestamp()
                 SET sw.type=$type, sw.name=$name, sw.description=$desc, sw.revoked=$revoked,
-                    sw.modified=$modified, sw.source_collection=$collection, sw.source_version=$version
+                    sw.modified=$modified, sw.source_collection=$collection, sw.source_version=$version, sw.source_url=$url
                 """,
                 id=obj["id"], type=obj.get("type"), name=obj.get("name",""), desc=obj.get("description",""),
                 revoked=obj.get("revoked", False), modified=obj.get("modified",""),
-                collection=collection, version=version
+                collection=collection, version=version, url=f"ATT&CK:{collection}:{version}"
             )
+            ins, upd = _count_from_summary(res.consume())
+            inserted += ins
+            updated += upd
+            
+            # Add embeddings for Software
+            txt = f"{obj.get('name','')}\n{obj.get('description','')}"
+            try:
+                vec = encode(txt)
+                if vec is not None and len(vec) == 768:
+                    upsert_node_embedding(os_url=os_url, index=os_index, doc={
+                        "id": obj["id"], "kb_type": "Software", "attack_version": version,
+                        "revoked": obj.get("revoked", False), "text": txt, "embedding": vec
+                    })
+            except Exception as e:
+                print(f"[embedding] software embed fail {obj['id']}: {e}")
         
         # 4) Mitigations (course-of-action)
         mitigs = [o for o in objs if o.get("type") == MITIGATION]
         for obj in mitigs:
-            s.run(
+            res = s.run(
                 """
                 MERGE (m:Mitigation {stix_id:$id})
                 ON CREATE SET m.created_ts=timestamp()
                 SET m.type='mitigation', m.name=$name, m.description=$desc, m.revoked=$revoked,
-                    m.modified=$modified, m.source_collection=$collection, m.source_version=$version
+                    m.modified=$modified, m.source_collection=$collection, m.source_version=$version, m.source_url=$url
                 """,
                 id=obj["id"], name=obj.get("name",""), desc=obj.get("description",""),
                 revoked=obj.get("revoked", False), modified=obj.get("modified",""),
-                collection=collection, version=version
+                collection=collection, version=version, url=f"ATT&CK:{collection}:{version}"
             )
+            ins, upd = _count_from_summary(res.consume())
+            inserted += ins
+            updated += upd
         
         # Relationships (USES, MITIGATES, IMPLIES)
         rels = [o for o in objs if o.get("type") == RELATIONSHIP]
@@ -208,6 +259,24 @@ def upsert_to_graph_and_vectors(
                     """,
                     src=src, tgt=tgt
                 )
+                # Add edge embedding
+                s_name = by_id.get(src, {}).get("name", src)
+                t_name = by_id.get(tgt, {}).get("name", tgt)
+                txt = f"{s_name} uses {t_name}"
+                try:
+                    vec = encode(txt)
+                    if vec and len(vec) == 768:
+                        upsert_edge_doc(os_url, "bandjacks_attack_edges-v1", {
+                            "id": r.get("id", f"{src}-uses-{tgt}"),
+                            "edge_type": "USES",
+                            "source_id": src,
+                            "target_id": tgt,
+                            "attack_version": version,
+                            "text": txt,
+                            "embedding": vec
+                        })
+                except Exception as e:
+                    print(f"[edge-embed] {r.get('id')} fail: {e}")
             
             elif rtype == "mitigates":
                 s.run(
@@ -218,6 +287,24 @@ def upsert_to_graph_and_vectors(
                     """,
                     src=src, tgt=tgt
                 )
+                # Add edge embedding
+                s_name = by_id.get(src, {}).get("name", src)
+                t_name = by_id.get(tgt, {}).get("name", tgt)
+                txt = f"{s_name} mitigates {t_name}"
+                try:
+                    vec = encode(txt)
+                    if vec and len(vec) == 768:
+                        upsert_edge_doc(os_url, "bandjacks_attack_edges-v1", {
+                            "id": r.get("id", f"{src}-mitigates-{tgt}"),
+                            "edge_type": "MITIGATES",
+                            "source_id": src,
+                            "target_id": tgt,
+                            "attack_version": version,
+                            "text": txt,
+                            "embedding": vec
+                        })
+                except Exception as e:
+                    print(f"[edge-embed] {r.get('id')} fail: {e}")
             
             # IMPLIES_TECHNIQUE is our derived edge from Software→Technique (optional)
             elif rtype in ("uses-against", "delivers", "drops"):  # rare; keep for future

@@ -1,10 +1,10 @@
 """STIX loading routes."""
 
 from fastapi import APIRouter, HTTPException, Query
-from ..settings import settings
-from ..schemas import UpsertResult
-from ....loaders.attack_upsert import resolve_bundle, fetch_bundle, adm_validate, upsert_to_graph_and_vectors
-from ....loaders.provenance import make_provenance
+from bandjacks.services.api.settings import settings
+from bandjacks.services.api.schemas import UpsertResult
+from bandjacks.loaders.attack_upsert import resolve_bundle, fetch_bundle, adm_validate, upsert_to_graph_and_vectors
+from bandjacks.loaders.provenance import make_provenance
 
 router = APIRouter(tags=["stix"])
 

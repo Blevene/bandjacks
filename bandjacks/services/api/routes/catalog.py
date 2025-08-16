@@ -1,9 +1,9 @@
 """Catalog routes for ATT&CK releases."""
 
 from fastapi import APIRouter, HTTPException
-from ..settings import settings
-from ....loaders.attack_catalog import fetch_catalog
-from ..schemas import CatalogItem, VersionRef
+from bandjacks.services.api.settings import settings
+from bandjacks.loaders.attack_catalog import fetch_catalog
+from bandjacks.services.api.schemas import CatalogItem, VersionRef
 
 router = APIRouter(tags=["catalog"])
 
