@@ -158,7 +158,7 @@ def ensure_attack_nodes_index(opensearch_url: str, index_name: str):
                 "text": {"type": "text"},
                 "embedding": {
                     "type": "knn_vector",
-                    "dimension": 768,
+                    "dimension": 384,
                     "method": {
                         "name": "hnsw",
                         "space_type": "cosinesimil",
