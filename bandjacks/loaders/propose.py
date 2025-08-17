@@ -220,8 +220,8 @@ def score_candidates(text: str, candidates: List[Dict[str, Any]], entity_type: s
                 technique_id = t_match.group()
         
         # Normalize similarity score to 0-100
-        # Assuming OpenSearch scores typically range 0-2
-        normalized_sim = min(100, (sim_score / 2.0) * 100)
+        # OpenSearch cosine similarity scores typically range 0-1
+        normalized_sim = min(100, sim_score * 100)
         
         # Calculate all scoring components
         kw_score = calculate_keyword_score(text, name, entity_type)

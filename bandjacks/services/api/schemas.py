@@ -44,6 +44,7 @@ class ProposeRequest(BaseModel):
     inline_text: Optional[str] = None
     max_candidates: int = 5
     chunking: ChunkingParams = Field(default_factory=ChunkingParams)
+    engine: Literal["vector", "llm", "hybrid"] = "vector"
 
 
 class ProposalStats(BaseModel):
