@@ -27,14 +27,15 @@ class Settings(BaseSettings):
     litellm_api_key: str = ""
     litellm_model: str = "gpt-4o-mini"
     litellm_timeout_ms: int = 30000
-    litellm_temperature: float = 0.2
+    litellm_temperature: float = 1.0
     litellm_max_tokens: int = 800
     
     # API Keys for LLM services (loaded from environment)
     openai_api_key: str = ""
     google_api_key: str = ""
-    openai_model: str = "gpt-4o-mini"  # Current OpenAI model
-    google_model: str = "gemini-2.5-flash"  # Latest Google model
+    openai_model: str = "gpt-5"  # OpenAI model (backup)
+    google_model: str = "gemini-2.5-flash"  # Primary Google model
+    primary_llm: str = "gemini"  # Use Gemini as primary
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
