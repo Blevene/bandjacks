@@ -2,6 +2,7 @@
 
 import httpx
 import orjson
+import json
 from typing import Tuple
 from neo4j import GraphDatabase
 from bandjacks.loaders.attack_catalog import fetch_catalog
@@ -69,7 +70,8 @@ def _ap_text(obj: dict, tactic_names: list[str]) -> str:
 def upsert_to_graph_and_vectors(
     bundle: dict, collection: str, version: str,
     neo4j_uri: str, neo4j_user: str, neo4j_password: str,
-    os_url: str, os_index: str
+    os_url: str, os_index: str,
+    provenance: dict = None
 ) -> tuple[int,int]:
     driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
     inserted = updated = 0
@@ -79,7 +81,113 @@ def upsert_to_graph_and_vectors(
     # Build index by id for lookups
     by_id = {o["id"]: o for o in objs if "id" in o}
     
+    # Check for report objects (from extracted CTI)
+    reports = [o for o in objs if o.get("type") == "report"]
+    indicators = [o for o in objs if o.get("type") == "indicator"]
+    vulnerabilities = [o for o in objs if o.get("type") == "vulnerability"]
+    
     with driver.session() as s:
+        # Process report objects first (if any)
+        for report in reports:
+            report_id = report["id"]
+            name = report.get("name", "")
+            desc = report.get("description", "")
+            published = report.get("published", "")
+            source_metadata = report.get("x_bj_source", {})
+            extraction_metadata = report.get("x_bj_extraction", {})
+            
+            res = s.run("""
+                MERGE (r:Report {stix_id:$id})
+                ON CREATE SET r.created_ts=timestamp()
+                SET r.type='report', r.name=$name, r.description=$desc,
+                    r.published=$published, r.modified=$modified,
+                    r.source_url=$source_url, r.source_hash=$source_hash,
+                    r.extraction_method=$method, r.extraction_model=$model,
+                    r.source_collection=$collection, r.source_version=$version
+                """,
+                id=report_id, name=name, desc=desc, published=published,
+                modified=report.get("modified", ""),
+                source_url=source_metadata.get("url", ""),
+                source_hash=source_metadata.get("hash", ""),
+                method=extraction_metadata.get("method", ""),
+                model=extraction_metadata.get("model", ""),
+                collection=collection, version=version
+            )
+            ins, upd = _count_from_summary(res.consume())
+            inserted += ins
+            updated += upd
+        
+        # Process indicators (IOCs from extraction)
+        for indicator in indicators:
+            ind_id = indicator["id"]
+            name = indicator.get("name", "")
+            desc = indicator.get("description", "")
+            pattern = indicator.get("pattern", "")
+            pattern_type = indicator.get("pattern_type", "stix")
+            valid_from = indicator.get("valid_from", "")
+            prov = indicator.get("x_bj_provenance", {})
+            
+            res = s.run("""
+                MERGE (i:Indicator {stix_id:$id})
+                ON CREATE SET i.created_ts=timestamp()
+                SET i.type='indicator', i.name=$name, i.description=$desc,
+                    i.pattern=$pattern, i.pattern_type=$pattern_type,
+                    i.valid_from=$valid_from, i.modified=$modified,
+                    i.source_collection=$collection, i.source_version=$version
+                """,
+                id=ind_id, name=name, desc=desc, pattern=pattern,
+                pattern_type=pattern_type, valid_from=valid_from,
+                modified=indicator.get("modified", ""),
+                collection=collection, version=version
+            )
+            ins, upd = _count_from_summary(res.consume())
+            inserted += ins
+            updated += upd
+            
+            # Link to report if extracted
+            if prov.get("report_id"):
+                s.run("""
+                    MATCH (i:Indicator {stix_id:$ind_id})
+                    MATCH (r:Report {stix_id:$report_id})
+                    MERGE (i)-[:EXTRACTED_FROM]->(r)
+                    """,
+                    ind_id=ind_id, report_id=prov["report_id"]
+                )
+        
+        # Process vulnerabilities
+        for vuln in vulnerabilities:
+            vuln_id = vuln["id"]
+            name = vuln.get("name", "")
+            desc = vuln.get("description", "")
+            external_refs = vuln.get("external_references", [])
+            prov = vuln.get("x_bj_provenance", {})
+            
+            res = s.run("""
+                MERGE (v:Vulnerability {stix_id:$id})
+                ON CREATE SET v.created_ts=timestamp()
+                SET v.type='vulnerability', v.name=$name, v.description=$desc,
+                    v.modified=$modified, v.external_references=$refs,
+                    v.source_collection=$collection, v.source_version=$version
+                """,
+                id=vuln_id, name=name, desc=desc,
+                modified=vuln.get("modified", ""),
+                refs=json.dumps(external_refs) if external_refs else "",
+                collection=collection, version=version
+            )
+            ins, upd = _count_from_summary(res.consume())
+            inserted += ins
+            updated += upd
+            
+            # Link to report if extracted
+            if prov.get("report_id"):
+                s.run("""
+                    MATCH (v:Vulnerability {stix_id:$vuln_id})
+                    MATCH (r:Report {stix_id:$report_id})
+                    MERGE (v)-[:EXTRACTED_FROM]->(r)
+                    """,
+                    vuln_id=vuln_id, report_id=prov["report_id"]
+                )
+        
         # Tactic nodes
         tactics = [o for o in objs if o.get("type") in TACTIC_TYPES]
         for o in tactics:
@@ -126,6 +234,23 @@ def upsert_to_graph_and_vectors(
             ins, upd = _count_from_summary(res.consume())
             inserted += ins
             updated += upd
+            
+            # Add provenance if this is from extraction
+            prov = obj.get("x_bj_provenance", {})
+            if prov and prov.get("report_id"):
+                # Update with extraction provenance
+                s.run("""
+                    MATCH (n:AttackPattern {stix_id:$stix_id})
+                    SET n.x_bj_sources = coalesce(n.x_bj_sources, []) + [$prov]
+                    WITH n
+                    MATCH (r:Report {stix_id:$report_id})
+                    MERGE (n)-[:EXTRACTED_FROM {confidence:$conf, evidence:$evidence}]->(r)
+                    """,
+                    stix_id=stix_id, prov=json.dumps(prov),
+                    report_id=prov["report_id"],
+                    conf=obj.get("x_bj_confidence", 50),
+                    evidence=obj.get("x_bj_evidence", "")
+                )
             
             # HAS_TACTIC edges from kill_chain_phases
             tactic_names = []

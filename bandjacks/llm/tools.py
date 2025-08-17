@@ -3,6 +3,9 @@
 import os
 from typing import List, Optional, Dict, Any
 import httpx
+from bandjacks.loaders.search_nodes import ttx_search_kb
+from bandjacks.services.api.settings import settings
+from neo4j import GraphDatabase
 
 
 # Base API URL - can be overridden by environment variable
@@ -34,14 +37,15 @@ def vector_search_ttx(
         body["kb_types"] = kb_types
     
     try:
-        with httpx.Client() as client:
-            response = client.post(
-                f"{API_BASE}/search/ttx",
-                json=body,
-                timeout=TIMEOUT
-            )
-            response.raise_for_status()
-            return response.json().get("results", [])
+        # Call search function directly to avoid HTTP deadlock
+        results = ttx_search_kb(
+            os_url=settings.opensearch_url,
+            index=settings.os_index_nodes,
+            text=text,
+            top_k=top_k,
+            kb_types=kb_types
+        )
+        return results
     except Exception as e:
         return [{"error": str(e)}]
 
@@ -57,24 +61,34 @@ def graph_lookup(stix_id: str) -> Optional[Dict[str, Any]]:
         Object metadata including name, description, tactics, or None if not found
     """
     try:
-        with httpx.Client() as client:
-            response = client.get(
-                f"{API_BASE}/stix/objects/{stix_id}",
-                timeout=TIMEOUT
-            )
-            if response.status_code == 200:
-                data = response.json()
-                # Extract relevant fields for LLM
-                obj = data.get("object", {})
+        # Query Neo4j directly to avoid HTTP deadlock
+        driver = GraphDatabase.driver(
+            settings.neo4j_uri,
+            auth=(settings.neo4j_user, settings.neo4j_password)
+        )
+        
+        with driver.session() as session:
+            result = session.run("""
+                MATCH (n {stix_id: $stix_id})
+                RETURN n.stix_id as stix_id, n.name as name, n.description as description,
+                       n.type as type, n.x_mitre_platforms as platforms,
+                       labels(n) as labels
+                LIMIT 1
+            """, stix_id=stix_id)
+            
+            record = result.single()
+            if record:
                 return {
-                    "stix_id": obj.get("id"),
-                    "name": obj.get("name"),
-                    "description": obj.get("description"),
-                    "type": obj.get("type"),
-                    "tactics": obj.get("kill_chain_phases", []),
-                    "platforms": obj.get("x_mitre_platforms", [])
+                    "stix_id": record["stix_id"],
+                    "name": record["name"],
+                    "description": record["description"],
+                    "type": record["type"],
+                    "platforms": record["platforms"] or [],
+                    "labels": record["labels"]
                 }
             return None
+            
+        driver.close()
     except Exception as e:
         return {"error": str(e)}
 
@@ -87,13 +101,31 @@ def list_tactics() -> List[Dict[str, str]]:
         List of tactics with stix_id, shortname, and name
     """
     try:
-        with httpx.Client() as client:
-            response = client.get(
-                f"{API_BASE}/catalog/tactics",
-                timeout=TIMEOUT
-            )
-            response.raise_for_status()
-            return response.json()
+        # Query Neo4j directly to avoid HTTP deadlock
+        driver = GraphDatabase.driver(
+            settings.neo4j_uri,
+            auth=(settings.neo4j_user, settings.neo4j_password)
+        )
+        
+        with driver.session() as session:
+            result = session.run("""
+                MATCH (t:Tactic)
+                RETURN t.shortname as shortname, t.name as name
+                ORDER BY t.name
+            """)
+            
+            tactics = []
+            for record in result:
+                if record["shortname"] and record["name"]:
+                    tactics.append({
+                        "shortname": record["shortname"],
+                        "name": record["name"]
+                    })
+            
+            if tactics:
+                return tactics
+                
+        driver.close()
     except Exception as e:
         # Return a fallback list of common tactics if API fails
         return [
