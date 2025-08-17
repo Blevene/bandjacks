@@ -86,37 +86,40 @@ async def extract_report(
     )
     
     try:
-        # Chunk the text
-        chunks = split_into_chunks(request.content, target_chars=1200, overlap=150)
+        # Initialize LLM extractor
+        extractor = LLMExtractor(model=os.getenv("PRIMARY_LLM", "gemini/gemini-2.0-flash-exp"))
         
-        # Extract from each chunk
+        # Extract from document - this handles chunking internally
+        extraction_output = extractor.extract_document(
+            source_id=source_id,
+            source_type=request.source_type,
+            inline_text=request.content,
+            chunking_params={"target_chars": 1200, "overlap": 150}
+        )
+        
+        # Aggregate results from all chunks
         all_claims = []
         all_entities = {}
         
-        for i, chunk in enumerate(chunks):
-            # Run extraction on chunk
-            chunk_results = await extract_from_chunk(
-                chunk_text=chunk,
-                chunk_id=f"chunk_{i}",
-                method=request.method
-            )
-            
-            # Aggregate claims
-            if "claims" in chunk_results:
-                all_claims.extend(chunk_results["claims"])
-            
-            # Merge entities
-            if "entities" in chunk_results:
-                for entity_type, entities in chunk_results["entities"].items():
-                    if entity_type not in all_entities:
-                        all_entities[entity_type] = []
-                    if isinstance(entities, list):
-                        all_entities[entity_type].extend(entities)
+        if "chunks" in extraction_output:
+            for chunk_result in extraction_output["chunks"]:
+                # Aggregate claims
+                if "claims" in chunk_result:
+                    all_claims.extend(chunk_result["claims"])
+                
+                # Merge entities
+                if "entities" in chunk_result:
+                    for entity_type, entities in chunk_result["entities"].items():
+                        if entity_type not in all_entities:
+                            all_entities[entity_type] = []
+                        if isinstance(entities, list):
+                            all_entities[entity_type].extend(entities)
         
         # Build extraction results
         extraction_results = {
             "claims": all_claims,
-            "entities": all_entities
+            "entities": all_entities,
+            "metadata": extraction_output.get("metadata", {})
         }
         
         # Initialize entity resolver

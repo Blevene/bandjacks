@@ -1,0 +1,3697 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Bandjacks API",
+    "description": "\n    ## Cyber Threat Defense World Modeling API\n    \n    Bandjacks provides comprehensive cyber threat intelligence operations including:\n    \n    - **ATT&CK Data Management**: Load and manage MITRE ATT&CK releases\n    - **Natural Language Search**: Hybrid vector and graph search for CTI\n    - **Graph Exploration**: Traverse and analyze threat relationships\n    - **Document Extraction**: Extract CTI entities from documents using LLMs\n    - **Review Workflows**: Human-in-the-loop validation and feedback\n    - **Defense Recommendations**: D3FEND integration (coming in Sprint 4)\n    \n    ### Key Features\n    \n    - STIX 2.1 compliant data model\n    - ADM (ATT&CK Data Model) validation\n    - Hybrid search with vector embeddings and graph patterns\n    - LLM-powered extraction with evidence grounding\n    - Review queue for candidate validation\n    - Performance optimized with caching and connection pooling\n    \n    ### Authentication\n    \n    Currently no authentication required (development mode).\n    Production deployments should implement appropriate authentication.\n    \n    ### Rate Limiting\n    \n    No rate limiting currently implemented.\n    Production deployments should add rate limiting.\n    ",
+    "version": "1.0.0",
+    "contact": {
+      "name": "Bandjacks Team",
+      "email": "support@bandjacks.io"
+    },
+    "license": {
+      "name": "Apache 2.0",
+      "url": "https://www.apache.org/licenses/LICENSE-2.0.html"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:8000",
+      "description": "Development server"
+    },
+    {
+      "url": "https://api.bandjacks.io",
+      "description": "Production server (future)"
+    }
+  ],
+  "paths": {
+    "/v1/catalog/attack/releases": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Get Attack Releases",
+        "operationId": "get_attack_releases_v1_catalog_attack_releases_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CatalogItem"
+                  },
+                  "type": "array",
+                  "title": "Response Get Attack Releases V1 Catalog Attack Releases Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/catalog/tactics": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Get Tactics",
+        "description": "Get list of all ATT&CK tactics with their IDs and names.\n\nReturns:\n    List of tactics with stix_id, shortname, and name",
+        "operationId": "get_tactics_v1_catalog_tactics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "type": "object"
+                  },
+                  "type": "array",
+                  "title": "Response Get Tactics V1 Catalog Tactics Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/stix/load/attack": {
+      "post": {
+        "tags": [
+          "stix"
+        ],
+        "summary": "Load Attack Collection",
+        "operationId": "load_attack_collection_v1_stix_load_attack_post",
+        "parameters": [
+          {
+            "name": "collection",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^(enterprise-attack|mobile-attack|ics-attack)$",
+              "title": "Collection"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "e.g., 17.1 or 'latest'",
+              "title": "Version"
+            },
+            "description": "e.g., 17.1 or 'latest'"
+          },
+          {
+            "name": "adm_strict",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Adm Strict"
+            }
+          },
+          {
+            "name": "force",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Force"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpsertResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/stix/bundles": {
+      "post": {
+        "tags": [
+          "stix"
+        ],
+        "summary": "Ingest Bundle",
+        "description": "Ingest a user-supplied STIX bundle.\n\nThis endpoint accepts bundles generated by the mapper or manually created,\nvalidates them, and upserts to the graph and vector stores.",
+        "operationId": "ingest_bundle_v1_stix_bundles_post",
+        "parameters": [
+          {
+            "name": "strict",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Apply strict ADM validation",
+              "default": true,
+              "title": "Strict"
+            },
+            "description": "Apply strict ADM validation"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Bundle"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UpsertResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/search/ttx": {
+      "post": {
+        "tags": [
+          "search"
+        ],
+        "summary": "Search Ttx",
+        "description": "Search for ATT&CK techniques/entities similar to input text with optional kb_type filtering.",
+        "operationId": "search_ttx_v1_search_ttx_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TtxQuery"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/mapper/propose": {
+      "post": {
+        "tags": [
+          "mapper"
+        ],
+        "summary": "Propose Mapping",
+        "description": "Analyze document and propose ATT&CK mappings.\n\nTakes a document (via URL or inline text), extracts text,\nchunks it, and proposes ATT&CK techniques, groups, software,\nand relationships based on the content.",
+        "operationId": "propose_mapping_v1_mapper_propose_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProposeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProposalResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/review/mapping": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Review Mapping",
+        "description": "Record analyst decision on a proposed mapping.\n\nThis endpoint is called when an analyst reviews a mapping proposal\nand decides to accept, edit, or reject it.",
+        "operationId": "review_mapping_v1_review_mapping_post",
+        "parameters": [
+          {
+            "name": "x-analyst-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Analyst-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewDecision"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/review/object": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Review Object",
+        "description": "Record analyst decision on an existing object.\n\nThis endpoint is used for reviewing objects already in the graph,\nsuch as those loaded from ATT&CK or previous mappings.",
+        "operationId": "review_object_v1_review_object_post",
+        "parameters": [
+          {
+            "name": "x-analyst-id",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Analyst-Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewDecision"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/stix/objects/{object_id}": {
+      "get": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Get Stix Object",
+        "description": "Retrieve a STIX object with provenance and relationships.\n\nThis endpoint fetches an object from the graph along with its\nsource provenance and any relationships it participates in.",
+        "operationId": "get_stix_object_v1_stix_objects__object_id__get",
+        "parameters": [
+          {
+            "name": "object_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Object Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/STIXObject"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/llm/extract": {
+      "post": {
+        "tags": [
+          "llm"
+        ],
+        "summary": "Extract With Llm Endpoint",
+        "description": "Extract TTP claims from document using LLM with tool grounding.\n\nThis endpoint uses an LLM to analyze the document and extract:\n- ATT&CK technique mappings with confidence scores\n- Evidence spans showing where claims are supported\n- Threat actor and malware identifications\n- Relationships between entities\n\nAll mappings are grounded through tool calls to the Bandjacks KB.",
+        "operationId": "extract_with_llm_endpoint_v1_llm_extract_post",
+        "parameters": [
+          {
+            "name": "dry_run",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Dry Run"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LLMExtractRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LLMExtractResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/llm/to-stix": {
+      "post": {
+        "tags": [
+          "llm"
+        ],
+        "summary": "Convert To Stix",
+        "description": "Convert LLM extraction output to STIX bundle.\n\nThis endpoint:\n- Converts LLM claims to STIX objects\n- Validates all STIX IDs against the KB\n- Applies safeguards to cap confidence\n- Removes any hallucinated/invalid IDs",
+        "operationId": "convert_to_stix_v1_llm_to_stix_post",
+        "parameters": [
+          {
+            "name": "validate_ids",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Validate Ids"
+            }
+          },
+          {
+            "name": "apply_guards",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Apply Guards"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Extraction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/extract/report": {
+      "post": {
+        "tags": [
+          "extraction"
+        ],
+        "summary": "Extract Report",
+        "description": "Extract CTI from a report with full provenance tracking.\n\nThis endpoint:\n1. Registers the source document with hash-based ID\n2. Chunks the text for processing\n3. Extracts entities and relationships using LLM\n4. Resolves entities to existing KB entries\n5. Builds STIX 2.1 bundle with provenance\n6. Optionally ingests to Neo4j graph",
+        "operationId": "extract_report_v1_extract_report_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExtractionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExtractionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/extract/provenance/{object_id}": {
+      "get": {
+        "tags": [
+          "extraction"
+        ],
+        "summary": "Get Object Provenance",
+        "description": "Get complete provenance history for a STIX object.\n\nThis traces the object back through all extraction sources.",
+        "operationId": "get_object_provenance_v1_extract_provenance__object_id__get",
+        "parameters": [
+          {
+            "name": "object_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Object Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Object Provenance V1 Extract Provenance  Object Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/query/search": {
+      "post": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Natural Language Search",
+        "description": "Perform natural language search for cyber threat intelligence.\n    \n    This endpoint implements hybrid search combining:\n    - **Vector similarity search** in OpenSearch for semantic matching\n    - **Graph pattern matching** in Neo4j for structural relationships\n    - **Reciprocal rank fusion** to combine and rank results\n    - **Graph context enrichment** with neighboring nodes\n    \n    The search automatically expands queries with synonyms and related terms\n    for improved recall.",
+        "operationId": "natural_language_query_v1_query_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful search with ranked results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid query parameters"
+          },
+          "500": {
+            "description": "Internal server error"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/query/expand": {
+      "post": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Query Expansion",
+        "description": "Get query expansion with synonyms and related terms for improved search.",
+        "operationId": "expand_query_v1_query_expand_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExpansionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExpansionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/query/suggest": {
+      "post": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Query Suggestions",
+        "description": "Get autocomplete suggestions based on partial query input.",
+        "operationId": "query_suggestions_v1_query_suggest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SuggestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Query Suggestions V1 Query Suggest Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/query/history": {
+      "get": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Query History",
+        "description": "Get recent query history.\n\nReturns recent queries with their results for analysis\nand quick re-execution.",
+        "operationId": "query_history_v1_query_history_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Query History V1 Query History Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/query/save": {
+      "post": {
+        "tags": [
+          "query"
+        ],
+        "summary": "Save Query",
+        "description": "Save a query and its results for future analysis.\n\nThis helps build query patterns and improve search over time.",
+        "operationId": "save_query_v1_query_save_post",
+        "parameters": [
+          {
+            "name": "query_text",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Query Text"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_save_query_v1_query_save_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Save Query V1 Query Save Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/graph/attack_flow": {
+      "post": {
+        "tags": [
+          "graph"
+        ],
+        "summary": "Build Attack Flow",
+        "description": "Build an attack flow subgraph centered on a technique.\n    \n    Returns a graph containing:\n    - **Center technique** with its properties\n    - **Tactics** linked via HAS_TACTIC relationships\n    - **Threat groups** that use the technique (optional)\n    - **Software/tools** that implement it (optional)\n    - **Mitigations** that counter it (optional)\n    - **Related techniques** within the specified depth\n    \n    The graph can be used for visualization or further analysis.",
+        "operationId": "get_attack_flow_v1_graph_attack_flow_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttackFlowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Attack flow graph successfully built",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Technique not found"
+          },
+          "500": {
+            "description": "Internal server error"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/graph/neighbors/{node_id}": {
+      "get": {
+        "tags": [
+          "graph"
+        ],
+        "summary": "Get Node Neighbors",
+        "description": "Get immediate neighbors of a node.\n\nReturns all nodes connected to the specified node with their relationships.",
+        "operationId": "get_node_neighbors_v1_graph_neighbors__node_id__get",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Node Id"
+            }
+          },
+          {
+            "name": "relationship_types",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by relationship types",
+              "title": "Relationship Types"
+            },
+            "description": "Filter by relationship types"
+          },
+          {
+            "name": "direction",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(incoming|outgoing|both)$",
+              "description": "Relationship direction",
+              "default": "both",
+              "title": "Direction"
+            },
+            "description": "Relationship direction"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Node Neighbors V1 Graph Neighbors  Node Id  Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/graph/path": {
+      "post": {
+        "tags": [
+          "graph"
+        ],
+        "summary": "Find Path",
+        "description": "Find shortest path between two nodes.\n\nReturns the shortest path(s) between source and target nodes.",
+        "operationId": "find_path_v1_graph_path_post",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Id"
+            }
+          },
+          {
+            "name": "target_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Target Id"
+            }
+          },
+          {
+            "name": "max_length",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 5,
+              "title": "Max Length"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Relationship Types"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Find Path V1 Graph Path Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/graph/subgraph": {
+      "post": {
+        "tags": [
+          "graph"
+        ],
+        "summary": "Extract Subgraph",
+        "description": "Extract a subgraph containing specified nodes.\n\nReturns all specified nodes and optionally their relationships\nand expanded neighborhood.",
+        "operationId": "extract_subgraph_v1_graph_subgraph_post",
+        "parameters": [
+          {
+            "name": "include_relationships",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Include Relationships"
+            }
+          },
+          {
+            "name": "expand_depth",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Expand Depth"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "title": "Node Ids"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/feedback/relevance": {
+      "post": {
+        "tags": [
+          "feedback"
+        ],
+        "summary": "Submit Relevance Feedback",
+        "description": "Submit relevance feedback for search results.\n    \n    This feedback is used to:\n    - Improve search ranking algorithms\n    - Learn query patterns and user preferences\n    - Identify gaps in the knowledge base\n    - Train machine learning models for better matching\n    \n    Feedback is stored and aggregated for continuous improvement.",
+        "operationId": "submit_relevance_feedback_v1_feedback_relevance_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RelevanceFeedback"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Feedback successfully recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid feedback data"
+          },
+          "500": {
+            "description": "Internal server error"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/feedback/correction": {
+      "post": {
+        "tags": [
+          "feedback"
+        ],
+        "summary": "Submit Correction Feedback",
+        "description": "Submit a correction for an object or relationship.\n\nCorrections require review before being applied to maintain\ndata quality and audit trail.",
+        "operationId": "submit_correction_feedback_v1_feedback_correction_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectionFeedback"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/feedback/validation": {
+      "post": {
+        "tags": [
+          "feedback"
+        ],
+        "summary": "Submit Validation Feedback",
+        "description": "Submit validation feedback for extracted entities.\n\nThis is used to approve or reject candidates from extraction\nbefore they are merged into the main knowledge graph.",
+        "operationId": "submit_validation_feedback_v1_feedback_validation_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidationFeedback"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeedbackResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/feedback/pending": {
+      "get": {
+        "tags": [
+          "feedback"
+        ],
+        "summary": "Get Pending Feedback",
+        "description": "Get pending feedback items that need review or action.\n\nReturns corrections pending review and other actionable feedback.",
+        "operationId": "get_pending_feedback_v1_feedback_pending_get",
+        "parameters": [
+          {
+            "name": "feedback_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Feedback Type"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Pending Feedback V1 Feedback Pending Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/feedback/{feedback_id}/apply": {
+      "post": {
+        "tags": [
+          "feedback"
+        ],
+        "summary": "Apply Feedback",
+        "description": "Apply approved feedback (corrections).\n\nThis actually modifies the knowledge graph based on the feedback.\nRequires appropriate permissions.",
+        "operationId": "apply_feedback_v1_feedback__feedback_id__apply_post",
+        "parameters": [
+          {
+            "name": "feedback_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Feedback Id"
+            }
+          },
+          {
+            "name": "reviewer_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reviewer Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Apply Feedback V1 Feedback  Feedback Id  Apply Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/feedback/statistics": {
+      "get": {
+        "tags": [
+          "feedback"
+        ],
+        "summary": "Get Feedback Statistics",
+        "description": "Get feedback statistics for monitoring and analysis.",
+        "operationId": "get_feedback_statistics_v1_feedback_statistics_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Get Feedback Statistics V1 Feedback Statistics Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/review_queue/queue": {
+      "get": {
+        "tags": [
+          "review_queue"
+        ],
+        "summary": "Get Review Queue",
+        "description": "Get candidates from the review queue.\n\nReturns a list of candidate nodes pending review, with optional filters.",
+        "operationId": "get_review_queue_v1_review_queue_queue_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "pending",
+                    "under_review",
+                    "auto_approved",
+                    "approved",
+                    "rejected"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by status",
+              "title": "Status"
+            },
+            "description": "Filter by status"
+          },
+          {
+            "name": "entity_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Filter by STIX type",
+              "title": "Entity Type"
+            },
+            "description": "Filter by STIX type"
+          },
+          {
+            "name": "min_confidence",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "number",
+                  "maximum": 100,
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Minimum confidence",
+              "title": "Min Confidence"
+            },
+            "description": "Minimum confidence"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "description": "Maximum results",
+              "default": 50,
+              "title": "Limit"
+            },
+            "description": "Maximum results"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Pagination offset",
+              "default": 0,
+              "title": "Offset"
+            },
+            "description": "Pagination offset"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CandidateResponse"
+                  },
+                  "title": "Response Get Review Queue V1 Review Queue Queue Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/review_queue/queue/{candidate_id}": {
+      "get": {
+        "tags": [
+          "review_queue"
+        ],
+        "summary": "Get Candidate",
+        "description": "Get a specific candidate by ID.\n\nReturns detailed information about a candidate node.",
+        "operationId": "get_candidate_v1_review_queue_queue__candidate_id__get",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CandidateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/review_queue/approve/{candidate_id}": {
+      "post": {
+        "tags": [
+          "review_queue"
+        ],
+        "summary": "Approve Candidate",
+        "description": "Approve a candidate and optionally merge to main graph.\n\nThis marks the candidate as approved and can automatically merge it\ninto the main knowledge graph as a proper entity.",
+        "operationId": "approve_candidate_v1_review_queue_approve__candidate_id__post",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Approve Candidate V1 Review Queue Approve  Candidate Id  Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/review_queue/reject/{candidate_id}": {
+      "post": {
+        "tags": [
+          "review_queue"
+        ],
+        "summary": "Reject Candidate",
+        "description": "Reject a candidate with a reason.\n\nThis marks the candidate as rejected and moves it to the archive.",
+        "operationId": "reject_candidate_v1_review_queue_reject__candidate_id__post",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RejectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Reject Candidate V1 Review Queue Reject  Candidate Id  Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/review_queue/batch/approve": {
+      "post": {
+        "tags": [
+          "review_queue"
+        ],
+        "summary": "Batch Approve",
+        "description": "Approve multiple candidates in batch.\n\nEfficient batch operation for approving multiple candidates at once.",
+        "operationId": "batch_approve_v1_review_queue_batch_approve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BatchApprovalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "type": "object",
+                  "title": "Response Batch Approve V1 Review Queue Batch Approve Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/review_queue/status/{candidate_id}": {
+      "put": {
+        "tags": [
+          "review_queue"
+        ],
+        "summary": "Update Candidate Status",
+        "description": "Update the status of a candidate.\n\nAllows changing the workflow state of a candidate without full approval/rejection.",
+        "operationId": "update_candidate_status_v1_review_queue_status__candidate_id__put",
+        "parameters": [
+          {
+            "name": "candidate_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Candidate Id"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "pending",
+                "under_review",
+                "approved",
+                "rejected"
+              ],
+              "type": "string",
+              "title": "Status"
+            }
+          },
+          {
+            "name": "reviewer_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reviewer Id"
+            }
+          },
+          {
+            "name": "reason",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Update Candidate Status V1 Review Queue Status  Candidate Id  Put"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/review_queue/stats": {
+      "get": {
+        "tags": [
+          "review_queue"
+        ],
+        "summary": "Get Queue Statistics",
+        "description": "Get review queue statistics.\n\nReturns aggregate statistics about the review queue including\ncounts by status, type, and confidence levels.",
+        "operationId": "get_queue_statistics_v1_review_queue_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueStatsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/review_queue/from_extraction": {
+      "post": {
+        "tags": [
+          "review_queue"
+        ],
+        "summary": "Create Candidates From Extraction",
+        "description": "Create candidate nodes from an extraction bundle.\n\nThis is called by the extraction pipeline to submit candidates\nfor review before merging into the main graph.",
+        "operationId": "create_candidates_from_extraction_v1_review_queue_from_extraction_post",
+        "parameters": [
+          {
+            "name": "source_report",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Source Report"
+            }
+          },
+          {
+            "name": "auto_approve_threshold",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "default": 95.0,
+              "title": "Auto Approve Threshold"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_create_candidates_from_extraction_v1_review_queue_from_extraction_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Candidates From Extraction V1 Review Queue From Extraction Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/review_queue/archive/old": {
+      "delete": {
+        "tags": [
+          "review_queue"
+        ],
+        "summary": "Archive Old Candidates",
+        "description": "Archive old candidates to keep the queue manageable.\n\nMoves old candidates to an archive status based on age and status.",
+        "operationId": "archive_old_candidates_v1_review_queue_archive_old_delete",
+        "parameters": [
+          {
+            "name": "days_old",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 30,
+              "title": "Days Old"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Status Filter"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Archive Old Candidates V1 Review Queue Archive Old Delete"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApprovalRequest": {
+        "properties": {
+          "reviewer_id": {
+            "type": "string",
+            "title": "Reviewer Id",
+            "description": "ID of the reviewer"
+          },
+          "merge_to_graph": {
+            "type": "boolean",
+            "title": "Merge To Graph",
+            "description": "Whether to merge to main graph",
+            "default": true
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes",
+            "description": "Optional approval notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reviewer_id"
+        ],
+        "title": "ApprovalRequest",
+        "description": "Request to approve a candidate."
+      },
+      "AttackFlowRequest": {
+        "properties": {
+          "technique_id": {
+            "type": "string",
+            "title": "Technique Id",
+            "description": "STIX ID of the center technique"
+          },
+          "depth": {
+            "type": "integer",
+            "maximum": 5.0,
+            "minimum": 1.0,
+            "title": "Depth",
+            "description": "Traversal depth",
+            "default": 2
+          },
+          "include_mitigations": {
+            "type": "boolean",
+            "title": "Include Mitigations",
+            "description": "Include mitigations",
+            "default": true
+          },
+          "include_groups": {
+            "type": "boolean",
+            "title": "Include Groups",
+            "description": "Include threat groups",
+            "default": true
+          },
+          "include_software": {
+            "type": "boolean",
+            "title": "Include Software",
+            "description": "Include software/tools",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "technique_id"
+        ],
+        "title": "AttackFlowRequest",
+        "description": "Attack flow request."
+      },
+      "BatchApprovalRequest": {
+        "properties": {
+          "candidate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Candidate Ids",
+            "description": "List of candidate IDs"
+          },
+          "reviewer_id": {
+            "type": "string",
+            "title": "Reviewer Id",
+            "description": "ID of the reviewer"
+          },
+          "merge_to_graph": {
+            "type": "boolean",
+            "title": "Merge To Graph",
+            "description": "Whether to merge to main graph",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "candidate_ids",
+          "reviewer_id"
+        ],
+        "title": "BatchApprovalRequest",
+        "description": "Request to approve multiple candidates."
+      },
+      "Body_create_candidates_from_extraction_v1_review_queue_from_extraction_post": {
+        "properties": {
+          "stix_bundle": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Stix Bundle"
+          },
+          "extraction_metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Extraction Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stix_bundle",
+          "extraction_metadata"
+        ],
+        "title": "Body_create_candidates_from_extraction_v1_review_queue_from_extraction_post"
+      },
+      "Body_save_query_v1_query_save_post": {
+        "properties": {
+          "results": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Results"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "results"
+        ],
+        "title": "Body_save_query_v1_query_save_post"
+      },
+      "CandidateResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "stix_id": {
+            "type": "string",
+            "title": "Stix Id"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "source_report": {
+            "type": "string",
+            "title": "Source Report"
+          },
+          "extraction_confidence": {
+            "type": "number",
+            "title": "Extraction Confidence"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "stix_object": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Stix Object"
+          },
+          "provenance": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Provenance"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "stix_id",
+          "type",
+          "name",
+          "description",
+          "source_report",
+          "extraction_confidence",
+          "status",
+          "created_at",
+          "stix_object",
+          "provenance"
+        ],
+        "title": "CandidateResponse",
+        "description": "Candidate node response."
+      },
+      "CatalogItem": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/VersionRef"
+            },
+            "type": "array",
+            "title": "Versions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "key",
+          "versions"
+        ],
+        "title": "CatalogItem"
+      },
+      "ChunkingParams": {
+        "properties": {
+          "target_chars": {
+            "type": "integer",
+            "title": "Target Chars",
+            "default": 1200
+          },
+          "overlap": {
+            "type": "integer",
+            "title": "Overlap",
+            "default": 150
+          }
+        },
+        "type": "object",
+        "title": "ChunkingParams",
+        "description": "Parameters for text chunking."
+      },
+      "CorrectionFeedback": {
+        "properties": {
+          "object_id": {
+            "type": "string",
+            "title": "Object Id",
+            "description": "STIX ID to correct"
+          },
+          "correction_type": {
+            "type": "string",
+            "enum": [
+              "property",
+              "relationship",
+              "classification"
+            ],
+            "title": "Correction Type",
+            "description": "Type of correction"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field",
+            "description": "Field to correct (for property corrections)"
+          },
+          "old_value": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Old Value",
+            "description": "Current value"
+          },
+          "new_value": {
+            "title": "New Value",
+            "description": "Proposed new value"
+          },
+          "rationale": {
+            "type": "string",
+            "title": "Rationale",
+            "description": "Reason for correction"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence",
+            "description": "Supporting evidence"
+          },
+          "analyst_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analyst Id",
+            "description": "Analyst identifier"
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_id",
+          "correction_type",
+          "new_value",
+          "rationale"
+        ],
+        "title": "CorrectionFeedback",
+        "description": "Correction feedback for objects or relationships."
+      },
+      "ExpansionRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "Query to expand"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "ExpansionRequest",
+        "description": "Query expansion request."
+      },
+      "ExpansionResponse": {
+        "properties": {
+          "original": {
+            "type": "string",
+            "title": "Original"
+          },
+          "expanded": {
+            "type": "string",
+            "title": "Expanded"
+          },
+          "suggestions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Suggestions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "original",
+          "expanded",
+          "suggestions"
+        ],
+        "title": "ExpansionResponse",
+        "description": "Query expansion response."
+      },
+      "ExtractionRequest": {
+        "properties": {
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url",
+            "description": "URL of source document"
+          },
+          "source_type": {
+            "type": "string",
+            "title": "Source Type",
+            "description": "Type of source (report, blog, pdf, etc)",
+            "default": "report"
+          },
+          "content": {
+            "type": "string",
+            "title": "Content",
+            "description": "Text content to extract from"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title",
+            "description": "Optional title for the report"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method",
+            "description": "Extraction method (llm, vector, hybrid)",
+            "default": "llm"
+          },
+          "confidence_threshold": {
+            "type": "number",
+            "title": "Confidence Threshold",
+            "description": "Minimum confidence for extraction",
+            "default": 50.0
+          },
+          "auto_ingest": {
+            "type": "boolean",
+            "title": "Auto Ingest",
+            "description": "Automatically ingest to graph if True",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "title": "ExtractionRequest",
+        "description": "Request for report extraction."
+      },
+      "ExtractionResponse": {
+        "properties": {
+          "extraction_id": {
+            "type": "string",
+            "title": "Extraction Id"
+          },
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "bundle": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Bundle"
+          },
+          "stats": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Stats"
+          },
+          "provenance": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Provenance"
+          },
+          "ingested": {
+            "type": "boolean",
+            "title": "Ingested",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "extraction_id",
+          "source_id",
+          "bundle",
+          "stats",
+          "provenance"
+        ],
+        "title": "ExtractionResponse",
+        "description": "Response from extraction."
+      },
+      "FeedbackResponse": {
+        "properties": {
+          "feedback_id": {
+            "type": "string",
+            "title": "Feedback Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "feedback_id",
+          "status",
+          "message"
+        ],
+        "title": "FeedbackResponse",
+        "description": "Response for feedback submission."
+      },
+      "GraphEdge": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "target": {
+            "type": "string",
+            "title": "Target"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "properties": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Properties",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "source",
+          "target",
+          "type"
+        ],
+        "title": "GraphEdge",
+        "description": "Graph edge representation."
+      },
+      "GraphNode": {
+        "properties": {
+          "stix_id": {
+            "type": "string",
+            "title": "Stix Id"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "properties": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Properties",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "stix_id",
+          "type",
+          "name"
+        ],
+        "title": "GraphNode",
+        "description": "Graph node representation."
+      },
+      "GraphResponse": {
+        "properties": {
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/GraphNode"
+            },
+            "type": "array",
+            "title": "Nodes"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/GraphEdge"
+            },
+            "type": "array",
+            "title": "Edges"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "nodes",
+          "edges"
+        ],
+        "title": "GraphResponse",
+        "description": "Graph subgraph response."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "LLMExtractRequest": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "source_type": {
+            "type": "string",
+            "pattern": "^(pdf|html|md|json|csv)$",
+            "title": "Source Type"
+          },
+          "content_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Url"
+          },
+          "inline_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inline Text"
+          },
+          "max_candidates": {
+            "type": "integer",
+            "maximum": 20.0,
+            "minimum": 1.0,
+            "title": "Max Candidates",
+            "default": 5
+          },
+          "chunking": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Chunking",
+            "default": {
+              "target_chars": 1200,
+              "overlap": 150
+            }
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_id",
+          "source_type"
+        ],
+        "title": "LLMExtractRequest",
+        "description": "Request for LLM extraction."
+      },
+      "LLMExtractResponse": {
+        "properties": {
+          "extraction_id": {
+            "type": "string",
+            "title": "Extraction Id"
+          },
+          "chunks": {
+            "items": {},
+            "type": "array",
+            "title": "Chunks"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Metadata"
+          }
+        },
+        "type": "object",
+        "required": [
+          "extraction_id",
+          "chunks",
+          "metadata"
+        ],
+        "title": "LLMExtractResponse",
+        "description": "Response from LLM extraction."
+      },
+      "ProposalResponse": {
+        "properties": {
+          "proposal_id": {
+            "type": "string",
+            "title": "Proposal Id"
+          },
+          "bundle": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Bundle"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/ProposalStats"
+          }
+        },
+        "type": "object",
+        "required": [
+          "proposal_id",
+          "bundle",
+          "stats"
+        ],
+        "title": "ProposalResponse",
+        "description": "Response from mapper proposal."
+      },
+      "ProposalStats": {
+        "properties": {
+          "chunks": {
+            "type": "integer",
+            "title": "Chunks"
+          },
+          "candidates_total": {
+            "type": "integer",
+            "title": "Candidates Total"
+          },
+          "techniques_found": {
+            "type": "integer",
+            "title": "Techniques Found",
+            "default": 0
+          },
+          "groups_found": {
+            "type": "integer",
+            "title": "Groups Found",
+            "default": 0
+          },
+          "software_found": {
+            "type": "integer",
+            "title": "Software Found",
+            "default": 0
+          },
+          "relationships_proposed": {
+            "type": "integer",
+            "title": "Relationships Proposed",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunks",
+          "candidates_total"
+        ],
+        "title": "ProposalStats",
+        "description": "Statistics from proposal generation."
+      },
+      "ProposeRequest": {
+        "properties": {
+          "source_id": {
+            "type": "string",
+            "title": "Source Id"
+          },
+          "source_type": {
+            "type": "string",
+            "enum": [
+              "pdf",
+              "html",
+              "md",
+              "json",
+              "csv"
+            ],
+            "title": "Source Type"
+          },
+          "content_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Url"
+          },
+          "inline_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inline Text"
+          },
+          "max_candidates": {
+            "type": "integer",
+            "title": "Max Candidates",
+            "default": 5
+          },
+          "chunking": {
+            "$ref": "#/components/schemas/ChunkingParams"
+          },
+          "engine": {
+            "type": "string",
+            "enum": [
+              "vector",
+              "llm",
+              "hybrid"
+            ],
+            "title": "Engine",
+            "default": "vector"
+          }
+        },
+        "type": "object",
+        "required": [
+          "source_id",
+          "source_type"
+        ],
+        "title": "ProposeRequest",
+        "description": "Request for mapper proposal."
+      },
+      "QueryRequest": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query",
+            "description": "Natural language query text"
+          },
+          "top_k": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "description": "Number of results to return",
+            "default": 20
+          },
+          "filters": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filters",
+            "description": "Optional filters"
+          },
+          "include_context": {
+            "type": "boolean",
+            "title": "Include Context",
+            "description": "Include graph context",
+            "default": true
+          },
+          "fusion_weights": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fusion Weights",
+            "description": "Weights for fusion (vector, graph)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query"
+        ],
+        "title": "QueryRequest",
+        "description": "Natural language query request."
+      },
+      "QueryResponse": {
+        "properties": {
+          "query": {
+            "type": "string",
+            "title": "Query"
+          },
+          "expanded_query": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expanded Query"
+          },
+          "result_count": {
+            "type": "integer",
+            "title": "Result Count"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/QueryResult"
+            },
+            "type": "array",
+            "title": "Results"
+          },
+          "filters_applied": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filters Applied"
+          }
+        },
+        "type": "object",
+        "required": [
+          "query",
+          "result_count",
+          "results"
+        ],
+        "title": "QueryResponse",
+        "description": "Query response with results and metadata."
+      },
+      "QueryResult": {
+        "properties": {
+          "stix_id": {
+            "type": "string",
+            "title": "Stix Id"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "preview": {
+            "type": "string",
+            "title": "Preview"
+          },
+          "fusion_score": {
+            "type": "number",
+            "title": "Fusion Score"
+          },
+          "fusion_rank": {
+            "type": "integer",
+            "title": "Fusion Rank"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source"
+          },
+          "graph_context": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Graph Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stix_id",
+          "type",
+          "name",
+          "preview",
+          "fusion_score",
+          "fusion_rank",
+          "source"
+        ],
+        "title": "QueryResult",
+        "description": "Query result with metadata."
+      },
+      "QueueStatsResponse": {
+        "properties": {
+          "total_candidates": {
+            "type": "integer",
+            "title": "Total Candidates"
+          },
+          "by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Status"
+          },
+          "by_type": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Type"
+          },
+          "confidence_stats": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "number"
+              },
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Confidence Stats"
+          },
+          "recent_24h": {
+            "type": "integer",
+            "title": "Recent 24H"
+          },
+          "pending_review": {
+            "type": "integer",
+            "title": "Pending Review"
+          },
+          "auto_approved": {
+            "type": "integer",
+            "title": "Auto Approved"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_candidates",
+          "by_status",
+          "by_type",
+          "confidence_stats",
+          "recent_24h",
+          "pending_review",
+          "auto_approved"
+        ],
+        "title": "QueueStatsResponse",
+        "description": "Review queue statistics."
+      },
+      "RejectionRequest": {
+        "properties": {
+          "reviewer_id": {
+            "type": "string",
+            "title": "Reviewer Id",
+            "description": "ID of the reviewer"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Reason for rejection"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reviewer_id",
+          "reason"
+        ],
+        "title": "RejectionRequest",
+        "description": "Request to reject a candidate."
+      },
+      "RelevanceFeedback": {
+        "properties": {
+          "query_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Query Id",
+            "description": "Associated query ID"
+          },
+          "object_id": {
+            "type": "string",
+            "title": "Object Id",
+            "description": "STIX ID of the object"
+          },
+          "relevance": {
+            "type": "string",
+            "enum": [
+              "relevant",
+              "irrelevant",
+              "needs_context"
+            ],
+            "title": "Relevance",
+            "description": "Relevance judgment"
+          },
+          "comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Comment",
+            "description": "Optional comment"
+          },
+          "analyst_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analyst Id",
+            "description": "Analyst identifier"
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_id",
+          "relevance"
+        ],
+        "title": "RelevanceFeedback",
+        "description": "Relevance feedback for search results."
+      },
+      "ReviewDecision": {
+        "properties": {
+          "object_id": {
+            "type": "string",
+            "title": "Object Id"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "edit",
+              "reject"
+            ],
+            "title": "Decision"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "fields_patch": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fields Patch"
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_id",
+          "decision"
+        ],
+        "title": "ReviewDecision",
+        "description": "Review decision for mapping or object."
+      },
+      "ReviewResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "recorded"
+          },
+          "object_id": {
+            "type": "string",
+            "title": "Object Id"
+          },
+          "ts": {
+            "type": "string",
+            "title": "Ts"
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_id",
+          "ts"
+        ],
+        "title": "ReviewResponse",
+        "description": "Response from review submission."
+      },
+      "STIXObject": {
+        "properties": {
+          "object": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Object"
+          },
+          "provenance": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Provenance"
+          },
+          "relationships": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Relationships"
+          }
+        },
+        "type": "object",
+        "required": [
+          "object",
+          "provenance"
+        ],
+        "title": "STIXObject",
+        "description": "STIX object with provenance."
+      },
+      "SuggestRequest": {
+        "properties": {
+          "partial_query": {
+            "type": "string",
+            "minLength": 2,
+            "title": "Partial Query",
+            "description": "Partial query text"
+          },
+          "max_suggestions": {
+            "type": "integer",
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Max Suggestions",
+            "description": "Maximum suggestions",
+            "default": 10
+          }
+        },
+        "type": "object",
+        "required": [
+          "partial_query"
+        ],
+        "title": "SuggestRequest",
+        "description": "Query suggestion request."
+      },
+      "TtxQuery": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "top_k": {
+            "type": "integer",
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Top K",
+            "default": 10
+          },
+          "kb_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kb Types",
+            "description": "Filter by kb_type, e.g., ['AttackPattern'] or ['IntrusionSet','Software']"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "TtxQuery",
+        "description": "Text-to-technique search query."
+      },
+      "UpsertProvenance": {
+        "properties": {
+          "collection": {
+            "type": "string",
+            "title": "Collection"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "modified": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "adm_spec": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adm Spec"
+          },
+          "adm_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Adm Sha"
+          }
+        },
+        "type": "object",
+        "required": [
+          "collection",
+          "version",
+          "url"
+        ],
+        "title": "UpsertProvenance"
+      },
+      "UpsertResult": {
+        "properties": {
+          "inserted": {
+            "type": "integer",
+            "title": "Inserted",
+            "default": 0
+          },
+          "updated": {
+            "type": "integer",
+            "title": "Updated",
+            "default": 0
+          },
+          "rejected": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Rejected"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/UpsertProvenance"
+          },
+          "trace_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trace Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provenance"
+        ],
+        "title": "UpsertResult"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "ValidationFeedback": {
+        "properties": {
+          "object_id": {
+            "type": "string",
+            "title": "Object Id",
+            "description": "STIX ID to validate"
+          },
+          "validation": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "reject",
+              "needs_review"
+            ],
+            "title": "Validation",
+            "description": "Validation decision"
+          },
+          "confidence_adjustment": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 50.0,
+                "minimum": -50.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confidence Adjustment",
+            "description": "Confidence adjustment (-50 to +50)"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Reason for decision"
+          },
+          "analyst_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Analyst Id",
+            "description": "Analyst identifier"
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_id",
+          "validation"
+        ],
+        "title": "ValidationFeedback",
+        "description": "Validation feedback for extracted entities."
+      },
+      "VersionRef": {
+        "properties": {
+          "version": {
+            "type": "string",
+            "title": "Version"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "modified": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Modified"
+          }
+        },
+        "type": "object",
+        "required": [
+          "version",
+          "url"
+        ],
+        "title": "VersionRef"
+      }
+    },
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT authentication (future implementation)"
+      },
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "API key authentication (future implementation)"
+      }
+    },
+    "responses": {
+      "NotFound": {
+        "description": "Resource not found",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "detail": {
+                  "type": "string"
+                }
+              }
+            },
+            "example": {
+              "detail": "Resource not found"
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "Invalid request",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "detail": {
+                  "type": "string"
+                }
+              }
+            },
+            "example": {
+              "detail": "Invalid parameters provided"
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Internal server error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "detail": {
+                  "type": "string"
+                }
+              }
+            },
+            "example": {
+              "detail": "An internal error occurred"
+            }
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "catalog",
+      "description": "ATT&CK catalog and release management"
+    },
+    {
+      "name": "stix",
+      "description": "STIX data loading and validation"
+    },
+    {
+      "name": "search",
+      "description": "Vector and text-based search operations"
+    },
+    {
+      "name": "query",
+      "description": "Natural language query and hybrid search"
+    },
+    {
+      "name": "graph",
+      "description": "Graph traversal and exploration"
+    },
+    {
+      "name": "extract",
+      "description": "Document extraction and CTI entity recognition"
+    },
+    {
+      "name": "feedback",
+      "description": "User feedback collection and management"
+    },
+    {
+      "name": "review_queue",
+      "description": "Candidate review queue management"
+    },
+    {
+      "name": "mapper",
+      "description": "Text to ATT&CK technique mapping"
+    },
+    {
+      "name": "review",
+      "description": "Review decisions and workflows"
+    }
+  ]
+}

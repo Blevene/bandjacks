@@ -5,21 +5,29 @@ Bandjacks is a Cyber Threat Defense World Modeling system that ingests and proce
 
 ## Quick Links
 
-- [API Documentation](./api/README.md) - Complete API reference
-- [Quick Start Guide](./QUICKSTART.md) - Get up and running quickly
-- [Environment Setup](./SETUP.md) - Configuration and dependencies
-- [Architecture Overview](../product_management_stuff/architecture.md) - System design
-- [Functional Specification](../product_management_stuff/functional_spec.md) - Detailed requirements
+- **[API Documentation](API_DOCUMENTATION.md)** - Complete REST API reference with all endpoints
+- **[CLI Usage Guide](CLI_USAGE.md)** - Comprehensive command-line interface documentation
+- **[OpenAPI Specification](openapi.json)** - Machine-readable API specification
+- **[Architecture Overview](../product_management_stuff/architecture.md)** - System design
+- **[Functional Specification](../product_management_stuff/functional_spec.md)** - Detailed requirements
 
 ## Key Features
 
+### Core Capabilities
 - **ATT&CK Integration**: Full support for MITRE ATT&CK framework with ADM validation
-- **Multi-Engine Extraction**: Vector-based, LLM-based (GPT-5/Gemini-2.5-Flash), and hybrid approaches
+- **Natural Language Search**: Hybrid vector and graph search with query expansion
+- **Multi-Engine Extraction**: Vector-based, LLM-based (Gemini-2.0-Flash), and hybrid approaches
 - **Technique Phrase Recognition**: 150+ technique phrases and tool associations
 - **Knowledge Graph**: Neo4j-based graph with RDF/OWL semantics
 - **Vector Search**: OpenSearch KNN for semantic similarity
 - **Review Pipeline**: Analyst-in-the-loop validation and feedback
 - **STIX 2.1 Compliance**: Full STIX bundle generation and validation
+
+### Performance Features
+- **Redis Caching**: Query result caching with configurable TTL
+- **Connection Pooling**: Efficient database connection management
+- **Query Optimization**: Automatic index creation and query hints
+- **Batch Operations**: Efficient bulk processing capabilities
 
 ## System Components
 
@@ -46,16 +54,9 @@ Bandjacks is a Cyber Threat Defense World Modeling system that ingests and proce
 ```
 docs/
 ├── README.md                 # This file
-├── QUICKSTART.md            # Quick start guide
-├── SETUP.md                 # Environment setup
-└── api/                     # API documentation
-    ├── README.md            # API overview
-    ├── catalog.md           # Catalog endpoints
-    ├── stix-loader.md       # STIX loading endpoints
-    ├── search.md            # Search endpoints
-    ├── mapper.md            # Mapper/proposal endpoints
-    ├── llm.md               # LLM extraction endpoints
-    └── review.md            # Review endpoints
+├── API_DOCUMENTATION.md     # Complete API reference
+├── CLI_USAGE.md             # CLI commands and usage
+└── openapi.json             # OpenAPI specification
 ```
 
 ## Getting Started
@@ -87,6 +88,18 @@ docs/
    ```bash
    curl -X POST http://localhost:8000/v1/stix/load/attack \
      -d '{"collection": "enterprise-attack", "version": "latest"}'
+   ```
+
+5. **Use the CLI**
+   ```bash
+   # Search for techniques
+   python -m bandjacks.cli.main query search "lateral movement"
+   
+   # Check system health
+   python -m bandjacks.cli.main admin health
+   
+   # View help
+   python -m bandjacks.cli.main --help
    ```
 
 ## API Base URL

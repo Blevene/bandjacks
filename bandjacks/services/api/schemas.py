@@ -91,3 +91,87 @@ class STIXObject(BaseModel):
     object: Dict[str, Any]
     provenance: Dict[str, Any]
     relationships: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+# Sprint 3 Flow Schemas
+class FlowBuildRequest(BaseModel):
+    """Request to build an attack flow."""
+    source_id: Optional[str] = Field(None, description="Report or bundle ID")
+    extraction: Optional[Dict[str, Any]] = Field(None, description="LLM extraction results")
+    bundle: Optional[Dict[str, Any]] = Field(None, description="STIX bundle")
+    strict: bool = Field(True, description="Enforce strict validation")
+    use_llm_synthesis: bool = Field(True, description="Use AttackFlowSynthesizer for LLM-based flow generation")
+
+
+class FlowStep(BaseModel):
+    """Individual step in an attack flow."""
+    order: int = Field(..., ge=1, description="Step order (1-based)")
+    action_id: str = Field(..., description="Unique action identifier")
+    attack_pattern_ref: str = Field(..., description="STIX ID of the technique")
+    name: str = Field(..., description="Technique name")
+    description: str = Field(..., description="What happened in this step")
+    confidence: float = Field(..., ge=0, le=100, description="Confidence percentage")
+    evidence: Optional[List[Dict[str, Any]]] = Field(None, description="Supporting evidence")
+    reason: Optional[str] = Field(None, description="Why this step is here")
+    timestamp: Optional[str] = Field(None, description="When this occurred")
+
+
+class FlowEdge(BaseModel):
+    """Edge between flow steps."""
+    source: str = Field(..., description="Source action_id")
+    target: str = Field(..., description="Target action_id")
+    probability: float = Field(..., ge=0.1, le=1.0, description="Transition probability")
+    rationale: str = Field(..., description="Reason for this edge")
+
+
+class FlowBuildResponse(BaseModel):
+    """Response from flow build."""
+    flow_id: str = Field(..., description="Unique flow identifier")
+    episode_id: str = Field(..., description="Attack episode ID")
+    name: str = Field(..., description="Flow name")
+    source_id: Optional[str] = Field(None, description="Source document/bundle ID")
+    steps: List[FlowStep] = Field(..., description="Ordered flow steps")
+    edges: List[FlowEdge] = Field(..., description="Transitions between steps")
+    stats: Dict[str, Any] = Field(..., description="Flow statistics")
+    llm_synthesized: bool = Field(..., description="Whether LLM synthesis was used")
+    created_at: str = Field(..., description="Creation timestamp")
+
+
+class FlowSearchRequest(BaseModel):
+    """Request to search for flows."""
+    flow_id: Optional[str] = Field(None, description="Find similar to this flow")
+    text: Optional[str] = Field(None, description="Search by text description")
+    top_k: int = Field(10, ge=1, le=50, description="Number of results")
+
+
+class FlowSearchResult(BaseModel):
+    """Individual flow search result."""
+    flow_id: str
+    episode_id: str
+    name: str
+    score: float
+    preview: str
+    steps_count: int
+    tactics: List[str]
+    created_at: str
+
+
+class FlowSearchResponse(BaseModel):
+    """Response from flow search."""
+    results: List[FlowSearchResult]
+    query_type: Literal["flow_similarity", "text_search"]
+    total_results: int
+
+
+class FlowGetResponse(BaseModel):
+    """Response from getting a single flow."""
+    flow_id: str
+    episode_id: str
+    name: str
+    source_id: Optional[str]
+    created_at: str
+    strategy: Optional[str]
+    llm_synthesized: bool
+    steps: List[FlowStep]
+    edges: List[FlowEdge]
+    metadata: Dict[str, Any]
