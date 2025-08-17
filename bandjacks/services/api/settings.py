@@ -21,6 +21,20 @@ class Settings(BaseSettings):
     adm_mode: str = "schema"   # "sidecar" | "schema"
     adm_base_url: str = "http://localhost:8080"
     adm_spec_min: str = "3.3.0"
+    
+    # LiteLLM configuration
+    litellm_base_url: str = "http://localhost:4000"
+    litellm_api_key: str = ""
+    litellm_model: str = "gpt-4o-mini"
+    litellm_timeout_ms: int = 30000
+    litellm_temperature: float = 0.2
+    litellm_max_tokens: int = 800
+    
+    # API Keys for LLM services (loaded from environment)
+    openai_api_key: str = ""
+    google_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"  # Current OpenAI model
+    google_model: str = "gemini-2.5-flash"  # Latest Google model
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

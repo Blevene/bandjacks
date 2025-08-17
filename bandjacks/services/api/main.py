@@ -2,7 +2,7 @@
 
 from fastapi import FastAPI
 from bandjacks.services.api.settings import settings
-from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review
+from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, llm
 from bandjacks.loaders.neo4j_ddl import ensure_ddl
 from bandjacks.loaders.opensearch_index import ensure_attack_nodes_index
 from bandjacks.loaders.edge_embeddings import ensure_attack_edges_index
@@ -27,3 +27,4 @@ app.include_router(stix_loader.router, prefix=settings.api_prefix)
 app.include_router(search.router, prefix=settings.api_prefix)
 app.include_router(mapper.router, prefix=settings.api_prefix)
 app.include_router(review.router, prefix=settings.api_prefix)
+app.include_router(llm.router, prefix=settings.api_prefix)
