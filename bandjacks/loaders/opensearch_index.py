@@ -190,3 +190,73 @@ def upsert_node_embedding(os_url: str, index: str, doc: Dict[str, Any]):
         id=doc.get("id"),
         body=doc
     )
+
+
+def ensure_attack_flows_index(opensearch_url: str):
+    """Ensure the attack flows index exists in OpenSearch."""
+    client = OpenSearch(
+        hosts=[opensearch_url],
+        use_ssl=False,
+        verify_certs=False
+    )
+    
+    index_name = "attack_flows"
+    
+    if client.indices.exists(index=index_name):
+        print(f"Index {index_name} already exists")
+        return
+    
+    mapping = {
+        "settings": {
+            "index": {
+                "knn": True,
+                "knn.algo_param.ef_search": 100
+            }
+        },
+        "mappings": {
+            "properties": {
+                "flow_id": {"type": "keyword"},
+                "episode_id": {"type": "keyword"},
+                "name": {"type": "text"},
+                "source_id": {"type": "keyword"},
+                "created": {"type": "date"},
+                "flow_text": {"type": "text"},  # Full flow text, no truncation
+                "steps_count": {"type": "integer"},
+                "avg_confidence": {"type": "float"},
+                "llm_synthesized": {"type": "boolean"},
+                "tactics": {"type": "keyword"},
+                "techniques": {"type": "keyword"},
+                "flow_embedding": {
+                    "type": "knn_vector",
+                    "dimension": 768,
+                    "method": {
+                        "name": "hnsw",
+                        "space_type": "cosinesimil",
+                        "engine": "nmslib",
+                        "parameters": {
+                            "ef_construction": 128,
+                            "m": 24
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    client.indices.create(index=index_name, body=mapping)
+    print(f"Created index: {index_name}")
+
+
+def upsert_flow_embedding(os_url: str, index: str, doc: Dict[str, Any]):
+    """Upsert a flow document with embeddings to OpenSearch."""
+    client = OpenSearch(
+        hosts=[os_url],
+        use_ssl=False,
+        verify_certs=False
+    )
+    
+    client.index(
+        index=index,
+        id=doc.get("flow_id"),
+        body=doc
+    )
