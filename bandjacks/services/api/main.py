@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from bandjacks.services.api.settings import settings
-from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, llm, extract, query, graph, feedback, review_queue, flows
+from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, llm, extract, query, graph, feedback, review_queue, flows, defense, candidates
 from bandjacks.loaders.neo4j_ddl import ensure_ddl
 from bandjacks.loaders.opensearch_index import ensure_attack_nodes_index, ensure_attack_flows_index
 from bandjacks.loaders.edge_embeddings import ensure_attack_edges_index
@@ -110,6 +110,14 @@ tags_metadata = [
     {
         "name": "flows",
         "description": "Attack flow generation, retrieval, and search",
+    },
+    {
+        "name": "defense",
+        "description": "D3FEND defense overlay and recommendations",
+    },
+    {
+        "name": "candidates",
+        "description": "Candidate attack pattern review workflow",
     }
 ]
 
@@ -127,3 +135,5 @@ app.include_router(graph.router, prefix=settings.api_prefix)
 app.include_router(feedback.router, prefix=settings.api_prefix)
 app.include_router(review_queue.router, prefix=settings.api_prefix)
 app.include_router(flows.router, prefix=settings.api_prefix)
+app.include_router(defense.router, prefix=settings.api_prefix)
+app.include_router(candidates.router, prefix=settings.api_prefix)

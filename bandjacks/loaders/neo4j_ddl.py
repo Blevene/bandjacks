@@ -20,7 +20,9 @@ class Neo4jDDL:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:DataSource) REQUIRE n.stix_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackEpisode) REQUIRE n.episode_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackAction) REQUIRE n.action_id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:D3fendTechnique) REQUIRE n.d3fend_id IS UNIQUE"
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:D3fendTechnique) REQUIRE n.d3fend_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:DigitalArtifact) REQUIRE n.name IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:CandidateAttackPattern) REQUIRE n.candidate_id IS UNIQUE"
         ]
         
         for constraint in constraints:
@@ -37,7 +39,12 @@ class Neo4jDDL:
             "CREATE INDEX IF NOT EXISTS FOR (n:Tactic) ON (n.name)",
             "CREATE INDEX IF NOT EXISTS FOR (n:DataSource) ON (n.name)",
             "CREATE INDEX IF NOT EXISTS FOR (n:AttackEpisode) ON (n.created)",
-            "CREATE INDEX IF NOT EXISTS FOR (n:AttackAction) ON (n.timestamp)"
+            "CREATE INDEX IF NOT EXISTS FOR (n:AttackAction) ON (n.timestamp)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:D3fendTechnique) ON (n.name)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:D3fendTechnique) ON (n.category)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:DigitalArtifact) ON (n.type)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:CandidateAttackPattern) ON (n.status)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:CandidateAttackPattern) ON (n.confidence)"
         ]
         
         for index in indexes:
