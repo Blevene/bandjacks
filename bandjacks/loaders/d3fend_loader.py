@@ -7,6 +7,7 @@ Provides two ingestion modes:
 
 import json
 import logging
+import re
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from neo4j import GraphDatabase
@@ -72,78 +73,146 @@ class D3FENDLoader:
             try:
                 logger.info("Fetching D3FEND OWL ontology...")
                 g = Graph()
-                g.parse(self.D3FEND_RDF_URL)  # rdflib auto-detects RDF/XML
+                g.parse(self.D3FEND_RDF_URL, format="xml")  # Explicitly use XML format
 
-                D3F = Namespace("https://d3fend.mitre.org/ontologies/d3fend.owl#")
+                # Define namespaces
+                D3F = Namespace("http://d3fend.mitre.org/ontologies/d3fend.owl#")
                 SKOS = Namespace("http://www.w3.org/2004/02/skos/core#")
+                OWL = Namespace("http://www.w3.org/2002/07/owl#")
 
                 techniques: Dict[str, Any] = {}
 
-                # Heuristics: treat D3FEND technique classes as those of type d3fend:Technique
-                # and also classes that have pref-label and definition.
-                technique_types = {D3F.Technique, D3F.DefenseTechnique}  # be resilient to naming
+                # Find the DefensiveTechnique base class
+                defensive_technique_class = D3F.DefensiveTechnique
+                
+                # Helper function to get all subclasses recursively
+                def get_all_subclasses(parent, visited=None):
+                    if visited is None:
+                        visited = set()
+                    if parent in visited:
+                        return set()
+                    visited.add(parent)
+                    
+                    subclasses = set()
+                    for s in g.subjects(RDFS.subClassOf, parent):
+                        if isinstance(s, URIRef) and str(s).startswith("http://d3fend.mitre.org"):
+                            subclasses.add(s)
+                            # Recursively get subclasses
+                            subclasses.update(get_all_subclasses(s, visited))
+                    return subclasses
+                
+                # Get all defensive technique subclasses
+                all_technique_classes = get_all_subclasses(defensive_technique_class)
+                all_technique_classes.add(defensive_technique_class)  # Include the base class
+                
+                # Also find techniques by other patterns
+                # Look for classes with d3fend-kb-article (indicates documented techniques)
+                for s, p, o in g.triples((None, D3F['d3fend-kb-article'], None)):
+                    if isinstance(s, URIRef) and str(s).startswith("http://d3fend.mitre.org"):
+                        all_technique_classes.add(s)
+                
+                # Process each technique class
+                for tech_class in all_technique_classes:
+                    # Skip if it's not actually a class
+                    if not any(g.triples((tech_class, RDF.type, OWL.Class))):
+                        continue
+                    
+                    # Build compact ID: d3f:LocalName
+                    local_name = str(tech_class).split('#')[-1]
+                    
+                    # Skip certain non-technique classes
+                    if local_name in ['DefensiveTechnique', 'Thing', 'NamedIndividual']:
+                        continue
+                    
+                    compact_id = f"d3f:{local_name}"
 
-                for s in g.subjects(RDF.type, None):
-                    # Only classes in D3F namespace
-                    if isinstance(s, URIRef) and str(s).startswith(str(D3F)):
-                        # Determine if this subject looks like a technique
-                        types_for_s = set(g.objects(s, RDF.type))
-                        if not (types_for_s & technique_types):
-                            # Some ontologies may not explicitly mark with a Technique class;
-                            # keep candidates that have pref-label and definition
-                            has_label = any(g.objects(s, D3F['pref-label'])) or any(g.objects(s, RDFS.label)) or any(g.objects(s, SKOS.prefLabel))
-                            has_def = any(g.objects(s, D3F.definition)) or any(g.objects(s, SKOS.definition)) or any(g.objects(s, D3F['kb-article']))
-                            if not (has_label and has_def):
-                                continue
+                    # Extract name/label
+                    name_val = None
+                    for p in [RDFS.label, D3F['d3fend-label'], SKOS.prefLabel]:
+                        labels = list(g.objects(tech_class, p))
+                        if labels:
+                            name_val = str(labels[0])
+                            break
+                    if not name_val:
+                        # Convert CamelCase to readable name
+                        name_val = re.sub(r'([A-Z])', r' \1', local_name).strip()
 
-                        # Build compact ID: d3f:LocalName
-                        local_name = str(s).split('#')[-1]
-                        compact_id = f"d3f:{local_name}"
+                    # Extract description/definition
+                    desc_val = None
+                    for p in [D3F['definition'], D3F['d3fend-kb-article'], SKOS.definition]:
+                        defs = list(g.objects(tech_class, p))
+                        if defs:
+                            desc_val = str(defs[0])
+                            # Truncate very long descriptions but keep meaningful content
+                            if len(desc_val) > 500:
+                                desc_val = desc_val[:497] + "..."
+                            break
+                    if not desc_val:
+                        desc_val = f"Defensive technique: {name_val}"
 
-                        # Extract name/label
-                        name_val = None
-                        for p in (D3F['pref-label'], SKOS.prefLabel, RDFS.label):
-                            lit = next((o for o in g.objects(s, p) if isinstance(o, Literal)), None)
-                            if lit is not None:
-                                name_val = str(lit)
+                    # Get parent category
+                    category = None
+                    for parent in g.objects(tech_class, RDFS.subClassOf):
+                        if isinstance(parent, URIRef) and str(parent).startswith("http://d3fend.mitre.org"):
+                            parent_name = str(parent).split('#')[-1]
+                            # Skip the base DefensiveTechnique class
+                            if parent_name != 'DefensiveTechnique':
+                                category = parent_name
+                                # Make category name more readable
+                                category = re.sub(r'([A-Z])', r' \1', category).strip()
                                 break
-                        if not name_val:
-                            name_val = local_name
+                    
+                    if not category:
+                        # Try to infer category from technique name
+                        if 'Network' in local_name or 'Traffic' in local_name:
+                            category = "Network Defense"
+                        elif 'File' in local_name or 'Process' in local_name or 'Memory' in local_name:
+                            category = "Endpoint Defense"
+                        elif 'Authentic' in local_name or 'Credential' in local_name:
+                            category = "Identity Defense"
+                        elif 'Encrypt' in local_name or 'Backup' in local_name:
+                            category = "Data Defense"
+                        else:
+                            category = "General Defense"
 
-                        # Extract description/definition
-                        desc_val = None
-                        for p in (D3F.definition, SKOS.definition, D3F['kb-article']):
-                            lit = next((o for o in g.objects(s, p) if isinstance(o, Literal)), None)
-                            if lit is not None:
-                                desc_val = str(lit)
-                                break
-                        if not desc_val:
-                            desc_val = ""
+                    # Extract artifacts or related objects
+                    artifacts: List[str] = []
+                    
+                    # Look for what this technique produces, analyzes, or affects
+                    artifact_predicates = [
+                        D3F['produces'], D3F['analyzes'], D3F['filters'],
+                        D3F['monitors'], D3F['validates'], D3F['blocks'],
+                        D3F['encrypts'], D3F['authenticates']
+                    ]
+                    
+                    for pred in artifact_predicates:
+                        for obj in g.objects(tech_class, pred):
+                            if isinstance(obj, URIRef):
+                                artifact_name = str(obj).split('#')[-1]
+                                # Make artifact name readable
+                                artifact_name = re.sub(r'([A-Z])', r' \1', artifact_name).strip()
+                                if artifact_name not in artifacts:
+                                    artifacts.append(artifact_name)
+                    
+                    # If no artifacts found, create generic ones based on technique type
+                    if not artifacts:
+                        if 'Log' in local_name or 'Audit' in local_name:
+                            artifacts = ["Audit Logs", "Event Records"]
+                        elif 'Filter' in local_name:
+                            artifacts = ["Filter Rules", "Access Control Lists"]
+                        elif 'Encrypt' in local_name:
+                            artifacts = ["Encryption Keys", "Encrypted Data"]
+                        elif 'Authentic' in local_name:
+                            artifacts = ["Authentication Tokens", "Credentials"]
+                        elif 'Monitor' in local_name:
+                            artifacts = ["Monitoring Data", "Alerts"]
 
-                        # Category: use broader/broader-transitive or a hierarchy to infer high-level group
-                        category = None
-                        for p in (D3F.broader, D3F['broader-transitive']):
-                            broader = next((o for o in g.objects(s, p) if isinstance(o, URIRef)), None)
-                            if broader is not None:
-                                category = str(broader).split('#')[-1]
-                                break
-                        if not category:
-                            category = "Uncategorized"
-
-                        # Artifacts: look for PRODUCES-like edges or annotations indicating artifacts
-                        artifacts: List[str] = []
-                        for o in g.objects(s, D3F['produces']):
-                            if isinstance(o, URIRef):
-                                artifacts.append(str(o).split('#')[-1].replace('_', ' '))
-                            elif isinstance(o, Literal):
-                                artifacts.append(str(o))
-
-                        techniques[compact_id] = {
-                            "name": name_val,
-                            "description": desc_val,
-                            "category": category.replace('_', ' '),
-                            "artifacts": artifacts,
-                        }
+                    techniques[compact_id] = {
+                        "name": name_val,
+                        "description": desc_val,
+                        "category": category,
+                        "artifacts": artifacts[:5],  # Limit to 5 artifacts
+                    }
 
                 if techniques:
                     logger.info(f"Parsed {len(techniques)} D3FEND techniques from OWL")
@@ -357,7 +426,8 @@ class D3FENDLoader:
                         d3fend_id=d3fend_id
                     )
                     
-                    if result.single()["created"] > 0:
+                    result_single = result.single()
+                    if result_single and result_single.get("created", 0) > 0:
                         relationships_created += 1
             
             # Now create COUNTERS relationships from D3FEND to AttackPatterns
@@ -374,7 +444,8 @@ class D3FENDLoader:
                 """
             )
             
-            counters_count = result.single()["counters_created"]
+            result_single = result.single()
+            counters_count = result_single["counters_created"] if result_single else 0
             logger.info(f"Created {counters_count} COUNTERS relationships")
             
             return relationships_created + counters_count
