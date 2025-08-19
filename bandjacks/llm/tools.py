@@ -257,7 +257,8 @@ def get_tool_functions() -> Dict[str, callable]:
         "resolve_technique_by_external_id": resolve_technique_by_external_id,
         "list_techniques_for_tactic": list_techniques_for_tactic,
         "graph_lookup": graph_lookup,
-        "list_tactics": list_tactics
+        "list_tactics": list_tactics,
+        "list_subtechniques": list_subtechniques
     }
 
 
@@ -322,6 +323,32 @@ def list_techniques_for_tactic(tactic_shortname: str, limit: int = 10) -> List[D
                 {"external_id": r["external_id"], "name": r["name"], "stix_id": r["stix_id"]}
                 for r in result
             ]
+    except Exception as e:
+        return [{"error": str(e)}]
+    finally:
+        try:
+            driver.close()
+        except Exception:
+            pass
+
+
+def list_subtechniques(parent_external_id: str) -> List[Dict[str, Any]]:
+    """List sub-techniques for a parent technique external_id."""
+    try:
+        driver = GraphDatabase.driver(
+            settings.neo4j_uri,
+            auth=(settings.neo4j_user, settings.neo4j_password)
+        )
+        with driver.session() as session:
+            rows = session.run(
+                """
+                MATCH (ap:AttackPattern {external_id: $pid})<-[:IS_PARENT]-(sub:AttackPattern)
+                RETURN sub.external_id AS external_id, sub.name AS name
+                ORDER BY sub.name
+                """,
+                pid=parent_external_id,
+            )
+            return [{"external_id": r["external_id"], "name": r["name"]} for r in rows]
     except Exception as e:
         return [{"error": str(e)}]
     finally:

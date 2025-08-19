@@ -4,9 +4,11 @@ from fastapi import APIRouter, HTTPException, Depends
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 from bandjacks.services.api.deps import get_neo4j_session, get_opensearch_client
+from bandjacks.services.api.schemas import QueryHistoryResponse, SaveQueryResponse, QuerySuggestionResponse
 from bandjacks.services.api.settings import settings
 from bandjacks.loaders.hybrid_search import HybridSearcher
 import json
+import uuid
 
 
 router = APIRouter(prefix="/query", tags=["query"])
@@ -163,16 +165,24 @@ class SuggestRequest(BaseModel):
     max_suggestions: int = Field(10, ge=1, le=50, description="Maximum suggestions")
 
 
-@router.post("/suggest",
+@router.post(
+    "/suggest",
+    response_model=QuerySuggestionResponse,
+    operation_id="getQuerySuggestions",
     summary="Query Suggestions",
     description="Get autocomplete suggestions based on partial query input."
 )
 async def query_suggestions(
     request: SuggestRequest,
     neo4j_session=Depends(get_neo4j_session)
-) -> Dict[str, Any]:
+) -> QuerySuggestionResponse:
     if len(request.partial_query) < 2:
-        return {"suggestions": []}
+        return QuerySuggestionResponse(
+            suggestions=[],
+            partial_query=request.partial_query,
+            total_suggestions=0,
+            trace_id=str(uuid.uuid4())
+        )
     
     suggestions = []
     
@@ -214,16 +224,27 @@ async def query_suggestions(
                 "type": "pattern"
             })
     
-    return {
-        "suggestions": suggestions[:request.max_suggestions]
-    }
+    final_suggestions = suggestions[:request.max_suggestions]
+    
+    return QuerySuggestionResponse(
+        suggestions=final_suggestions,
+        partial_query=request.partial_query,
+        total_suggestions=len(final_suggestions),
+        trace_id=str(uuid.uuid4())
+    )
 
 
-@router.get("/history")
+@router.get(
+    "/history",
+    response_model=QueryHistoryResponse,
+    operation_id="getQueryHistory",
+    summary="Get Query History",
+    description="Get recent query history for analysis and quick re-execution."
+)
 async def query_history(
     limit: int = 20,
     neo4j_session=Depends(get_neo4j_session)
-) -> Dict[str, Any]:
+) -> QueryHistoryResponse:
     """
     Get recent query history.
     
@@ -250,16 +271,27 @@ async def query_history(
             "result_count": record["result_count"]
         })
     
-    return {"history": history}
+    return QueryHistoryResponse(
+        queries=history,
+        total_queries=len(history),
+        user_id=None,  # Could be enhanced with authentication
+        trace_id=str(uuid.uuid4())
+    )
 
 
-@router.post("/save")
+@router.post(
+    "/save",
+    response_model=SaveQueryResponse,
+    operation_id="saveQuery",
+    summary="Save Query",
+    description="Save a query and its results for future analysis and pattern building."
+)
 async def save_query(
     query_text: str,
     results: List[str],
     metadata: Optional[Dict[str, Any]] = None,
     neo4j_session=Depends(get_neo4j_session)
-) -> Dict[str, Any]:
+) -> SaveQueryResponse:
     """
     Save a query and its results for future analysis.
     
@@ -294,7 +326,9 @@ async def save_query(
     
     record = result.single()
     
-    return {
-        "query_id": record["id"] if record else query_id,
-        "saved": True
-    }
+    return SaveQueryResponse(
+        query_id=record["id"] if record else query_id,
+        message="Query saved successfully",
+        saved_at=__import__('datetime').datetime.utcnow().isoformat() + "Z",
+        trace_id=str(uuid.uuid4())
+    )

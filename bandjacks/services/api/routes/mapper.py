@@ -13,7 +13,18 @@ from bandjacks.llm.stix_converter import merge_with_vector_results
 router = APIRouter(tags=["mapper"])
 
 
-@router.post("/mapper/propose", response_model=ProposalResponse)
+@router.post(
+    "/mapper/propose", 
+    response_model=ProposalResponse,
+    operation_id="proposeTechniqueMapping",
+    summary="Propose Technique Mappings", 
+    description="""
+    Generate ATT&CK technique mapping proposals from threat intelligence text.
+    
+    Uses hybrid vector + LLM approach to identify relevant techniques
+    and create STIX mappings with confidence scores.
+    """
+)
 async def propose_mapping(request: ProposeRequest):
     """
     Analyze document and propose ATT&CK mappings.

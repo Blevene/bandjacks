@@ -1,10 +1,12 @@
 """Graph traversal and exploration endpoints."""
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, status
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 from bandjacks.services.api.deps import get_neo4j_session
+from bandjacks.services.api.schemas import GraphNeighborsResponse, GraphPathResponse, GraphSubgraphResponse, ErrorResponse
 import json
+import uuid
 
 
 router = APIRouter(prefix="/graph", tags=["graph"])
@@ -259,7 +261,40 @@ async def get_attack_flow(
     )
 
 
-@router.get("/neighbors/{node_id}")
+@router.get(
+    "/neighbors/{node_id}",
+    response_model=GraphNeighborsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get Node Neighbors",
+    description="""
+    Get immediate neighbors of a node in the knowledge graph.
+    
+    Returns all nodes connected to the specified node with their relationships,
+    filtered by relationship type and direction.
+    
+    **Features:**
+    - Filter by relationship types (USES, MITIGATES, etc.)
+    - Control direction (incoming, outgoing, or both)
+    - Limit result size for performance
+    
+    **Use cases:**
+    - Explore technique relationships
+    - Find connected threat actors
+    - Discover mitigation strategies
+    """,
+    response_description="Node and its immediate neighbors with relationships",
+    operation_id="getNodeNeighbors",
+    responses={
+        200: {
+            "description": "Node neighbors retrieved successfully",
+            "model": GraphNeighborsResponse
+        },
+        404: {
+            "description": "Node not found",
+            "model": ErrorResponse
+        }
+    }
+)
 async def get_node_neighbors(
     node_id: str,
     relationship_types: Optional[List[str]] = Query(
@@ -273,7 +308,7 @@ async def get_node_neighbors(
     ),
     limit: int = Query(50, ge=1, le=200),
     neo4j_session=Depends(get_neo4j_session)
-) -> Dict[str, Any]:
+) -> GraphNeighborsResponse:
     """
     Get immediate neighbors of a node.
     
@@ -339,18 +374,23 @@ async def get_node_neighbors(
             })
     
     if not center_node:
-        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+        trace_id = str(uuid.uuid4())
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "error": "NodeNotFound",
+                "message": f"Node {node_id} not found in graph",
+                "trace_id": trace_id
+            }
+        )
     
-    return {
-        "center_node": {
-            "stix_id": center_node.get("stix_id"),
-            "type": center_node.get("type"),
-            "name": center_node.get("name")
-        },
-        "neighbors": neighbors,
-        "relationships": relationships,
-        "neighbor_count": len(neighbors)
-    }
+    return GraphNeighborsResponse(
+        node_id=node_id,
+        neighbors=neighbors,
+        relationships=relationships,
+        total_neighbors=len(neighbors),
+        trace_id=str(uuid.uuid4())
+    )
 
 
 @router.post("/path")

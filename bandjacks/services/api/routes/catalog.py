@@ -1,17 +1,42 @@
 """Catalog routes for ATT&CK releases."""
 
 from typing import List, Dict
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status
 from bandjacks.services.api.settings import settings
 from bandjacks.loaders.attack_catalog import fetch_catalog
-from bandjacks.services.api.schemas import CatalogItem, VersionRef
+from bandjacks.services.api.schemas import CatalogItem, VersionRef, CatalogTacticsResponse
 from neo4j import GraphDatabase
 from functools import lru_cache
+import uuid
 
 router = APIRouter(tags=["catalog"])
 
-@router.get("/catalog/attack/releases", response_model=list[CatalogItem])
-async def get_attack_releases():
+@router.get(
+    "/catalog/attack/releases",
+    response_model=List[CatalogItem],
+    status_code=status.HTTP_200_OK,
+    summary="List ATT&CK Releases",
+    description="""
+    Retrieve available MITRE ATT&CK framework releases and their collection URLs.
+    
+    Returns a list of available ATT&CK collections (enterprise, mobile, ICS) with
+    their version history and download URLs from the official MITRE repository.
+    
+    **Collections included:**
+    - enterprise-attack (Enterprise techniques)
+    - mobile-attack (Mobile techniques)
+    - ics-attack (Industrial Control Systems)
+    
+    **Use cases:**
+    - Check for new ATT&CK releases
+    - Select specific version for loading
+    - Audit framework versions in use
+    """,
+    response_description="List of ATT&CK collections with version information",
+    operation_id="getAttackReleases"
+)
+async def get_attack_releases() -> List[CatalogItem]:
+    """List available ATT&CK releases and their collection URLs."""
     try:
         cat = fetch_catalog(settings.attack_index_url)
         return [
@@ -23,7 +48,15 @@ async def get_attack_releases():
             for c in cat.values()
         ]
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to fetch catalog: {e}")
+        trace_id = str(uuid.uuid4())
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "error": "CatalogFetchError",
+                "message": f"Failed to fetch ATT&CK catalog: {str(e)}",
+                "trace_id": trace_id
+            }
+        )
 
 
 @lru_cache(maxsize=1, typed=False)
@@ -76,15 +109,50 @@ def _get_tactics_cached() -> List[Dict[str, str]]:
         driver.close()
 
 
-@router.get("/catalog/tactics")
-async def get_tactics() -> List[Dict[str, str]]:
+@router.get(
+    "/catalog/tactics",
+    response_model=CatalogTacticsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List ATT&CK Tactics",
+    description="""
+    Get the complete list of MITRE ATT&CK tactics (kill chain phases).
+    
+    Returns all tactics from the loaded ATT&CK framework with their STIX IDs,
+    shortnames, and full names. Falls back to standard tactics if none are
+    loaded in the database.
+    
+    **Use cases:**
+    - Build tactic filters for UI
+    - Validate tactic references  
+    - Generate kill chain visualizations
+    """,
+    response_description="List of ATT&CK tactics with metadata",
+    operation_id="getAttackTactics"
+)
+async def get_tactics() -> CatalogTacticsResponse:
     """
     Get list of all ATT&CK tactics with their IDs and names.
     
     Returns:
-        List of tactics with stix_id, shortname, and name
+        CatalogTacticsResponse with tactics list and metadata
     """
+    trace_id = str(uuid.uuid4())
+    
     try:
-        return _get_tactics_cached()
+        tactics_list = _get_tactics_cached()
+        
+        return CatalogTacticsResponse(
+            tactics=tactics_list,
+            total=len(tactics_list),
+            version="v14.1",  # Current ATT&CK version
+            trace_id=trace_id
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch tactics: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "TacticsFetchError", 
+                "message": f"Failed to fetch tactics: {str(e)}",
+                "trace_id": trace_id
+            }
+        )

@@ -9,7 +9,13 @@ from bandjacks.store.review_store import ReviewStore
 router = APIRouter(tags=["review"])
 
 
-@router.post("/review/mapping", response_model=ReviewResponse)
+@router.post(
+    "/review/mapping", 
+    response_model=ReviewResponse,
+    operation_id="reviewMapping",
+    summary="Review Mapping Decision",
+    description="Record analyst decision on a proposed ATT&CK technique mapping."
+)
 async def review_mapping(
     decision: ReviewDecision,
     x_analyst_id: Optional[str] = Header(None)
@@ -47,7 +53,13 @@ async def review_mapping(
         raise HTTPException(status_code=500, detail=f"Failed to record review: {str(e)}")
 
 
-@router.post("/review/object", response_model=ReviewResponse)
+@router.post(
+    "/review/object", 
+    response_model=ReviewResponse,
+    operation_id="reviewObject",
+    summary="Review STIX Object",
+    description="Record analyst review decision for a STIX object."
+)
 async def review_object(
     decision: ReviewDecision,
     x_analyst_id: Optional[str] = Header(None)
@@ -85,7 +97,13 @@ async def review_object(
         raise HTTPException(status_code=500, detail=f"Failed to record review: {str(e)}")
 
 
-@router.get("/stix/objects/{object_id}", response_model=STIXObject)
+@router.get(
+    "/stix/objects/{object_id}", 
+    response_model=STIXObject,
+    operation_id="getStixObject",
+    summary="Get STIX Object",
+    description="Retrieve a STIX object by ID with its provenance and relationships."
+)
 async def get_stix_object(object_id: str):
     """
     Retrieve a STIX object with provenance and relationships.

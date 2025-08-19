@@ -52,7 +52,18 @@ def _is_downgrade(current_version: str, new_version: str) -> bool:
         # If we can't parse, be conservative and allow
         return False
 
-@router.post("/stix/load/attack", response_model=UpsertResult)
+@router.post(
+    "/stix/load/attack", 
+    response_model=UpsertResult,
+    operation_id="loadAttackCollection",
+    summary="Load ATT&CK Collection",
+    description="""
+    Load MITRE ATT&CK data from a specific collection and version.
+    
+    Downloads and processes ATT&CK STIX bundles, validates against the
+    ATT&CK Data Model (ADM), and upserts into the knowledge graph.
+    """
+)
 async def load_attack_collection(
     request: Request,
     collection: str = Query(..., pattern="^(enterprise-attack|mobile-attack|ics-attack)$"),
@@ -97,7 +108,18 @@ async def load_attack_collection(
         raise HTTPException(status_code=502, detail=f"Load failed: {e}")
 
 
-@router.post("/stix/bundles", response_model=UpsertResult)
+@router.post(
+    "/stix/bundles", 
+    response_model=UpsertResult,
+    operation_id="ingestStixBundle",
+    summary="Ingest STIX Bundle",
+    description="""
+    Ingest a custom STIX 2.1 bundle into the knowledge graph.
+    
+    Validates the bundle structure and content, then upserts all
+    valid objects into Neo4j and OpenSearch.
+    """
+)
 async def ingest_bundle(
     request: Request,
     bundle: Dict[str, Any] = Body(...),

@@ -8,6 +8,7 @@ from datetime import datetime
 import os
 
 from bandjacks.services.api.deps import get_neo4j_session, get_opensearch_client
+from bandjacks.services.api.schemas import ProvenanceValidationResponse
 from bandjacks.loaders.parse_text import extract_text
 from bandjacks.loaders.chunker import split_into_chunks
 from bandjacks.llm.extractor import LLMExtractor
@@ -41,7 +42,19 @@ class ExtractionResponse(BaseModel):
     ingested: bool = False
 
 
-@router.post("/report", response_model=ExtractionResponse)
+@router.post(
+    "/report", 
+    response_model=ExtractionResponse,
+    operation_id="extractTechniquesFromReport",
+    summary="Extract Techniques from Report",
+    description="""
+    Extract MITRE ATT&CK techniques from threat intelligence reports using AI.
+    
+    Supports multiple extraction methods including the advanced agentic_v2 
+    pipeline that achieves 87.5% recall. Creates STIX 2.1 bundles with 
+    full provenance tracking.
+    """
+)
 async def extract_report(
     request: ExtractionRequest,
     neo4j_session=Depends(get_neo4j_session),
@@ -293,11 +306,22 @@ async def extract_report(
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
 
 
-@router.get("/provenance/{object_id}")
+@router.get(
+    "/provenance/{object_id}",
+    response_model=ProvenanceValidationResponse,
+    operation_id="getObjectProvenance",
+    summary="Get Object Provenance",
+    description="""
+    Get complete provenance history for a STIX object showing all extraction sources.
+    
+    Traces an object back through all reports and extractions that contributed
+    to its creation, including confidence scores and evidence.
+    """
+)
 async def get_object_provenance(
     object_id: str,
     neo4j_session=Depends(get_neo4j_session)
-) -> Dict[str, Any]:
+) -> ProvenanceValidationResponse:
     """
     Get complete provenance history for a STIX object.
     
@@ -327,20 +351,18 @@ async def get_object_provenance(
         import json
         x_bj_sources = [json.loads(s) for s in x_bj_sources]
     
-    return {
-        "object_id": object_id,
-        "object_type": node.get("type"),
-        "name": node.get("name"),
-        "provenance_sources": x_bj_sources,
-        "extracted_from": [
+    return ProvenanceValidationResponse(
+        object_id=object_id,
+        validation_history=[
             {
                 "report_id": s["report"]["stix_id"] if s["report"] else None,
-                "report_name": s["report"]["name"] if s["report"] else None,
+                "report_name": s["report"]["name"] if s["report"] else None, 
                 "confidence": s["confidence"],
                 "evidence": s["evidence"]
             }
             for s in sources if s["report"]
         ],
-        "source_collection": node.get("source_collection"),
-        "source_version": node.get("source_version")
-    }
+        current_status="validated" if sources else "unvalidated",
+        last_validated=None,  # Could be enhanced to track this
+        trace_id=str(__import__('uuid').uuid4())
+    )
