@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from bandjacks.services.api.settings import settings
-from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, llm, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift
+from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, llm, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs
 from bandjacks.services.api.middleware import TracingMiddleware
 from bandjacks.loaders.neo4j_ddl import ensure_ddl
 from bandjacks.loaders.opensearch_index import ensure_attack_nodes_index, ensure_attack_flows_index
@@ -161,3 +161,4 @@ app.include_router(simulation.router, prefix=settings.api_prefix)
 app.include_router(analytics.router, prefix=settings.api_prefix)
 app.include_router(provenance.router, prefix=settings.api_prefix)
 app.include_router(drift.router, prefix=settings.api_prefix)
+app.include_router(extract_runs.router, prefix=settings.api_prefix)

@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from bandjacks.llm.extractor import extract_with_llm
 from bandjacks.llm.stix_converter import llm_to_stix_bundle, apply_safeguards, validate_stix_ids
+from bandjacks.services.api.schemas import LLMToStixResponse
 from bandjacks.services.api.settings import settings
 from neo4j import GraphDatabase
 
@@ -56,7 +57,18 @@ def check_stix_id_exists(stix_id: str) -> bool:
         driver.close()
 
 
-@router.post("/llm/extract", response_model=LLMExtractResponse)
+@router.post(
+    "/llm/extract", 
+    response_model=LLMExtractResponse,
+    operation_id="extractWithLlm",
+    summary="Extract with LLM",
+    description="""
+    Extract TTP claims from documents using LLM with tool grounding.
+    
+    Uses LLM to analyze documents and extract ATT&CK technique mappings,
+    evidence spans, and entity relationships with confidence scores.
+    """
+)
 async def extract_with_llm_endpoint(request: LLMExtractRequest, dry_run: bool = Query(False)):
     """
     Extract TTP claims from document using LLM with tool grounding.
@@ -124,12 +136,23 @@ async def extract_with_llm_endpoint(request: LLMExtractRequest, dry_run: bool = 
         raise HTTPException(status_code=500, detail=f"LLM extraction failed: {str(e)}")
 
 
-@router.post("/llm/to-stix")
+@router.post(
+    "/llm/to-stix",
+    response_model=LLMToStixResponse,
+    operation_id="convertLlmToStix",
+    summary="Convert LLM Output to STIX",
+    description="""
+    Convert LLM extraction output to validated STIX 2.1 bundle.
+    
+    Converts LLM claims to STIX objects, validates IDs against KB,
+    and applies safeguards to prevent hallucination.
+    """
+)
 async def convert_to_stix(
     extraction: Dict[str, Any],
     validate_ids: bool = Query(True),
     apply_guards: bool = Query(True)
-):
+) -> LLMToStixResponse:
     """
     Convert LLM extraction output to STIX bundle.
     
@@ -154,7 +177,13 @@ async def convert_to_stix(
         if validate_ids:
             bundle = validate_stix_ids(bundle, check_stix_id_exists)
         
-        return bundle
+        return LLMToStixResponse(
+            bundle=bundle,
+            objects_created=len(bundle.get("objects", [])),
+            validation_status="validated" if validate_ids else "unvalidated",
+            warnings=[],
+            trace_id=str(__import__('uuid').uuid4())
+        )
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"STIX conversion failed: {str(e)}")

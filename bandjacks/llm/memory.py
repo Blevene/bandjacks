@@ -54,4 +54,14 @@ class WorkingMemory:
             "notes": self.notes,
         }
 
+    def add_entity(self, kind: str, name: str) -> None:
+        """Add a normalized entity name to the specified kind if not present."""
+        norm = (name or "").strip()
+        if not norm:
+            return
+        current = self.entities.get(kind, [])
+        if norm.lower() not in [e.lower() for e in current]:
+            current.append(name)
+            self.entities[kind] = current
+
 

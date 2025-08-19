@@ -210,7 +210,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.2.1" },
     { name = "fastapi", specifier = ">=0.116.1" },
     { name = "fuzzywuzzy", specifier = ">=0.18.0" },
-    { name = "google-adk", specifier = ">=1.11.0" },
+    { name = "google-adk", specifier = "==1.11.0" },
     { name = "google-auth", specifier = ">=2.40.3" },
     { name = "google-auth-httplib2", specifier = ">=0.2.0" },
     { name = "google-auth-oauthlib", specifier = ">=1.2.2" },

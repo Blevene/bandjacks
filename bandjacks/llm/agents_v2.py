@@ -17,6 +17,16 @@ from bandjacks.llm.flow_builder import FlowBuilder
 
 TECH_ID_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$")
 
+# Section-aware priors (used to weight spans from likely TTP sections)
+SECTIONS = [("ttp", 1.2), ("technique", 1.15), ("procedure", 1.15), ("analysis", 1.1)]
+
+def _section_weight(line: str) -> float:
+    lower = line.lower()
+    for key, w in SECTIONS:
+        if key in lower:
+            return w
+    return 1.0
+
 
 class SpanFinderAgent:
     """Find spans likely to contain TTPs using comprehensive behavioral patterns."""
@@ -140,7 +150,8 @@ class SpanFinderAgent:
                     "text": line.strip(),
                     "line_refs": [idx + 1],
                     "score": min(score, 1.0),
-                    "tactics": tactics
+                    "tactics": tactics,
+                    "prior": _section_weight(line)
                 })
         
         # Multi-line context aggregation for complex behaviors
@@ -170,7 +181,8 @@ class SpanFinderAgent:
                     "text": window_text[:500],  # Limit length
                     "line_refs": list(range(i+1, i+window_size+1)),
                     "score": 0.9,
-                    "tactics": ["multi-stage"]
+                    "tactics": ["multi-stage"],
+                    "prior": 1.05
                 })
     
     def _create_entity_spans(self, mem: WorkingMemory):
@@ -194,18 +206,27 @@ class SpanFinderAgent:
                         "text": context[:500],
                         "line_refs": list(range(context_start+1, context_end+1)),
                         "score": 0.8,
-                        "tactics": ["entity-action"]
+                        "tactics": ["entity-action"],
+                        "prior": 1.05
                     })
+
+
+LEX = ["powershell", "rundll32", "schtasks", "reg add", "wmic", "psexec", "lsass", "mimikatz", "wmi", "svc", "runkey"]
+
+def _hinted_query(text: str) -> str:
+    lower = text.lower()
+    hits = [h for h in LEX if h in lower]
+    return f"{text}\nHINTS: {', '.join(hits)}" if hits else text
 
 
 class RetrieverAgent:
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
         top_k = int(config.get("top_k", 8))
         for i, span in enumerate(mem.spans):
-            results = vector_search_ttx(span["text"], kb_types=["AttackPattern"], top_k=top_k)
+            results = vector_search_ttx(_hinted_query(span["text"]), kb_types=["AttackPattern"], top_k=top_k)
             mem.candidates.setdefault(i, [])
             seen = {c.get("external_id") for c in mem.candidates[i]}
-            for r in results[:top_k]:
+            for rank, r in enumerate(results[:top_k], start=1):
                 ext_id = r.get("external_id") or r.get("id")
                 if not ext_id or ext_id in seen:
                     continue
@@ -219,6 +240,7 @@ class RetrieverAgent:
                     "external_id": ext_id,
                     "name": r.get("name", ""),
                     "score": r.get("score", 0.0),
+                    "rank": rank,
                     "meta": meta,
                     "source": "retrieval",
                 })
@@ -363,6 +385,17 @@ class MapperAgent:
                 continue
             choice = resp.get("selected") or resp.get("proposed") or {}
             ev = resp.get("evidence") or {}
+            # Prefer sub-technique if quotes explicitly mention a sub-tech name
+            choice_id = choice.get("external_id", "")
+            if choice_id and "." not in choice_id:
+                subs = list_subtechniques(choice_id)
+                if isinstance(subs, list) and subs:
+                    for s in subs:
+                        nm = (s.get("name", "") or "").lower()
+                        if nm and any(nm in (q or "").lower() for q in ev.get("quotes", [])):
+                            choice["external_id"] = s.get("external_id", choice_id)
+                            choice["name"] = s.get("name", choice.get("name", ""))
+                            break
             if choice.get("external_id") and ev.get("quotes") and ev.get("line_refs"):
                 mem.claims.append(
                     {
@@ -386,41 +419,42 @@ class EvidenceVerifierAgent:
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
         valid = []
         min_quotes = config.get("min_quotes", 2)
-        
+        WINDOW = 2
+
         for claim in mem.claims:
             # Check technique resolution
             meta = resolve_technique_by_external_id(claim["external_id"])
             if not meta:
                 continue
-            
+
             # Verify quotes exist and are relevant
             valid_quotes = []
             for q in claim["quotes"]:
                 if not q or q.strip() == "":
                     continue
-                    
-                # Check exact match in document
-                if q not in mem.document_text:
-                    # Try case-insensitive match
-                    if q.lower() not in mem.document_text.lower():
-                        continue
-                
-                valid_quotes.append(q)
-            
-            # Verify line references
+                # Check present in document (case-insensitive allowed)
+                if (q in mem.document_text) or (q.lower() in mem.document_text.lower()):
+                    valid_quotes.append(q)
+
+            # Verify line references with a small window around each line
             valid_lines = []
             for ln in claim["line_refs"]:
-                if 1 <= ln <= len(mem.line_index):
+                if not (1 <= ln <= len(mem.line_index)):
+                    continue
+                start = max(0, ln - 1 - WINDOW)
+                end = min(len(mem.line_index), ln - 1 + WINDOW + 1)
+                window_text = "\n".join(mem.line_index[start:end])
+                if any((q in window_text or q.lower() in window_text.lower()) for q in valid_quotes):
                     valid_lines.append(ln)
-            
+
             # Score evidence quality
             evidence_score = self._score_evidence(
-                valid_quotes, 
+                valid_quotes,
                 valid_lines,
                 meta,
-                claim.get("confidence", 50)
+                claim.get("confidence", 50),
             )
-            
+
             # Accept if meets minimum quality
             if len(valid_quotes) >= min_quotes and evidence_score >= 40:
                 claim["quotes"] = valid_quotes
@@ -429,13 +463,12 @@ class EvidenceVerifierAgent:
                 claim["technique_meta"] = meta
                 valid.append(claim)
             elif len(valid_quotes) >= 1 and evidence_score >= 60:
-                # Accept with single quote if very high quality
                 claim["quotes"] = valid_quotes
                 claim["line_refs"] = valid_lines
                 claim["evidence_score"] = evidence_score
                 claim["technique_meta"] = meta
                 valid.append(claim)
-        
+
         mem.claims = valid
     
     def _score_evidence(self, quotes: list, lines: list, meta: dict, confidence: int) -> int:
@@ -480,31 +513,33 @@ class EvidenceVerifierAgent:
         return min(100, score)
 
 
-def _calibrate_confidence(base: int, quotes_count: int, consensus: int, evidence_score: int) -> int:
-    """Calibrate confidence based on evidence quality."""
-    # Start with base confidence
+def _calibrate_confidence(
+    base: int,
+    quotes_count: int,
+    consensus: int,
+    evidence_score: int,
+    rank: int | None = None,
+    prior: float = 1.0,
+) -> int:
+    """Calibrate confidence using evidence, consensus, candidate rank, and section prior."""
     score = base
-    
-    # Quote count bonus (up to 15 points)
     if quotes_count >= 5:
         score += 15
     elif quotes_count >= 3:
         score += 10
     elif quotes_count >= 2:
         score += 5
-    
-    # Consensus bonus (multiple claims for same technique)
     if consensus > 1:
         score += min(consensus - 1, 3) * 5
-    
-    # Evidence quality bonus (up to 20 points)
     if evidence_score >= 80:
         score += 20
     elif evidence_score >= 60:
         score += 10
     elif evidence_score >= 40:
         score += 5
-    
+    if rank is not None and rank <= 3:
+        score += 5
+    score = int(score * max(1.0, prior))
     return max(10, min(100, score))
 
 
@@ -547,13 +582,28 @@ class ConsolidatorAgent:
                     unique_evidence.append(ev)
                     seen.add(ev_lower)
             
+            # Derive prior and best candidate rank from contributing claims
+            prior_val = 1.0
+            best_rank_val = None
+            for claim in mem.claims:
+                if claim["external_id"] != tid:
+                    continue
+                if claim.get("span_idx", -1) >= 0:
+                    prior_val = max(prior_val, mem.spans[claim["span_idx"]].get("prior", 1.0))
+                    for c in mem.candidates.get(claim["span_idx"], []):
+                        if c.get("external_id") == tid and c.get("rank") is not None:
+                            cr = c["rank"]
+                            best_rank_val = cr if best_rank_val is None else min(best_rank_val, cr)
+
             mem.techniques[tid] = {
                 "name": e["name"],
                 "confidence": _calibrate_confidence(
-                    e["base_conf"], 
-                    len(unique_evidence), 
+                    e["base_conf"],
+                    len(unique_evidence),
                     e["claim_count"],
-                    int(avg_evidence_score)
+                    int(avg_evidence_score),
+                    best_rank_val or 3,
+                    prior_val,
                 ),
                 "evidence": unique_evidence[:5],  # Keep top 5 evidence
                 "line_refs": sorted(e["line_refs"]),

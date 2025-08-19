@@ -11,40 +11,71 @@ from bandjacks.llm.agents_v2 import (
     KillChainSuggestionsAgent,
     AssemblerAgent,
 )
+from bandjacks.llm.tracker import ExtractionTracker
 
 
-def run_agentic_v2(report_text: str, config: Dict[str, Any]) -> Dict[str, Any]:
-    """Run the ADK-aligned, retrieval-first agentic extraction pipeline with multi-pass."""
+def run_agentic_v2(report_text: str, config: Dict[str, Any], tracker: ExtractionTracker | None = None) -> Dict[str, Any]:
+    """Run the ADK-aligned, retrieval-first agentic extraction pipeline with transparency tracking.
+
+    If a tracker is provided, stage and progress will be recorded to that instance.
+    """
     mem = WorkingMemory(document_text=report_text, line_index=report_text.splitlines())
+    tracker = tracker or ExtractionTracker()
 
     # Pass 1: Initial extraction
+    tracker.set_stage("SpanFinder")
     SpanFinderAgent().run(mem, config)
+    tracker.set_spans_total(len(mem.spans))
+
+    tracker.set_stage("Retriever")
     RetrieverAgent().run(mem, config)
-    DiscoveryAgent().run(mem, config)
+
+    tracker.set_stage("Discovery")
+    if not config.get("disable_discovery", False):
+        DiscoveryAgent().run(mem, config)
+
+    tracker.set_stage("Mapper")
     MapperAgent().run(mem, config)
+    tracker.spans_processed = len({c.get("span_idx", -1) for c in mem.claims if c.get("span_idx", -1) >= 0})
+
+    tracker.set_stage("Verifier")
+    before = len(mem.claims)
     EvidenceVerifierAgent().run(mem, config)
+    tracker.counters["verified_claims"] = len(mem.claims)
+    tracker.log("info", "claims_verified", before=before, after=len(mem.claims))
+
+    tracker.set_stage("Consolidator")
     ConsolidatorAgent().run(mem, config)
-    
+    tracker.counters["techniques"] = len(mem.techniques)
+
     # Pass 2: Fill kill chain gaps
+    tracker.set_stage("Suggestions")
     KillChainSuggestionsAgent().run(mem, config)
     
-    # Check for missing tactics and run targeted extraction
+    # Optional targeted extraction for missing tactics (kept as-is, but tracked)
     if hasattr(mem, "inferred_suggestions"):
         missing_tactics = [s["tactic"] for s in mem.inferred_suggestions]
         if missing_tactics:
-            # Create targeted spans for missing tactics
+            tracker.log("info", "targeted_extraction_start", missing=len(missing_tactics))
             _run_targeted_extraction(mem, missing_tactics, config)
-            
-            # Re-run pipeline on new spans
-            start_span_idx = len(mem.spans) - len(missing_tactics) * 3  # Approximate new spans
+            tracker.set_spans_total(len(mem.spans))
+            tracker.set_stage("Retriever")
             RetrieverAgent().run(mem, config)
-            DiscoveryAgent().run(mem, config) 
+            tracker.set_stage("Discovery")
+            if not config.get("disable_discovery", False):
+                DiscoveryAgent().run(mem, config)
+            tracker.set_stage("Mapper")
             MapperAgent().run(mem, config)
+            tracker.set_stage("Verifier")
             EvidenceVerifierAgent().run(mem, config)
+            tracker.set_stage("Consolidator")
             ConsolidatorAgent().run(mem, config)
-    
+
     # Pass 3: Final assembly
-    return AssemblerAgent().run(mem, config)
+    tracker.set_stage("Assembler")
+    result = AssemblerAgent().run(mem, config)
+    result["metrics"] = tracker.snapshot()
+    return result
 
 
 def _run_targeted_extraction(mem: WorkingMemory, missing_tactics: list, config: Dict[str, Any]) -> None:
