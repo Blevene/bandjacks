@@ -26,7 +26,7 @@ class UpsertResult(BaseModel):
     updated: int = 0
     rejected: List[Dict[str, Any]] = Field(default_factory=list)
     provenance: UpsertProvenance
-    trace_id: Optional[str] = None
+    trace_id: Optional[str] = Field(None, description="Request trace ID for debugging")
 
 
 # Sprint 2 Schemas
@@ -62,6 +62,7 @@ class ProposalResponse(BaseModel):
     proposal_id: str
     bundle: Dict[str, Any]
     stats: ProposalStats
+    trace_id: Optional[str] = Field(None, description="Request trace ID")
 
 
 class ReviewDecision(BaseModel):
@@ -77,6 +78,7 @@ class ReviewResponse(BaseModel):
     status: str = "recorded"
     object_id: str
     ts: str
+    trace_id: Optional[str] = Field(None, description="Request trace ID")
 
 
 class TtxQuery(BaseModel):
@@ -91,6 +93,7 @@ class STIXObject(BaseModel):
     object: Dict[str, Any]
     provenance: Dict[str, Any]
     relationships: List[Dict[str, Any]] = Field(default_factory=list)
+    trace_id: Optional[str] = Field(None, description="Request trace ID")
 
 
 # Sprint 3 Flow Schemas
@@ -135,6 +138,7 @@ class FlowBuildResponse(BaseModel):
     stats: Dict[str, Any] = Field(..., description="Flow statistics")
     llm_synthesized: bool = Field(..., description="Whether LLM synthesis was used")
     created_at: str = Field(..., description="Creation timestamp")
+    trace_id: Optional[str] = Field(None, description="Request trace ID")
 
 
 class FlowSearchRequest(BaseModel):
@@ -161,6 +165,7 @@ class FlowSearchResponse(BaseModel):
     results: List[FlowSearchResult]
     query_type: Literal["flow_similarity", "text_search"]
     total_results: int
+    trace_id: Optional[str] = Field(None, description="Request trace ID")
 
 
 class FlowGetResponse(BaseModel):
@@ -175,3 +180,66 @@ class FlowGetResponse(BaseModel):
     steps: List[FlowStep]
     edges: List[FlowEdge]
     metadata: Dict[str, Any]
+    trace_id: Optional[str] = Field(None, description="Request trace ID")
+
+
+# Granular Feedback Schemas (1-5 scale)
+class QualityScore(BaseModel):
+    """Granular quality score for an object or result."""
+    object_id: str = Field(..., description="STIX ID or object identifier")
+    accuracy: int = Field(..., ge=1, le=5, description="Accuracy score (1=poor, 5=excellent)")
+    relevance: int = Field(..., ge=1, le=5, description="Relevance score (1=irrelevant, 5=highly relevant)")
+    completeness: int = Field(..., ge=1, le=5, description="Completeness score (1=incomplete, 5=comprehensive)")
+    clarity: int = Field(..., ge=1, le=5, description="Clarity score (1=unclear, 5=very clear)")
+    overall: Optional[int] = Field(None, ge=1, le=5, description="Overall score (optional, computed if not provided)")
+    comment: Optional[str] = Field(None, description="Optional comment explaining the scores")
+    analyst_id: Optional[str] = Field(None, description="Analyst providing the feedback")
+
+
+class QualityFeedback(BaseModel):
+    """Submit quality feedback with granular scoring."""
+    scores: List[QualityScore] = Field(..., description="Quality scores for one or more objects")
+    context: Optional[str] = Field(None, description="Context for the feedback (e.g., query_id, flow_id)")
+    session_id: Optional[str] = Field(None, description="Session identifier for grouping feedback")
+
+
+class QualityFeedbackResponse(BaseModel):
+    """Response from quality feedback submission."""
+    feedback_id: str
+    scores_recorded: int
+    average_overall: float
+    message: str
+    trace_id: Optional[str] = Field(None, description="Request trace ID")
+
+
+# Drift Detection Schemas
+class DriftMetric(BaseModel):
+    """Individual drift metric."""
+    metric_name: str = Field(..., description="Name of the metric")
+    current_value: float = Field(..., description="Current metric value")
+    baseline_value: float = Field(..., description="Baseline metric value")
+    drift_percentage: float = Field(..., description="Percentage drift from baseline")
+    is_significant: bool = Field(..., description="Whether drift is statistically significant")
+    threshold: float = Field(..., description="Significance threshold")
+    timestamp: str = Field(..., description="When the metric was measured")
+
+
+class DriftAlert(BaseModel):
+    """Alert for significant drift detection."""
+    alert_id: str = Field(..., description="Unique alert identifier")
+    alert_type: Literal["version", "schema", "performance", "quality"] = Field(..., description="Type of drift")
+    severity: Literal["low", "medium", "high", "critical"] = Field(..., description="Alert severity")
+    description: str = Field(..., description="Human-readable alert description")
+    metrics: List[DriftMetric] = Field(..., description="Metrics involved in the drift")
+    recommended_action: str = Field(..., description="Suggested remediation")
+    created_at: str = Field(..., description="When alert was created")
+    acknowledged: bool = Field(False, description="Whether alert has been acknowledged")
+
+
+class DriftStatus(BaseModel):
+    """Overall drift status."""
+    status: Literal["stable", "minor_drift", "major_drift", "critical"] = Field(..., description="Overall status")
+    active_alerts: int = Field(..., description="Number of active alerts")
+    last_analysis: str = Field(..., description="Last drift analysis timestamp")
+    metrics: Dict[str, DriftMetric] = Field(..., description="Current drift metrics by category")
+    trace_id: Optional[str] = Field(None, description="Request trace ID")

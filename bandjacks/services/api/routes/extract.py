@@ -26,7 +26,7 @@ class ExtractionRequest(BaseModel):
     source_type: str = Field("report", description="Type of source (report, blog, pdf, etc)")
     content: str = Field(..., description="Text content to extract from")
     title: Optional[str] = Field(None, description="Optional title for the report")
-    method: str = Field("llm", description="Extraction method (llm, vector, hybrid)")
+    method: str = Field("llm", description="Extraction method (llm, agentic_v2, vector, hybrid)")
     confidence_threshold: float = Field(50.0, description="Minimum confidence for extraction")
     auto_ingest: bool = Field(False, description="Automatically ingest to graph if True")
 
@@ -86,15 +86,88 @@ async def extract_report(
     )
     
     try:
-        # Initialize LLM extractor
+        # Agentic v2 path
+        if request.method == "agentic_v2":
+            from bandjacks.llm.agentic_v2 import run_agentic_v2
+
+            neo4j_uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+            neo4j_user = os.getenv("NEO4J_USER", "neo4j")
+            neo4j_password = os.getenv("NEO4J_PASSWORD", "password")
+
+            result = run_agentic_v2(
+                report_text=request.content,
+                config={
+                    "neo4j_uri": neo4j_uri,
+                    "neo4j_user": neo4j_user,
+                    "neo4j_password": neo4j_password,
+                    "model": os.getenv("PRIMARY_LLM", "gemini-2.0-flash"),
+                    "title": request.title,
+                    "url": request.source_url,
+                },
+            )
+
+            bundle = result["bundle"]
+            stats = {
+                "claims_extracted": len(result.get("techniques", {})),
+                "stix_objects_created": len(bundle.get("objects", [])),
+                "mode": "agentic_v2",
+            }
+
+            provenance_tracker.complete_extraction(extraction_id, stats)
+
+            ingested = False
+            if request.auto_ingest and bundle.get("objects"):
+                filtered_objects = [
+                    obj for obj in bundle["objects"] if obj.get("x_bj_confidence", 100) >= request.confidence_threshold
+                ]
+                if filtered_objects:
+                    bundle["objects"] = filtered_objects
+                    inserted, updated = upsert_to_graph_and_vectors(
+                        bundle=bundle,
+                        collection="extracted",
+                        version=datetime.utcnow().strftime("%Y%m%d"),
+                        neo4j_uri=neo4j_uri,
+                        neo4j_user=neo4j_user,
+                        neo4j_password=neo4j_password,
+                        os_url=os.getenv("OPENSEARCH_URL", "http://localhost:9200"),
+                        os_index="bandjacks_attack_nodes-v1",
+                        provenance={
+                            "id": extraction_id,
+                            "method": request.method,
+                            "model": os.getenv("PRIMARY_LLM", "gemini-2.0-flash"),
+                            "timestamp": datetime.utcnow().isoformat() + "Z",
+                        },
+                    )
+                    stats["objects_inserted"] = inserted
+                    stats["objects_updated"] = updated
+                    ingested = True
+
+            return ExtractionResponse(
+                extraction_id=extraction_id,
+                source_id=source_id,
+                bundle=bundle,
+                stats=stats,
+                provenance=provenance_tracker.create_stix_provenance_extension(
+                    object_id=bundle["id"],
+                    source_id=source_id,
+                    extraction_id=extraction_id,
+                    confidence=stats.get("avg_confidence", 50),
+                    evidence=f"Agentic v2 extraction",
+                    line_refs=[],
+                ),
+                ingested=ingested,
+            )
+
+        # Initialize LLM extractor (legacy)
         extractor = LLMExtractor(model=os.getenv("PRIMARY_LLM", "gemini/gemini-2.0-flash-exp"))
         
         # Extract from document - this handles chunking internally
+        # Use reasonable chunk size that LLM can process effectively
         extraction_output = extractor.extract_document(
             source_id=source_id,
             source_type=request.source_type,
             inline_text=request.content,
-            chunking_params={"target_chars": 1200, "overlap": 150}
+            chunking_params={"target_chars": 2500, "overlap": 300}
         )
         
         # Aggregate results from all chunks
@@ -155,7 +228,7 @@ async def extract_report(
         
         # Calculate statistics
         stats = {
-            "chunks_processed": len(chunks),
+            "chunks_processed": len(extraction_output.get("chunks", [])),
             "claims_extracted": len(all_claims),
             "entities_found": {k: len(v) for k, v in all_entities.items()},
             "stix_objects_created": len(bundle.get("objects", [])),
@@ -208,7 +281,7 @@ async def extract_report(
                 source_id=source_id,
                 extraction_id=extraction_id,
                 confidence=stats.get("avg_confidence", 50),
-                evidence=f"Extracted from {len(chunks)} chunks",
+                evidence=f"Extracted from {len(extraction_output.get('chunks', []))} chunks",
                 line_refs=[]
             ),
             ingested=ingested

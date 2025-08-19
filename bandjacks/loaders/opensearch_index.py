@@ -155,6 +155,8 @@ def ensure_attack_nodes_index(opensearch_url: str, index_name: str):
                 "kb_type": {"type": "keyword"},
                 "attack_version": {"type": "keyword"},
                 "revoked": {"type": "boolean"},
+                "external_id": {"type": "keyword"},  # T-number, M-number, etc.
+                "name": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},  # Name for display
                 "text": {"type": "text"},
                 "embedding": {
                     "type": "knn_vector",

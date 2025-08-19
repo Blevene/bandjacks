@@ -85,7 +85,7 @@ def ttx_search_kb(os_url: str, index: str, text: str, top_k: int = 10, kb_types:
                 }
             }
         },
-        "_source": ["id", "kb_type", "attack_version", "text", "name"]  # Include name field if available
+        "_source": ["id", "kb_type", "attack_version", "text", "name", "external_id"]  # Include name and external_id
     }
     
     resp = client.search(index=index, body=body)
@@ -104,6 +104,7 @@ def ttx_search_kb(os_url: str, index: str, text: str, top_k: int = 10, kb_types:
             "attack_version": src.get("attack_version"),
             "score": hit.get("_score", 0.0),
             "name": src.get("name"),  # Include actual name if available
+            "external_id": src.get("external_id"),  # Include T-number
             "name_or_snippet": src.get("name") or (src.get("text") or "").split("\n", 1)[0]
         })
         

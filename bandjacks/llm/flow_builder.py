@@ -553,6 +553,22 @@ class FlowBuilder:
         
         return "Unknown Attack Flow"
     
+    def _get_current_attack_version(self, session) -> str:
+        """Get the current ATT&CK version in use."""
+        result = session.run(
+            """
+            MATCH (n:AttackPattern)
+            WHERE n.source_version IS NOT NULL
+            RETURN DISTINCT n.source_version as version, n.source_collection as collection
+            ORDER BY n.modified DESC
+            LIMIT 1
+            """
+        )
+        record = result.single()
+        if record:
+            return f"{record['collection']}-{record['version']}"
+        return "unknown"
+    
     def persist_to_neo4j(self, flow_data: Dict[str, Any]) -> bool:
         """
         Persist flow to Neo4j.
@@ -566,6 +582,9 @@ class FlowBuilder:
         with self.driver.session() as session:
             try:
                 # Create AttackEpisode
+                # Get current ATT&CK version for version freeze
+                attack_version = self._get_current_attack_version(session)
+                
                 session.run(
                     """
                     CREATE (e:AttackEpisode {
@@ -575,7 +594,8 @@ class FlowBuilder:
                         source_id: $source_id,
                         created: datetime(),
                         strategy: $strategy,
-                        llm_synthesized: $llm_synthesized
+                        llm_synthesized: $llm_synthesized,
+                        created_with_release: $attack_version
                     })
                     """,
                     episode_id=flow_data["episode_id"],
@@ -583,7 +603,8 @@ class FlowBuilder:
                     name=flow_data["name"],
                     source_id=flow_data.get("source_id"),
                     strategy=flow_data.get("strategy", "sequential"),
-                    llm_synthesized=flow_data.get("llm_synthesized", False)
+                    llm_synthesized=flow_data.get("llm_synthesized", False),
+                    attack_version=attack_version
                 )
                 
                 # Create AttackActions and CONTAINS edges

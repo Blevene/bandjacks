@@ -280,6 +280,221 @@ Non-goals (v1): IOC lifecycle, blocking/enforcement, full SOC console.
 
 * `uncertainty_queue_size`, `al_processed_total`, `mapping_precision/recall` (sampled), `flow_edge_approval_rate`, `coverage_gap_rate`.
 
+
+### 5.5 STIX 2.1 Compliance
+
+**Goal:** Ensure all Bandjacks data handling is strictly aligned with STIX 2.1 and ATT&CK conventions.
+
+**Requirements**
+- **spec_version:** Every SDO/SRO we ingest or emit MUST include `"spec_version": "2.1"`. Loader rejects or patches if missing (and records a warning in provenance).
+- **External references (ATT&CK IDs):** For `attack-pattern` SDOs, preserve `external_references[*]` entries—especially where `source_name="mitre-attack"`—and extract `external_id` (e.g., `T1059.001`) into a fast-lookup property on the node.
+- **Sub-techniques:** When `x_mitre_is_subtechnique=true`, derive a graph edge  
+  `(:AttackPattern {Txxxx.yyy})-[:SUBTECHNIQUE_OF]->(:AttackPattern {Txxxx})`.
+- **Tactics parity:** Persist `kill_chain_phases` and also connect techniques to official tactic SDOs via  
+  `(:AttackPattern)-[:HAS_TACTIC]->(:Tactic {stix_id, shortname})`. Names/shortnames must match the phase names.
+- **Relationship validity:** For SROs we use (`uses`, `mitigates`, `detects`), validate `source_ref`/`target_ref` type combinations before merge; invalid pairs are rejected with reasons in the API response.
+- **Markings & authorship:** Preserve `created_by_ref`, `object_marking_refs`, and `granular_markings` on all SDO/SROs. Expose through `/v1/provenance/{stix_id}`.
+- **Domains & releases:** Stamp `{domain, collection, version}` on every node/edge provenance to avoid cross-domain ambiguity (enterprise/mobile/ICS) and to support multi-release lineage.
+
+**Tests**
+- Unit: reject objects missing `"spec_version": "2.1"`.
+- Integration: round-trip a sub-technique bundle and assert `SUBTECHNIQUE_OF` + `HAS_TACTIC` edges exist and are consistent with `kill_chain_phases`.
+
+
+### 5.6 Revoked & Deprecated Handling
+
+**Goal:** Safely retain historical knowledge while preventing stale data from polluting default analysis.
+
+**Requirements**
+- **Flags:** Ingest and persist `revoked` and `x_mitre_deprecated` flags on all objects.
+- **Default filtering:** All search/query endpoints MUST exclude revoked/deprecated by default; include via explicit flags (e.g., `?include_revoked=true&include_deprecated=true`).
+- **Provenance & lineage:** Even when revoked/deprecated, retain full provenance, relationships, and any replacement/merge pointers provided by the source collection.
+- **UI/API clarity:** `/v1/provenance/{stix_id}` MUST clearly show status (`revoked`, `deprecated`) and the ATT&CK release that introduced the change.
+
+**Tests**
+- Ingest a bundle containing a revoked technique. Default `/v1/query` omits it; enabling flags includes it; provenance shows status and source release.
+
+## 6. ATT&CK Flow Integration
+
+**Purpose:**  
+Adopt **ATT&CK Flow** as the canonical visualization and simulation framework for modeling adversary behavior, attack paths, and detection coverage. This ensures Bandjacks outputs align with the Center for Threat-Informed Defense’s standardized language for attack representation and can interoperate with existing community tools.
+
+---
+
+### 6.1 Scope
+
+- ATT&CK Flow will be the **default visualization standard** for:
+  - Attack chains and adversary behavior narratives.
+  - Simulated attack paths derived from analytic coverage and telemetry.
+  - Correlated detection events, grouped into higher-order flows.
+- Supports both **static representation** of ATT&CK techniques and **dynamic simulation** of progression through kill chain phases.
+
+---
+
+### 6.2 Data Model
+
+**Language Basis:**  
+Leverage the [Attack Flow Language 2.0](https://center-for-threat-informed-defense.github.io/attack-flow/language/) and schema ([attack-flow-schema-2.0.0.json](https://github.com/center-for-threat-informed-defense/attack-flow/blob/main/stix/attack-flow-schema-2.0.0.json)).
+
+**Core Elements (per schema):**
+- **Flow** (`type="attack-flow"`) – Root container for a graph of events, conditions, and techniques.
+- **Step (Action/AttackPattern)** – Each adversary behavior (aligned with ATT&CK `attack-pattern` SDOs).
+- **Flow Objects:**
+  - **action**: atomic adversary activity (maps to ATT&CK technique/sub-technique).
+  - **operator**: control structures (AND/OR, sequencing).
+  - **asset**: entities targeted or affected (systems, accounts, processes).
+  - **condition**: preconditions and dependencies.
+- **Relationships:** Directed edges between steps, conditions, and outcomes; structured as `next`, `requires`, or `causes`.
+
+**Neo4j Mapping:**
+- `(:AttackFlow)-[:HAS_STEP]->(:Action|:Condition|:Asset)`  
+- `(:Action)-[:CORRESPONDS_TO]->(:AttackPattern)`  
+- `(:Action)-[:NEXT]->(:Action)` (ordered edges representing execution order).  
+- Store the **raw JSON** as provenance alongside the normalized graph.
+
+---
+
+### 6.3 Ingestion & Generation
+
+- **Ingest:**  
+  - Accept Attack Flow JSON files directly (schema 2.0).  
+  - Validate against official schema before normalization.  
+  - Retain original JSON in object storage for traceability.  
+
+- **Generate:**  
+  - APIs must support converting Bandjacks attack-path reasoning into a valid Attack Flow JSON document.  
+  - Generated flows should be exportable for use with MITRE’s open-source visualization tools.  
+
+---
+
+### 6.4 Visualization & Simulation
+
+- **Visualization:**  
+  - Embed MITRE’s [Attack Flow Viewer](https://center-for-threat-informed-defense.github.io/attack-flow/) or equivalent rendering library in the UI.  
+  - Graph API endpoints must produce ATT&CK Flow-compliant JSON to drive visual rendering.  
+
+- **Simulation:**  
+  - Use flows to **simulate adversary progression**: apply conditional logic (`requires`, `causes`) to evaluate attack feasibility.  
+  - Integration with detection strategies (Section 7) allows flows to highlight where detections exist vs. where coverage gaps remain.  
+  - Analysts can play forward or backward through a flow to explore potential outcomes.  
+
+---
+
+### 6.5 APIs
+
+- **POST `/v1/attackflow/ingest`**  
+  Body: Attack Flow JSON (schema 2.0)  
+  Validates, stores, and normalizes into graph. Returns `{ inserted, rejected[], warnings[] }`.  
+
+- **GET `/v1/attackflow/{id}`**  
+  Returns normalized graph and original JSON.  
+
+- **GET `/v1/attackflow/render/{id}`**  
+  Returns a ready-to-render JSON structure for the Attack Flow Viewer.  
+
+- **POST `/v1/attackflow/generate`**  
+  Input: `{ techniques: [...], conditions: [...], sequence: [...] }`  
+  Output: valid Attack Flow JSON representing the scenario.  
+
+---
+
+### 6.6 Acceptance Criteria
+
+- Ingest MITRE-provided Attack Flow example → stored as graph nodes and edges; retrievable as original JSON.  
+- Generate attack flow from a test intrusion scenario (`T1003 -> T1059 -> T1071`) → exported JSON validates against schema.  
+- Visualization endpoint outputs JSON compatible with MITRE’s Attack Flow Viewer.  
+- Simulation demonstrates flow branching based on conditions (e.g., credential theft → lateral movement).  
+
+
+## 7. Detection Strategies & Analytics
+
+**Purpose:** Model how to detect attacker behaviors (TTPs) using MITRE’s new detection SDOs and relationships so analysts can reason about coverage, tuning, and gaps.
+
+### 7.1 Scope
+
+Support three new SDOs and a new relationship type:
+- `x-mitre-detection-strategy` (Detection Strategy, SDO)
+- `x-mitre-analytic` (Analytic, SDO)
+- `x-mitre-log-source` (Log Source, SDO)
+- `relationship.type="detects"` from Detection Strategy → Attack Pattern
+
+### 7.2 Data Model (Graph)
+
+**Nodes**
+- **DetectionStrategy**: `stix_id`, `name`, `description`, `x_mitre_attack_spec_version`, `x_mitre_version`, `x_mitre_domains`, `revoked`, `x_mitre_deprecated`, `external_references[]`, `object_marking_refs[]`
+- **Analytic**: `stix_id`, `name`, `platforms[]`, `x_mitre_detects` (free text), `x_mitre_mutable_elements[]` (e.g., `TimeWindow`, `Threshold`, `Lookback`), `x_mitre_domains`, `revoked`, `x_mitre_deprecated`
+- **LogSource**: `stix_id`, `name`, `x_mitre_log_source_permutations[]` (each with `name`, `channel`, optional `data_component_name`)
+
+**Edges**
+- `(:DetectionStrategy)-[:DETECTS {attack_spec_version}]->(:AttackPattern)`
+- `(:DetectionStrategy)-[:HAS_ANALYTIC]->(:Analytic)` *(derived from strategy’s `x_mitre_analytics[]`)*
+- `(:Analytic)-[:USES_LOG_SOURCE {keys: list<string>}]->(:LogSource)` *(from analytic’s `x_mitre_log_sources[]` entries)*
+- *(Optional convenience)* `(:Analytic)-[:SUPPORTS_DETECTION_OF]->(:AttackPattern)` (propagated via connected strategy)
+
+**Constraints**
+- Unique `(domain, stix_id)` per label.
+- Default queries exclude `revoked`/`deprecated` unless toggled.
+
+### 7.3 Ingestion & Validation
+
+**Input:** STIX 2.1 bundles containing the detection SDOs and `detects` SROs.
+
+**Validation Rules**
+- All objects: `spec_version == "2.1"`; carry markings/refs.
+- **DetectionStrategy**: MUST include at least one analytic in `x_mitre_analytics` and an `external_references` entry with a DET external_id if provided by source.
+- **Analytic**: MUST include `x_mitre_detects`, ≥1 `x_mitre_log_sources`, ≥1 `x_mitre_mutable_elements`.
+- **LogSource**: MUST include ≥1 `x_mitre_log_source_permutations`.
+- **Relationships**: allow only `relationship.type="detects"` from DetectionStrategy → AttackPattern at ingest; reject others with an explicit error payload.
+
+**Upsert Behavior**
+- Merge by `stix_id`; set provenance `{collection, version, domain}`.
+- Construct `HAS_ANALYTIC` and `USES_LOG_SOURCE` edges from SDO arrays.
+- Preserve all `x_mitre_*` fields verbatim for transparency.
+
+### 7.4 Embeddings & Search
+
+**Indexes**
+- `bandjacks_detection_strategies-v1`: vector over strategy name + summary of linked analytics.
+- `bandjacks_analytics-v1`: vector over `x_mitre_detects` + platforms + mutable elements.
+- `bandjacks_log_sources-v1`: vector over log source name + permutations.
+
+**Hybrid Search**
+- `/v1/query` and `/v1/search/ttx` MAY return mixed results (techniques + strategies + analytics) unless filtered via `kb_types=[...]`.
+
+### 7.5 APIs
+
+- **GET `/v1/detections/strategies`**  
+  Params: `technique_id`, `platform`, `include_revoked`, `include_deprecated`  
+  Returns: strategies detecting the technique, each with linked analytics and log sources.
+
+- **GET `/v1/detections/analytics/{id}`**  
+  Returns: analytic details, log sources, and techniques it supports (via strategies).
+
+- **POST `/v1/detections/ingest`**  
+  Body: STIX 2.1 bundle; Response: `{ inserted, updated, rejected[], warnings[] }`.  
+  Validates per §7.3; rejects non-conformant objects with reasons.
+
+- **GET `/v1/coverage/technique/{technique_id}`**  
+  Returns: detection coverage snapshot: strategies, analytics by platform, and **gaps** (expected log sources missing).
+
+- **POST `/v1/feedback/analytic/{id}`**  
+  Body: `{ score: 1..5, labels: ["effective","noisy","needs-tuning"], overrides: { <MutableElementName>: "<value>" } }`  
+  Persists environment-specific overrides of mutable elements and provenance of the change.
+
+### 7.6 Feedback, Tuning & Governance
+
+- Analysts can apply per-environment overrides for `x_mitre_mutable_elements` (e.g., widen TimeWindow) which are stored on  
+  `(:Analytic)-[:OVERRIDDEN_IN {env_id, element, value, ts, user}]->(:Environment)` *(logical entity)*.
+- Conflicting feedback is reconciled via weighted consensus (per analyst role) in reporting; raw decisions remain in provenance.
+
+### 7.7 Acceptance Criteria
+
+- Ingest MITRE sample detection bundle: nodes/edges created per §7.2; `DETECTS` edges connect to existing techniques; revoked/deprecated excluded by default.
+- Query “LSASS detection Windows” returns at least one Detection Strategy + Windows Analytic tied to `T1003`.
+- Coverage endpoint for `T1003` lists detection strategies, analytics, and any missing log sources.
+- Feedback API stores an override on an analytic’s mutable element and the override appears in subsequent reads.
+- Provenance endpoint shows markings, creator, ATT&CK/ADM versions for a Detection Strategy.
+
 ---
 
 # Cross-cutting Specifications

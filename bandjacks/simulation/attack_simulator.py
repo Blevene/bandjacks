@@ -17,7 +17,11 @@ class SimulationPath:
     probabilities: List[float]
     cumulative_probability: float
     total_cost: float
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: Dict[str, Any]
+    confidence_score: float = 0.0
+    warnings: List[str] = field(default_factory=list)
+    evidence_counts: List[int] = field(default_factory=list)
+    is_hypothetical: bool = False
 
 
 @dataclass
@@ -1023,6 +1027,84 @@ class AttackSimulator:
         
         return (f"Group uses {len(techniques)} techniques across "
                 f"{len(tactics)} tactics with {len(sequences)} common sequences")
+    
+    def _get_evidence_counts(self, session, techniques: List[str]) -> List[int]:
+        """Get evidence counts for techniques in a path."""
+        evidence_counts = []
+        
+        for i in range(len(techniques) - 1):
+            result = session.run(
+                """
+                MATCH (a1:AttackAction {attack_pattern_ref: $from_tech})-[n:NEXT]->(a2:AttackAction {attack_pattern_ref: $to_tech})
+                RETURN count(n) as evidence_count
+                """,
+                from_tech=techniques[i],
+                to_tech=techniques[i + 1]
+            )
+            
+            record = result.single()
+            evidence_counts.append(record["evidence_count"] if record else 0)
+        
+        return evidence_counts
+    
+    def _calculate_path_confidence(
+        self,
+        techniques: List[str],
+        probabilities: List[float],
+        evidence_counts: List[int],
+        cumulative_prob: float
+    ) -> Tuple[float, List[str]]:
+        """Calculate confidence score and generate warnings for a path."""
+        warnings = []
+        
+        # Base confidence from cumulative probability
+        confidence = cumulative_prob
+        
+        # Adjust for evidence counts
+        if evidence_counts:
+            avg_evidence = sum(evidence_counts) / len(evidence_counts)
+            if avg_evidence < 2:
+                confidence *= 0.7
+                warnings.append(f"Low evidence support (avg: {avg_evidence:.1f} observations per transition)")
+            elif avg_evidence < 5:
+                confidence *= 0.85
+                warnings.append(f"Limited evidence support (avg: {avg_evidence:.1f} observations per transition)")
+        
+        # Check for very low probability transitions
+        low_prob_transitions = [i for i, p in enumerate(probabilities) if p < 0.2]
+        if low_prob_transitions:
+            warnings.append(f"{len(low_prob_transitions)} transitions have probability < 0.2")
+            confidence *= 0.8
+        
+        # Path length penalty for very long paths
+        if len(techniques) > 7:
+            warnings.append(f"Long attack path ({len(techniques)} steps) may be less realistic")
+            confidence *= 0.9
+        
+        # Overall confidence check
+        if confidence < 0.4:
+            warnings.append("LOW CONFIDENCE: This path is hypothetical and may not be realistic")
+        elif confidence < 0.6:
+            warnings.append("MEDIUM CONFIDENCE: This path has limited supporting evidence")
+        
+        return confidence, warnings
+    
+    def _add_confidence_to_path(self, session, path: SimulationPath) -> SimulationPath:
+        """Add confidence scoring and warnings to an existing path."""
+        evidence_counts = self._get_evidence_counts(session, path.techniques)
+        confidence, warnings = self._calculate_path_confidence(
+            path.techniques,
+            path.probabilities,
+            evidence_counts,
+            path.cumulative_probability
+        )
+        
+        path.confidence_score = confidence
+        path.warnings = warnings
+        path.evidence_counts = evidence_counts
+        path.is_hypothetical = confidence < 0.4
+        
+        return path
     
     def close(self):
         """Close Neo4j connection."""
