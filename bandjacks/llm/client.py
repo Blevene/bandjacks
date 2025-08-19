@@ -23,7 +23,7 @@ class LLMClient:
         self.model = os.getenv("LITELLM_MODEL", "gpt-4o-mini")
         self.timeout = int(os.getenv("LITELLM_TIMEOUT_MS", "60000")) / 1000
         self.temperature = float(os.getenv("LITELLM_TEMPERATURE", "0.3"))  # Lower for more consistent output
-        self.max_tokens = int(os.getenv("LITELLM_MAX_TOKENS", "2000"))  # Increased for comprehensive extraction
+        self.max_tokens = int(os.getenv("LITELLM_MAX_TOKENS", "8000"))  # Increased for comprehensive extraction
         
         # Prioritize Gemini as primary model
         if self.google_api_key and self.primary_llm == "gemini":
@@ -141,7 +141,8 @@ def execute_tool_loop(
     messages: List[Dict[str, str]],
     tools: List[Dict[str, Any]],
     tool_functions: Dict[str, callable],
-    max_iterations: int = 2  # Reduced to 2 iterations for Gemini
+    max_iterations: int = 4,  # Allow more iterations for better exploration
+    model: Optional[str] = None  # Allow model override
 ) -> str:
     """
     Execute a tool-calling loop with the LLM.
@@ -151,11 +152,14 @@ def execute_tool_loop(
         tools: Tool definitions for the LLM
         tool_functions: Dict mapping tool names to Python functions
         max_iterations: Maximum tool-calling iterations
+        model: Optional model override (e.g., "gemini/gemini-2.5-flash")
         
     Returns:
         Final JSON response from the LLM
     """
     client = LLMClient()
+    if model:
+        client.model = model  # Override model if specified
     current_messages = messages.copy()
     
     for i in range(max_iterations):

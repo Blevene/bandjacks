@@ -1,12 +1,14 @@
 """Feedback collection and management endpoints."""
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from typing import Dict, Any, List, Optional, Literal
 from pydantic import BaseModel, Field
 from datetime import datetime
 import uuid
 import json
 from bandjacks.services.api.deps import get_neo4j_session
+from bandjacks.services.api.schemas import QualityScore, QualityFeedback, QualityFeedbackResponse
+from bandjacks.services.api.middleware import get_trace_id
 
 
 router = APIRouter(prefix="/feedback", tags=["feedback"])
@@ -61,6 +63,117 @@ class FeedbackResponse(BaseModel):
     feedback_id: str
     status: str
     message: str
+
+
+@router.post("/quality",
+    response_model=QualityFeedbackResponse,
+    summary="Submit Quality Feedback with Granular Scoring",
+    description="""
+    Submit quality feedback with 1-5 scale granular scoring.
+    
+    Scores multiple dimensions:
+    - **Accuracy**: How accurate is the information (1=poor, 5=excellent)
+    - **Relevance**: How relevant to the context (1=irrelevant, 5=highly relevant)
+    - **Completeness**: How complete is the information (1=incomplete, 5=comprehensive)
+    - **Clarity**: How clear and understandable (1=unclear, 5=very clear)
+    - **Overall**: Optional overall score (computed as average if not provided)
+    
+    This granular feedback enables:
+    - Fine-grained quality assessment
+    - Drift detection based on score trends
+    - Targeted improvements based on specific dimensions
+    - Better prioritization of review items
+    """,
+    responses={
+        200: {"description": "Quality feedback successfully recorded"},
+        400: {"description": "Invalid feedback data"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def submit_quality_feedback(
+    request: Request,
+    feedback: QualityFeedback,
+    neo4j_session=Depends(get_neo4j_session)
+) -> QualityFeedbackResponse:
+    feedback_id = f"quality-{uuid.uuid4().hex[:12]}"
+    trace_id = getattr(request.state, 'trace_id', None)
+    
+    scores_recorded = 0
+    total_overall = 0
+    
+    for score in feedback.scores:
+        # Calculate overall if not provided
+        if score.overall is None:
+            score.overall = round((score.accuracy + score.relevance + score.completeness + score.clarity) / 4)
+        
+        total_overall += score.overall
+        
+        # Create quality feedback node
+        query = """
+            CREATE (f:Feedback {
+                id: $id,
+                type: 'quality',
+                object_id: $object_id,
+                accuracy: $accuracy,
+                relevance: $relevance,
+                completeness: $completeness,
+                clarity: $clarity,
+                overall: $overall,
+                comment: $comment,
+                analyst_id: $analyst_id,
+                context: $context,
+                session_id: $session_id,
+                trace_id: $trace_id,
+                timestamp: datetime(),
+                status: 'recorded'
+            })
+            WITH f
+            MATCH (n {stix_id: $object_id})
+            CREATE (f)-[:ON]->(n)
+            WITH f, n
+            SET n.quality_score_count = coalesce(n.quality_score_count, 0) + 1,
+                n.quality_score_sum = coalesce(n.quality_score_sum, 0) + $overall,
+                n.quality_score_avg = (coalesce(n.quality_score_sum, 0) + $overall) / (coalesce(n.quality_score_count, 0) + 1),
+                n.quality_accuracy_avg = (coalesce(n.quality_accuracy_sum, 0) + $accuracy) / (coalesce(n.quality_score_count, 0) + 1),
+                n.quality_relevance_avg = (coalesce(n.quality_relevance_sum, 0) + $relevance) / (coalesce(n.quality_score_count, 0) + 1),
+                n.quality_completeness_avg = (coalesce(n.quality_completeness_sum, 0) + $completeness) / (coalesce(n.quality_score_count, 0) + 1),
+                n.quality_clarity_avg = (coalesce(n.quality_clarity_sum, 0) + $clarity) / (coalesce(n.quality_score_count, 0) + 1),
+                n.quality_accuracy_sum = coalesce(n.quality_accuracy_sum, 0) + $accuracy,
+                n.quality_relevance_sum = coalesce(n.quality_relevance_sum, 0) + $relevance,
+                n.quality_completeness_sum = coalesce(n.quality_completeness_sum, 0) + $completeness,
+                n.quality_clarity_sum = coalesce(n.quality_clarity_sum, 0) + $clarity,
+                n.last_quality_feedback = datetime()
+            RETURN f.id as id
+        """
+        
+        result = neo4j_session.run(
+            query,
+            id=f"{feedback_id}-{scores_recorded}",
+            object_id=score.object_id,
+            accuracy=score.accuracy,
+            relevance=score.relevance,
+            completeness=score.completeness,
+            clarity=score.clarity,
+            overall=score.overall,
+            comment=score.comment,
+            analyst_id=score.analyst_id or "anonymous",
+            context=feedback.context,
+            session_id=feedback.session_id,
+            trace_id=trace_id
+        )
+        
+        if result.single():
+            scores_recorded += 1
+    
+    average_overall = total_overall / len(feedback.scores) if feedback.scores else 0
+    
+    return QualityFeedbackResponse(
+        feedback_id=feedback_id,
+        scores_recorded=scores_recorded,
+        average_overall=round(average_overall, 2),
+        message=f"Recorded {scores_recorded} quality scores with average overall score of {average_overall:.1f}",
+        trace_id=trace_id
+    )
 
 
 @router.post("/relevance",

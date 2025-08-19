@@ -1,32 +1,85 @@
 """STIX loading routes."""
 
 from typing import Dict, Any
-from fastapi import APIRouter, HTTPException, Query, Body
+from fastapi import APIRouter, HTTPException, Query, Body, Request
 from bandjacks.services.api.settings import settings
 from bandjacks.services.api.schemas import UpsertResult
+from bandjacks.services.api.middleware import get_trace_id
 from bandjacks.loaders.attack_upsert import resolve_bundle, fetch_bundle, adm_validate, upsert_to_graph_and_vectors
 from bandjacks.loaders.provenance import make_provenance
 import uuid
 from datetime import datetime
+from neo4j import GraphDatabase
 
 router = APIRouter(tags=["stix"])
 
+
+def _get_current_version(collection: str) -> str | None:
+    """Get the current version of a collection from the database."""
+    driver = GraphDatabase.driver(
+        settings.neo4j_uri,
+        auth=(settings.neo4j_user, settings.neo4j_password)
+    )
+    
+    try:
+        with driver.session() as session:
+            result = session.run(
+                """
+                MATCH (n)
+                WHERE n.source_collection = $collection
+                AND n.source_version IS NOT NULL
+                WITH n.source_version as version, MAX(n.modified) as max_modified
+                RETURN version
+                ORDER BY max_modified DESC
+                LIMIT 1
+                """,
+                collection=collection
+            )
+            record = result.single()
+            return record["version"] if record else None
+    finally:
+        driver.close()
+
+
+def _is_downgrade(current_version: str, new_version: str) -> bool:
+    """Check if new_version is older than current_version."""
+    try:
+        # Parse version numbers (e.g., "14.1" -> (14, 1))
+        current_parts = tuple(int(x) for x in current_version.split('.'))
+        new_parts = tuple(int(x) for x in new_version.split('.'))
+        return new_parts < current_parts
+    except (ValueError, AttributeError):
+        # If we can't parse, be conservative and allow
+        return False
+
 @router.post("/stix/load/attack", response_model=UpsertResult)
 async def load_attack_collection(
+    request: Request,
     collection: str = Query(..., pattern="^(enterprise-attack|mobile-attack|ics-attack)$"),
     version: str | None = Query(None, description="e.g., 17.1 or 'latest'"),
     adm_strict: bool = Query(True),
-    force: bool = Query(False),
+    force: bool = Query(False, description="Force load even if version is older"),
 ):
     try:
         url, resolved_version, modified = resolve_bundle(settings.attack_index_url, collection, version)
+        
+        # Check for version downgrade
+        if not force:
+            current_version = _get_current_version(collection)
+            if current_version and _is_downgrade(current_version, resolved_version):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Version downgrade detected: current={current_version}, requested={resolved_version}. Use force=true to override."
+                )
+        
         bundle = fetch_bundle(url)
 
         ok, rejected, adm_sha = adm_validate(bundle, adm_strict, settings.adm_mode, settings.adm_spec_min)
         if not ok and adm_strict:
             return UpsertResult(
                 inserted=0, updated=0, rejected=rejected,
-                provenance=make_provenance(collection, resolved_version, modified, url, settings.adm_spec_min, adm_sha)
+                provenance=make_provenance(collection, resolved_version, modified, url, settings.adm_spec_min, adm_sha),
+                trace_id=getattr(request.state, 'trace_id', None)
             )
 
         inserted, updated = upsert_to_graph_and_vectors(
@@ -37,7 +90,8 @@ async def load_attack_collection(
 
         return UpsertResult(
             inserted=inserted, updated=updated, rejected=rejected,
-            provenance=make_provenance(collection, resolved_version, modified, url, settings.adm_spec_min, adm_sha)
+            provenance=make_provenance(collection, resolved_version, modified, url, settings.adm_spec_min, adm_sha),
+            trace_id=getattr(request.state, 'trace_id', None)
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Load failed: {e}")
@@ -45,6 +99,7 @@ async def load_attack_collection(
 
 @router.post("/stix/bundles", response_model=UpsertResult)
 async def ingest_bundle(
+    request: Request,
     bundle: Dict[str, Any] = Body(...),
     strict: bool = Query(True, description="Apply strict ADM validation")
 ):
@@ -82,7 +137,8 @@ async def ingest_bundle(
                     url=f"user:{bundle_id}",
                     adm_spec=settings.adm_spec_min,
                     adm_sha=adm_sha
-                )
+                ),
+                trace_id=getattr(request.state, 'trace_id', None)
             )
         
         # Upsert to graph and vectors
@@ -108,7 +164,8 @@ async def ingest_bundle(
                 url=f"user:{bundle_id}",
                 adm_spec=settings.adm_spec_min if strict else None,
                 adm_sha=adm_sha if strict else None
-            )
+            ),
+            trace_id=getattr(request.state, 'trace_id', None)
         )
         
     except ValueError as e:

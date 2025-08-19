@@ -65,7 +65,16 @@ def _ap_text(obj: dict, tactic_names: list[str]) -> str:
     desc = obj.get("description","")
     det  = obj.get("x_mitre_detection","")
     platforms = ", ".join(obj.get("x_mitre_platforms",[]) or obj.get("x_mitre_platforms",""))
-    return f"{name}\n{desc}\nDetection: {det}\nTactics: {', '.join(tactic_names)}\nPlatforms: {platforms}"
+    
+    # Extract external_id (T-number) for better search matching
+    external_id = ""
+    for ref in obj.get("external_references", []):
+        if ref.get("source_name") == "mitre-attack" and ref.get("external_id"):
+            external_id = ref["external_id"]
+            break
+    
+    # Include external_id in the embedding text
+    return f"{name} {external_id}\n{desc}\nDetection: {det}\nTactics: {', '.join(tactic_names)}\nPlatforms: {platforms}"
 
 def upsert_to_graph_and_vectors(
     bundle: dict, collection: str, version: str,
@@ -220,16 +229,26 @@ def upsert_to_graph_and_vectors(
             modified = obj.get("modified","")
             x_is_sub = obj.get("x_mitre_is_subtechnique", False)
             
+            # Extract external_id (T-number) from external_references
+            external_id = None
+            external_refs = obj.get("external_references", [])
+            for ref in external_refs:
+                if ref.get("source_name") == "mitre-attack" and ref.get("external_id"):
+                    external_id = ref["external_id"]
+                    break
+            
             res = s.run(
                 """
                 MERGE (n:AttackPattern {stix_id:$stix_id})
                 ON CREATE SET n.created_ts=timestamp()
                 SET n.type='attack-pattern', n.name=$name, n.description=$desc, n.revoked=$revoked,
                     n.x_mitre_is_subtechnique=$x_is_sub, n.modified=$modified,
+                    n.external_id=$external_id,
                     n.source_collection=$collection, n.source_version=$version, n.source_url=$url
                 """,
                 stix_id=stix_id, name=name, desc=desc, revoked=revoked, x_is_sub=x_is_sub,
-                modified=modified, collection=collection, version=version, url=f"ATT&CK:{collection}:{version}"
+                external_id=external_id, modified=modified, collection=collection, version=version, 
+                url=f"ATT&CK:{collection}:{version}"
             )
             ins, upd = _count_from_summary(res.consume())
             inserted += ins
@@ -279,6 +298,8 @@ def upsert_to_graph_and_vectors(
                             "kb_type": "AttackPattern",
                             "attack_version": version,
                             "revoked": revoked,
+                            "external_id": external_id,  # Include T-number for search
+                            "name": name,  # Include name for display
                             "text": txt,
                             "embedding": vec
                         }
@@ -351,15 +372,24 @@ def upsert_to_graph_and_vectors(
         # 4) Mitigations (course-of-action)
         mitigs = [o for o in objs if o.get("type") == MITIGATION]
         for obj in mitigs:
+            # Extract external_id from external_references for D3FEND mapping
+            external_id = None
+            for ref in obj.get("external_references", []):
+                if ref.get("source_name") == "mitre-attack" and ref.get("external_id"):
+                    external_id = ref.get("external_id")
+                    break
+            
             res = s.run(
                 """
                 MERGE (m:Mitigation {stix_id:$id})
                 ON CREATE SET m.created_ts=timestamp()
                 SET m.type='mitigation', m.name=$name, m.description=$desc, m.revoked=$revoked,
-                    m.modified=$modified, m.source_collection=$collection, m.source_version=$version, m.source_url=$url
+                    m.external_id=$external_id, m.modified=$modified, 
+                    m.source_collection=$collection, m.source_version=$version, m.source_url=$url
                 """,
                 id=obj["id"], name=obj.get("name",""), desc=obj.get("description",""),
-                revoked=obj.get("revoked", False), modified=obj.get("modified",""),
+                revoked=obj.get("revoked", False), external_id=external_id,
+                modified=obj.get("modified",""),
                 collection=collection, version=version, url=f"ATT&CK:{collection}:{version}"
             )
             ins, upd = _count_from_summary(res.consume())

@@ -1,0 +1,207 @@
+{
+  "malware": {
+    "name": "DarkCloud Stealer",
+    "type": "infostealer",
+    "description": "Information stealer malware that uses multiple obfuscation layers including ConfuserEx and VB6 payloads",
+    "aliases": ["DarkCloud"],
+    "capabilities": [
+      "credential-theft",
+      "data-exfiltration",
+      "process-injection"
+    ]
+  },
+  "expected_techniques": [
+    {
+      "technique_id": "T1566.001",
+      "name": "Spearphishing Attachment",
+      "tactic": "initial-access",
+      "description": "Phishing emails containing TAR, RAR, or 7Z archives"
+    },
+    {
+      "technique_id": "T1204.002",
+      "name": "User Execution: Malicious File",
+      "tactic": "execution",
+      "description": "User opens malicious archive attachment"
+    },
+    {
+      "technique_id": "T1059.007",
+      "name": "Command and Scripting Interpreter: JavaScript",
+      "tactic": "execution",
+      "description": "JavaScript file execution from archive"
+    },
+    {
+      "technique_id": "T1059.001",
+      "name": "Command and Scripting Interpreter: PowerShell",
+      "tactic": "execution",
+      "description": "PowerShell script downloads and executes next stage"
+    },
+    {
+      "technique_id": "T1027",
+      "name": "Obfuscated Files or Information",
+      "tactic": "defense-evasion",
+      "description": "ConfuserEx obfuscation, javascript-obfuscator"
+    },
+    {
+      "technique_id": "T1027.002",
+      "name": "Software Packing",
+      "tactic": "defense-evasion",
+      "description": "ConfuserEx packing of .NET executable"
+    },
+    {
+      "technique_id": "T1140",
+      "name": "Deobfuscate/Decode Files or Information",
+      "tactic": "defense-evasion",
+      "description": "3DES and RC4 decryption of payloads"
+    },
+    {
+      "technique_id": "T1055.012",
+      "name": "Process Injection: Process Hollowing",
+      "tactic": "defense-evasion",
+      "description": "Process hollowing into RegAsm.exe"
+    },
+    {
+      "technique_id": "T1071.001",
+      "name": "Application Layer Protocol: Web Protocols",
+      "tactic": "command-and-control",
+      "description": "Telegram API for C2 communication"
+    },
+    {
+      "technique_id": "T1105",
+      "name": "Ingress Tool Transfer",
+      "tactic": "command-and-control",
+      "description": "Downloads PowerShell script from open directory"
+    }
+  ],
+  "iocs": {
+    "file_hashes": [
+      {
+        "value": "bd8c0b0503741c17d75ce560a10eeeaa0cdd21dff323d9f1644c62b7b8eb43d9",
+        "type": "SHA256",
+        "description": "RAR archive"
+      },
+      {
+        "value": "9588c9a754574246d179c9fb05fea9dc5762c855a3a2a4823b402217f82a71c1",
+        "type": "SHA256",
+        "description": "TAR archive"
+      },
+      {
+        "value": "6b8a4c3d4a4a0a3aea50037744c5fec26a38d3fb6a596d006457f1c51bbc75c7",
+        "type": "SHA256",
+        "description": "JS file"
+      },
+      {
+        "value": "F6d9198bd707c49454b83687af926ccb8d13c7e43514f59eac1507467e8fb140",
+        "type": "SHA256",
+        "description": "PS1 file"
+      },
+      {
+        "value": "72d3de12a0aa8ce87a64a70807f0769c332816f27dcf8286b91e6819e2197aa8",
+        "type": "SHA256",
+        "description": "WSF file"
+      },
+      {
+        "value": "24552408d849799b2cac983d499b1f32c88c10f88319339d0eec00fb01bb19b4",
+        "type": "SHA256",
+        "description": "Initial ConfuserEx .NET EXE"
+      },
+      {
+        "value": "ce3a3e46ca65d779d687c7e58fb4a2eb784e5b1b4cebe33dbb2bf37cccb6f194",
+        "type": "SHA256",
+        "description": "Final DarkCloud VB6 EXE"
+      }
+    ],
+    "ip_addresses": [
+      {
+        "value": "176.65.142.190",
+        "description": "Malware distribution server"
+      }
+    ],
+    "urls": [
+      {
+        "value": "hxxp[:]//176.65.142[.]190/BLACKYY/newbag.ps1",
+        "description": "PowerShell download URL"
+      },
+      {
+        "value": "hxxps[:]//api.telegram[.]org/bot7684022823:AAFw0jHSub4qs6N7yC88nUOR8ovPrCdIrs/sendMessage",
+        "description": "Telegram C2 URL"
+      }
+    ],
+    "file_paths": [
+      {
+        "value": "C:\\Temp",
+        "description": "Temporary file drop location"
+      },
+      {
+        "value": "%tmp%",
+        "description": "Malware execution directory"
+      }
+    ]
+  },
+  "tools": [
+    {
+      "name": "ConfuserEx",
+      "type": "obfuscator",
+      "description": "Open-source .NET protector used for obfuscation"
+    },
+    {
+      "name": "javascript-obfuscator",
+      "type": "obfuscator",
+      "description": "Tool used to obfuscate JavaScript downloaders"
+    },
+    {
+      "name": "AutoIt",
+      "type": "scripting",
+      "description": "Previously used in DarkCloud campaigns"
+    }
+  ],
+  "infection_chain": [
+    {
+      "step": 1,
+      "action": "Phishing email delivery",
+      "description": "Email with malicious archive attachment (TAR/RAR/7Z)"
+    },
+    {
+      "step": 2,
+      "action": "User opens attachment",
+      "description": "User extracts and executes JS/WSF file"
+    },
+    {
+      "step": 3,
+      "action": "JavaScript execution",
+      "description": "Obfuscated JS downloads PowerShell script"
+    },
+    {
+      "step": 4,
+      "action": "PowerShell stage",
+      "description": "PS1 script with AES/Base64 encoding drops EXE"
+    },
+    {
+      "step": 5,
+      "action": "ConfuserEx unpacking",
+      "description": ".NET executable with anti-tampering protection"
+    },
+    {
+      "step": 6,
+      "action": "Process hollowing",
+      "description": "Injects VB6 payload into RegAsm.exe"
+    },
+    {
+      "step": 7,
+      "action": "DarkCloud execution",
+      "description": "Final payload steals credentials and data"
+    },
+    {
+      "step": 8,
+      "action": "C2 communication",
+      "description": "Exfiltrates data via Telegram API"
+    }
+  ],
+  "defensive_recommendations": [
+    "Email filtering for archive attachments",
+    "Script execution monitoring (JS, WSF, PS1)",
+    "Process injection detection",
+    "Network traffic filtering for Telegram API",
+    "Endpoint detection for ConfuserEx unpacking behavior",
+    "Registry monitoring for persistence mechanisms"
+  ]
+}

@@ -71,7 +71,7 @@ def graph_lookup(stix_id: str) -> Optional[Dict[str, Any]]:
             result = session.run("""
                 MATCH (n {stix_id: $stix_id})
                 RETURN n.stix_id as stix_id, n.name as name, n.description as description,
-                       n.type as type, n.x_mitre_platforms as platforms,
+                       n.type as type, n.external_id as external_id, n.x_mitre_platforms as platforms,
                        labels(n) as labels
                 LIMIT 1
             """, stix_id=stix_id)
@@ -81,6 +81,7 @@ def graph_lookup(stix_id: str) -> Optional[Dict[str, Any]]:
                 return {
                     "stix_id": record["stix_id"],
                     "name": record["name"],
+                    "external_id": record["external_id"],
                     "description": record["description"],
                     "type": record["type"],
                     "platforms": record["platforms"] or [],
@@ -184,6 +185,38 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
         {
             "type": "function",
             "function": {
+                "name": "resolve_technique_by_external_id",
+                "description": "Resolve ATT&CK technique meta by external_id (e.g., T1059.001)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "external_id": {
+                            "type": "string",
+                            "description": "ATT&CK external_id (Txxxx or Txxxx.xxx)"
+                        }
+                    },
+                    "required": ["external_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "list_techniques_for_tactic",
+                "description": "List ATT&CK techniques for a tactic shortname (e.g., command-and-control)",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "tactic_shortname": {"type": "string"},
+                        "limit": {"type": "integer", "default": 10}
+                    },
+                    "required": ["tactic_shortname"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "graph_lookup",
                 "description": "Look up detailed information about a specific ATT&CK object by its STIX ID",
                 "parameters": {
@@ -221,6 +254,78 @@ def get_tool_functions() -> Dict[str, callable]:
     """
     return {
         "vector_search_ttx": vector_search_ttx,
+        "resolve_technique_by_external_id": resolve_technique_by_external_id,
+        "list_techniques_for_tactic": list_techniques_for_tactic,
         "graph_lookup": graph_lookup,
         "list_tactics": list_tactics
     }
+
+
+def resolve_technique_by_external_id(external_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Resolve ATT&CK technique metadata from external_id (Txxxx[.xxx]).
+    Returns dict with stix_id, name, external_id, tactic, or None if not found.
+    """
+    try:
+        driver = GraphDatabase.driver(
+            settings.neo4j_uri,
+            auth=(settings.neo4j_user, settings.neo4j_password)
+        )
+        with driver.session() as session:
+            rec = session.run(
+                """
+                MATCH (ap:AttackPattern {external_id: $ext})
+                OPTIONAL MATCH (ap)-[:HAS_TACTIC]->(t:Tactic)
+                RETURN ap.stix_id AS stix_id, ap.name AS name, ap.external_id AS external_id, t.shortname AS tactic
+                LIMIT 1
+                """,
+                ext=external_id
+            ).single()
+            if rec:
+                return {
+                    "stix_id": rec["stix_id"],
+                    "name": rec["name"],
+                    "external_id": rec["external_id"],
+                    "tactic": rec["tactic"],
+                }
+            return None
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        try:
+            driver.close()
+        except Exception:
+            pass
+
+
+def list_techniques_for_tactic(tactic_shortname: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """
+    List ATT&CK techniques for a given tactic shortname.
+    """
+    try:
+        driver = GraphDatabase.driver(
+            settings.neo4j_uri,
+            auth=(settings.neo4j_user, settings.neo4j_password)
+        )
+        with driver.session() as session:
+            result = session.run(
+                """
+                MATCH (t:Tactic {shortname: $tac})<-[:HAS_TACTIC]-(ap:AttackPattern)
+                RETURN ap.external_id AS external_id, ap.name AS name, ap.stix_id AS stix_id
+                ORDER BY ap.name
+                LIMIT $limit
+                """,
+                tac=tactic_shortname,
+                limit=limit,
+            )
+            return [
+                {"external_id": r["external_id"], "name": r["name"], "stix_id": r["stix_id"]}
+                for r in result
+            ]
+    except Exception as e:
+        return [{"error": str(e)}]
+    finally:
+        try:
+            driver.close()
+        except Exception:
+            pass
