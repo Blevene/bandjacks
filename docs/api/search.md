@@ -15,17 +15,15 @@ Content-Type: application/json
 
 ```json
 {
-  "query_text": "The attacker sent emails with malicious PDF attachments to executives",
+  "text": "The attacker sent emails with malicious PDF attachments to executives",
   "kb_types": ["attack-pattern", "intrusion-set"],
-  "top_k": 5,
-  "confidence_min": 0.7,
-  "include_descriptions": true
+  "top_k": 5
 }
 ```
 
 ### Parameters
 
-- **query_text** (required): Natural language text to search for
+- **text** (required): Natural language text to search for
   - Min length: 10 characters
   - Max length: 5000 characters
 - **kb_types** (optional): Filter results by STIX object types
@@ -34,12 +32,7 @@ Content-Type: application/json
 - **top_k** (optional): Maximum number of results to return
   - Default: `5`
   - Range: 1-20
-- **confidence_min** (optional): Minimum confidence threshold (0.0-1.0)
-  - Default: `0.6`
-  - Lower values return more results but with less certainty
-- **include_descriptions** (optional): Include full descriptions in results
-  - Default: `false`
-  - Set to `true` for detailed results
+  
 
 ### Response
 
@@ -122,25 +115,23 @@ Content-Type: application/json
 curl -X POST http://localhost:8000/v1/search/ttx \
   -H "Content-Type: application/json" \
   -d '{
-    "query_text": "ransomware encryption of files"
+    "text": "ransomware encryption of files"
   }'
 
 # Search with filters and more results
 curl -X POST http://localhost:8000/v1/search/ttx \
   -H "Content-Type: application/json" \
   -d '{
-    "query_text": "APT29 credential dumping LSASS",
+    "text": "APT29 credential dumping LSASS",
     "kb_types": ["attack-pattern", "intrusion-set"],
-    "top_k": 10,
-    "confidence_min": 0.5,
-    "include_descriptions": true
+    "top_k": 10
   }'
 
 # Search for specific tools
 curl -X POST http://localhost:8000/v1/search/ttx \
   -H "Content-Type: application/json" \
   -d '{
-    "query_text": "Cobalt Strike beacon",
+    "text": "Cobalt Strike beacon",
     "kb_types": ["tool", "malware"],
     "top_k": 3
   }'
@@ -202,7 +193,7 @@ When searching for groups or malware, related techniques are boosted:
 
 ```json
 {
-  "query_text": "Lazarus group activities",
+  "text": "Lazarus group activities",
   "kb_types": ["intrusion-set", "attack-pattern"]
 }
 ```
@@ -215,7 +206,7 @@ The vector model supports multiple languages:
 
 ```json
 {
-  "query_text": "El atacante utilizó phishing dirigido",
+  "text": "El atacante utilizó phishing dirigido",
   "top_k": 3
 }
 ```

@@ -71,7 +71,7 @@ def graph_lookup(stix_id: str) -> Optional[Dict[str, Any]]:
             result = session.run("""
                 MATCH (n {stix_id: $stix_id})
                 RETURN n.stix_id as stix_id, n.name as name, n.description as description,
-                       n.type as type, n.external_id as external_id, n.x_mitre_platforms as platforms,
+                       n.type as type, n.external_id as external_id,
                        labels(n) as labels
                 LIMIT 1
             """, stix_id=stix_id)
@@ -84,7 +84,6 @@ def graph_lookup(stix_id: str) -> Optional[Dict[str, Any]]:
                     "external_id": record["external_id"],
                     "description": record["description"],
                     "type": record["type"],
-                    "platforms": record["platforms"] or [],
                     "labels": record["labels"]
                 }
             return None

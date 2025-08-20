@@ -1,11 +1,18 @@
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from bandjacks.loaders.parse_text import extract_text
 import requests, json
 
-pdf = Path("/Volumes/tank/bandjacks/samples/reports/TheWizards APT group uses SLAAC spoofing to perform adversary-in-the-middle attacks.pdf")
-uri = pdf.as_uri()  # e.g., file:///Volumes/tank/bandjacks/samples/reports/...
+pdf_path = Path("/Volumes/tank/bandjacks/samples/reports/TheWizards APT group uses SLAAC spoofing to perform adversary-in-the-middle attacks.pdf")
 
-txt = extract_text(source_type="pdf", content_url=uri)["text"]
+# Read the PDF file directly
+with open(pdf_path, 'rb') as f:
+    pdf_content = f.read()
+
+# Extract text from PDF bytes
+txt = extract_text(source_type="pdf", inline_text=pdf_content)["text"]
 payload = {
   "method": "agentic_v2",
   "content": txt,

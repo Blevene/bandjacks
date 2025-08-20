@@ -62,13 +62,12 @@ We have successfully integrated the LLM extraction capabilities with STIX 2.1 da
   }]
   ```
 
-### 5. Extraction API Endpoint (`bandjacks/services/api/routes/extract.py`)
-- `/v1/extract/report` - Main extraction endpoint
-- `/v1/extract/provenance/{object_id}` - Get object provenance
-- Features:
+### 5. Extraction API Endpoints (Async)
+- `/v1/extract/runs` - Start an async extraction run (agentic v2)
+- `/v1/extract/runs/{run_id}/status` - Poll run status
+- `/v1/extract/runs/{run_id}/result` - Retrieve final results and metrics
   - Registers source documents
-  - Chunks text for processing
-  - Extracts entities and relationships
+  - Extracts techniques and evidence (quotes + line refs)
   - Resolves entities to KB
   - Builds STIX bundle with provenance
   - Optional auto-ingestion to graph

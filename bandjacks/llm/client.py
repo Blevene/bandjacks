@@ -5,6 +5,7 @@ import json
 from typing import List, Dict, Any, Optional
 import httpx
 from litellm import completion
+from bandjacks.llm.cache import get_cache
 
 
 class LLMClient:
@@ -48,7 +49,8 @@ class LLMClient:
         self,
         messages: List[Dict[str, str]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: Optional[str] = "auto"
+        tool_choice: Optional[str] = "auto",
+        use_cache: bool = True
     ) -> Dict[str, Any]:
         """
         Call the LLM with messages and optional tools.
@@ -57,10 +59,19 @@ class LLMClient:
             messages: List of message dicts with 'role' and 'content'
             tools: Optional list of tool definitions
             tool_choice: How to handle tool selection ("auto", "none", or specific tool)
+            use_cache: Whether to use cached responses (default: True)
             
         Returns:
             Response from LLM including content and/or tool calls
         """
+        # Check cache first if enabled
+        if use_cache:
+            cache = get_cache()
+            cached_response = cache.get(messages, tools=tools, tool_choice=tool_choice)
+            if cached_response:
+                print("[DEBUG] Cache hit - returning cached LLM response")
+                return cached_response
+        
         try:
             # Build request parameters
             params = {
@@ -113,6 +124,11 @@ class LLMClient:
                         }
                     })
             
+            # Cache the response if enabled
+            if use_cache:
+                cache = get_cache()
+                cache.set(messages, result, tools=tools, tool_choice=tool_choice)
+            
             return result
             
         except Exception as e:
@@ -141,7 +157,7 @@ def execute_tool_loop(
     messages: List[Dict[str, str]],
     tools: List[Dict[str, Any]],
     tool_functions: Dict[str, callable],
-    max_iterations: int = 4,  # Allow more iterations for better exploration
+    max_iterations: int = 2,  # Reduced for performance optimization
     model: Optional[str] = None  # Allow model override
 ) -> str:
     """

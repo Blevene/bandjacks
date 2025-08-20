@@ -106,16 +106,20 @@ Expected output:
 
 ### 3. Extract TTPs from Text
 
-Analyze a threat report:
+Analyze a threat report (async extraction runs recommended):
 
 ```bash
-curl -X POST "http://localhost:8000/v1/mapper/propose?engine=hybrid" \
+# Start async run
+curl -s -X POST http://localhost:8000/v1/extract/runs \
   -H "Content-Type: application/json" \
   -d '{
-    "source_id": "test-001",
-    "source_type": "txt",
-    "inline_text": "APT29 uses spearphishing emails with malicious PDF attachments. They establish persistence using scheduled tasks and registry keys."
+    "method": "agentic_v2",
+    "content": "APT29 uses spearphishing emails with malicious PDF attachments. They establish persistence using scheduled tasks and registry keys.",
+    "title": "Sample Report",
+    "config": {"top_k": 5, "min_quotes": 2}
   }'
+
+# Then poll status and fetch result with the returned run_id
 ```
 
 Returns mapped techniques:
@@ -128,14 +132,25 @@ Returns mapped techniques:
 ### Analyze a PDF Report
 
 ```bash
-# Extract and map techniques from PDF
-curl -X POST "http://localhost:8000/v1/mapper/propose?engine=llm" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_id": "apt-report-2024",
-    "source_type": "pdf",
-    "url": "https://example.com/threat-report.pdf"
-  }'
+# Extract text locally, then start async extraction
+python - <<'PY'
+from pathlib import Path
+import pdfplumber, requests
+pdf = Path("samples/reports/new-darkcloud-stealer-infection-chain.pdf")
+parts = []
+with pdfplumber.open(pdf) as doc:
+    for p in doc.pages:
+        t = p.extract_text() or ""
+        if t: parts.append(t)
+text = "\n\n".join(parts)
+resp = requests.post("http://localhost:8000/v1/extract/runs", json={
+  "method": "agentic_v2",
+  "content": text,
+  "title": "Darkcloud Stealer",
+  "config": {"top_k": 5, "disable_discovery": true, "min_quotes": 2}
+})
+print(resp.json())
+PY
 ```
 
 ### Review and Validate Mappings
