@@ -186,6 +186,90 @@ async def get_lineage_graph(
         driver.close()
 
 
+@router.get("/{object_id}/reviews")
+async def get_review_provenance(
+    object_id: str,
+    include_all_types: bool = Query(True, description="Include all review types")
+) -> Dict[str, Any]:
+    """
+    Get complete review provenance for an object.
+    
+    Returns all review decisions, timestamps, reviewers, and rationales
+    for maintaining audit trail and understanding decision history.
+    """
+    driver = get_neo4j_driver()
+    
+    try:
+        with driver.session() as session:
+            # Get review provenance
+            query = """
+                MATCH (rp:ReviewProvenance)
+                WHERE rp.object_id = $object_id
+                RETURN rp {
+                    .*,
+                    age_days: duration.inDays(rp.timestamp, datetime()).days
+                } as review
+                ORDER BY rp.timestamp DESC
+            """
+            
+            result = session.run(query, object_id=object_id)
+            
+            reviews = []
+            for record in result:
+                review = dict(record["review"])
+                reviews.append({
+                    "provenance_id": review.get("provenance_id"),
+                    "review_type": review.get("review_type"),
+                    "reviewer_id": review.get("reviewer_id"),
+                    "timestamp": review.get("timestamp"),
+                    "decision": review.get("decision"),
+                    "rationale": review.get("rationale"),
+                    "confidence_before": review.get("confidence_before"),
+                    "confidence_after": review.get("confidence_after"),
+                    "field_changed": review.get("field_changed"),
+                    "old_value": review.get("old_value"),
+                    "new_value": review.get("new_value"),
+                    "evidence": review.get("evidence"),
+                    "trace_id": review.get("trace_id"),
+                    "age_days": review.get("age_days")
+                })
+            
+            # Group by review type
+            reviews_by_type = {}
+            for review in reviews:
+                review_type = review["review_type"]
+                if review_type not in reviews_by_type:
+                    reviews_by_type[review_type] = []
+                reviews_by_type[review_type].append(review)
+            
+            # Calculate review statistics
+            total_reviews = len(reviews)
+            unique_reviewers = len(set(r["reviewer_id"] for r in reviews if r["reviewer_id"]))
+            
+            decisions = {}
+            for review in reviews:
+                decision = review.get("decision")
+                if decision:
+                    decisions[decision] = decisions.get(decision, 0) + 1
+            
+            return {
+                "object_id": object_id,
+                "total_reviews": total_reviews,
+                "unique_reviewers": unique_reviewers,
+                "decision_summary": decisions,
+                "reviews_by_type": reviews_by_type if include_all_types else {},
+                "recent_reviews": reviews[:10],  # Last 10 reviews
+                "oldest_review": reviews[-1]["timestamp"] if reviews else None,
+                "newest_review": reviews[0]["timestamp"] if reviews else None
+            }
+            
+    except Exception as e:
+        logger.error(f"Failed to get review provenance for {object_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        driver.close()
+
+
 @router.get("/{object_id}/validation")
 async def get_validation_history(
     object_id: str,

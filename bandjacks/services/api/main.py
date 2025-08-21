@@ -1,14 +1,21 @@
 """Main FastAPI application."""
 
+import logging
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from bandjacks.services.api.settings import settings
-from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs, attackflow
+from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs, attackflow, detections, coverage, compliance
 from bandjacks.services.api.middleware import TracingMiddleware
+from bandjacks.services.api.middleware.error_handler import ErrorHandlerMiddleware
+from bandjacks.services.api.middleware.auth import JWTAuthMiddleware
+from bandjacks.services.api.middleware.rate_limit import RateLimitMiddleware
 from bandjacks.loaders.neo4j_ddl import ensure_ddl
 from bandjacks.loaders.opensearch_index import ensure_attack_nodes_index, ensure_attack_flows_index
 from bandjacks.loaders.edge_embeddings import ensure_attack_edges_index
 from bandjacks.llm.cache import get_cache_stats, clear_cache
+from bandjacks.monitoring.compliance_metrics import get_compliance_report, get_compliance_metrics
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Bandjacks API",
@@ -53,7 +60,20 @@ app = FastAPI(
     ]
 )
 
-# Add tracing middleware
+# Add middleware (order matters - error handler should be first to catch all errors)
+app.add_middleware(ErrorHandlerMiddleware)
+
+# Add rate limiting if enabled
+if settings.rate_limit_enabled:
+    app.add_middleware(RateLimitMiddleware)
+    logger.info("Rate limiting enabled")
+
+# Add authentication if enabled
+if settings.enable_auth:
+    app.add_middleware(JWTAuthMiddleware)
+    logger.info(f"Authentication enabled with issuer: {settings.oidc_issuer or 'local'}")
+
+# Add tracing (should be after auth to capture user info)
 app.add_middleware(TracingMiddleware)
 
 @app.on_event("startup")
@@ -143,6 +163,18 @@ tags_metadata = [
     {
         "name": "attackflow",
         "description": "Attack Flow 2.0 ingestion, export, and interoperability",
+    },
+    {
+        "name": "detections",
+        "description": "Detection strategies, analytics, and log sources management",
+    },
+    {
+        "name": "coverage",
+        "description": "Technique coverage analysis across detections, mitigations, and D3FEND",
+    },
+    {
+        "name": "compliance",
+        "description": "Compliance metrics and reporting for ADM validation and review processes",
     }
 ]
 
@@ -167,6 +199,9 @@ app.include_router(provenance.router, prefix=settings.api_prefix)
 app.include_router(drift.router, prefix=settings.api_prefix)
 app.include_router(extract_runs.router, prefix=settings.api_prefix)
 app.include_router(attackflow.router, prefix=settings.api_prefix)
+app.include_router(detections.router, prefix=settings.api_prefix)
+app.include_router(coverage.router, prefix=settings.api_prefix)
+app.include_router(compliance.router, prefix=settings.api_prefix)
 
 # Cache management endpoints
 @app.get("/v1/cache/stats", tags=["monitoring"])
@@ -179,3 +214,5 @@ async def clear_llm_cache():
     """Clear the LLM response cache."""
     clear_cache()
     return {"message": "Cache cleared successfully"}
+
+# Legacy compliance endpoints removed - use /v1/compliance/* routes instead
