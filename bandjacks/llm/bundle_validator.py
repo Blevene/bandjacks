@@ -1,7 +1,10 @@
 """Validate STIX bundles before graph upsert."""
 
 import re
+import logging
 from typing import Dict, Any, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def validate_bundle_for_upsert(bundle: Dict[str, Any]) -> Tuple[bool, List[str]]:
@@ -63,11 +66,11 @@ def validate_stix_object(obj: Dict[str, Any]) -> List[str]:
     elif not validate_stix_id(obj["id"], obj.get("type")):
         errors.append(f"Invalid STIX ID format: {obj['id']}")
     
-    # STRICT: Enforce spec_version == "2.1" for all SDO/SRO
+    # STRICT: Enforce spec_version == "2.1" for all SDO/SRO (ADM requirement)
     if not obj.get("spec_version"):
-        errors.append("Missing 'spec_version' field (STIX 2.1 required)")
+        errors.append("CRITICAL: Missing 'spec_version' field (STIX 2.1 required by ADM)")
     elif obj["spec_version"] != "2.1":
-        errors.append(f"Invalid spec_version: {obj['spec_version']} (must be exactly '2.1' for ADM compliance)")
+        errors.append(f"CRITICAL: Invalid spec_version '{obj['spec_version']}' - must be exactly '2.1' for ADM compliance")
     
     if not obj.get("created"):
         errors.append("Missing 'created' timestamp")
@@ -94,6 +97,12 @@ def validate_stix_object(obj: Dict[str, Any]) -> List[str]:
         errors.extend(validate_vulnerability(obj))
     elif obj_type == "relationship":
         errors.extend(validate_relationship(obj))
+    elif obj_type == "x-mitre-detection-strategy":
+        errors.extend(validate_detection_strategy(obj))
+    elif obj_type == "x-mitre-analytic":
+        errors.extend(validate_analytic(obj))
+    elif obj_type == "x-mitre-log-source":
+        errors.extend(validate_log_source(obj))
     
     return errors
 
@@ -253,22 +262,27 @@ def validate_relationship(obj: Dict[str, Any]) -> List[str]:
     """Validate relationship specific fields with ADM compliance."""
     errors = []
     
-    # ADM-compliant relationship types
+    # ADM-compliant relationship types (strict enforcement)
     ALLOWED_RELATIONSHIP_TYPES = [
-        "uses",       # Actor/Software uses Technique
-        "mitigates",  # Mitigation mitigates Technique
-        "detects",    # DataComponent detects Technique
+        "uses",             # Actor/Software uses Technique
+        "mitigates",        # Mitigation mitigates Technique
+        "detects",          # DataComponent/DetectionStrategy detects Technique
         "subtechnique-of",  # Subtechnique relationship
         "revoked-by",       # Version control
-        "related-to"        # General relationship
+        "related-to"        # General relationship (use sparingly)
     ]
+    
+    # Additional disallowed types that are common mistakes
+    DISALLOWED_TYPES = ["targets", "attributed-to", "indicates", "derived-from", "duplicate-of"]
     
     if not obj.get("relationship_type"):
         errors.append("Relationship missing 'relationship_type'")
     else:
         rel_type = obj["relationship_type"]
-        if rel_type not in ALLOWED_RELATIONSHIP_TYPES:
-            errors.append(f"Invalid relationship_type '{rel_type}'. Allowed types: {', '.join(ALLOWED_RELATIONSHIP_TYPES)}")
+        if rel_type in DISALLOWED_TYPES:
+            errors.append(f"CRITICAL: Explicitly disallowed relationship_type '{rel_type}' - not ADM compliant")
+        elif rel_type not in ALLOWED_RELATIONSHIP_TYPES:
+            errors.append(f"CRITICAL: Invalid relationship_type '{rel_type}'. ADM allows only: {', '.join(ALLOWED_RELATIONSHIP_TYPES)}")
     
     if not obj.get("source_ref"):
         errors.append("Relationship missing 'source_ref'")
@@ -279,6 +293,93 @@ def validate_relationship(obj: Dict[str, Any]) -> List[str]:
         errors.append("Relationship missing 'target_ref'")
     elif not validate_stix_id(obj["target_ref"]):
         errors.append(f"Invalid target_ref: {obj['target_ref']}")
+    
+    return errors
+
+
+def validate_detection_strategy(obj: Dict[str, Any]) -> List[str]:
+    """Validate detection strategy specific fields with ADM compliance."""
+    errors = []
+    
+    if not obj.get("name"):
+        errors.append("DetectionStrategy missing 'name'")
+    
+    # Check for required x_mitre fields
+    if not obj.get("x_mitre_analytics"):
+        errors.append("DetectionStrategy missing 'x_mitre_analytics' array (at least one analytic required)")
+    elif not isinstance(obj["x_mitre_analytics"], list) or len(obj["x_mitre_analytics"]) == 0:
+        errors.append("DetectionStrategy 'x_mitre_analytics' must be a non-empty array")
+    
+    # Check for external references with DET ID
+    ext_refs = obj.get("external_references", [])
+    if not ext_refs:
+        errors.append("DetectionStrategy missing 'external_references' array")
+    
+    # Validate domains if present
+    if "x_mitre_domains" in obj:
+        domains = obj["x_mitre_domains"]
+        if not isinstance(domains, list):
+            errors.append("x_mitre_domains must be an array")
+    
+    return errors
+
+
+def validate_analytic(obj: Dict[str, Any]) -> List[str]:
+    """Validate analytic specific fields."""
+    errors = []
+    
+    if not obj.get("name"):
+        errors.append("Analytic missing 'name'")
+    
+    # Check required x_mitre fields
+    if not obj.get("x_mitre_detects"):
+        errors.append("Analytic missing 'x_mitre_detects' field (description of what it detects)")
+    
+    if not obj.get("x_mitre_log_sources"):
+        errors.append("Analytic missing 'x_mitre_log_sources' array (at least one log source required)")
+    elif not isinstance(obj["x_mitre_log_sources"], list) or len(obj["x_mitre_log_sources"]) == 0:
+        errors.append("Analytic 'x_mitre_log_sources' must be a non-empty array")
+    else:
+        # Validate log source entries
+        for i, ls_entry in enumerate(obj["x_mitre_log_sources"]):
+            if not isinstance(ls_entry, dict):
+                errors.append(f"Analytic log source entry {i} must be an object")
+            elif not ls_entry.get("log_source_ref"):
+                errors.append(f"Analytic log source entry {i} missing 'log_source_ref'")
+    
+    if not obj.get("x_mitre_mutable_elements"):
+        errors.append("Analytic missing 'x_mitre_mutable_elements' array (at least one mutable element required)")
+    elif not isinstance(obj["x_mitre_mutable_elements"], list) or len(obj["x_mitre_mutable_elements"]) == 0:
+        errors.append("Analytic 'x_mitre_mutable_elements' must be a non-empty array")
+    
+    # Validate platforms if present
+    if "platforms" in obj:
+        platforms = obj["platforms"]
+        if not isinstance(platforms, list):
+            errors.append("Analytic 'platforms' must be an array")
+    
+    return errors
+
+
+def validate_log_source(obj: Dict[str, Any]) -> List[str]:
+    """Validate log source specific fields."""
+    errors = []
+    
+    if not obj.get("name"):
+        errors.append("LogSource missing 'name'")
+    
+    # Check required x_mitre fields
+    if not obj.get("x_mitre_log_source_permutations"):
+        errors.append("LogSource missing 'x_mitre_log_source_permutations' array (at least one permutation required)")
+    elif not isinstance(obj["x_mitre_log_source_permutations"], list) or len(obj["x_mitre_log_source_permutations"]) == 0:
+        errors.append("LogSource 'x_mitre_log_source_permutations' must be a non-empty array")
+    else:
+        # Validate permutation entries
+        for i, perm in enumerate(obj["x_mitre_log_source_permutations"]):
+            if not isinstance(perm, dict):
+                errors.append(f"LogSource permutation {i} must be an object")
+            elif not perm.get("name"):
+                errors.append(f"LogSource permutation {i} missing 'name'")
     
     return errors
 
