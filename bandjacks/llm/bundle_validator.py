@@ -44,7 +44,7 @@ def validate_bundle_for_upsert(bundle: Dict[str, Any]) -> Tuple[bool, List[str]]
 
 def validate_stix_object(obj: Dict[str, Any]) -> List[str]:
     """
-    Validate a single STIX object.
+    Validate a single STIX object with strict ADM compliance.
     
     Args:
         obj: STIX object to validate
@@ -63,10 +63,11 @@ def validate_stix_object(obj: Dict[str, Any]) -> List[str]:
     elif not validate_stix_id(obj["id"], obj.get("type")):
         errors.append(f"Invalid STIX ID format: {obj['id']}")
     
+    # STRICT: Enforce spec_version == "2.1" for all SDO/SRO
     if not obj.get("spec_version"):
-        errors.append("Missing 'spec_version' field")
+        errors.append("Missing 'spec_version' field (STIX 2.1 required)")
     elif obj["spec_version"] != "2.1":
-        errors.append(f"Unsupported spec_version: {obj['spec_version']} (expected 2.1)")
+        errors.append(f"Invalid spec_version: {obj['spec_version']} (must be exactly '2.1' for ADM compliance)")
     
     if not obj.get("created"):
         errors.append("Missing 'created' timestamp")
@@ -121,26 +122,36 @@ def validate_stix_id(stix_id: str, obj_type: str = None) -> bool:
 
 
 def validate_attack_pattern(obj: Dict[str, Any]) -> List[str]:
-    """Validate attack-pattern specific fields."""
+    """Validate attack-pattern specific fields with strict ADM compliance."""
     errors = []
     
     if not obj.get("name"):
         errors.append("Attack pattern missing 'name'")
     
-    # Check for external_references with MITRE ID
+    # Check for external_references with MITRE ID (ADM requirement)
     ext_refs = obj.get("external_references", [])
+    if not ext_refs:
+        errors.append("Attack pattern missing 'external_references' array (required by ADM)")
+    
     has_mitre_ref = False
     
     for ref in ext_refs:
         if ref.get("source_name") == "mitre-attack":
             has_mitre_ref = True
+            
+            # Validate required fields in MITRE reference
             if not ref.get("external_id"):
                 errors.append("MITRE reference missing 'external_id'")
             elif not re.match(r"^T\d{4}(\.\d{3})?$", ref["external_id"]):
-                errors.append(f"Invalid MITRE technique ID: {ref['external_id']}")
+                errors.append(f"Invalid MITRE technique ID format: {ref['external_id']} (expected Txxxx or Txxxx.yyy)")
+            
+            if not ref.get("url"):
+                errors.append("MITRE reference missing 'url' field")
+            elif not ref["url"].startswith("https://attack.mitre.org/"):
+                errors.append(f"Invalid MITRE URL: {ref['url']} (must start with https://attack.mitre.org/)")
     
     if not has_mitre_ref:
-        errors.append("Attack pattern missing MITRE ATT&CK external reference")
+        errors.append("Attack pattern missing MITRE ATT&CK external reference (required by ADM)")
     
     # Validate kill_chain_phases if present
     if "kill_chain_phases" in obj:
@@ -239,11 +250,25 @@ def validate_vulnerability(obj: Dict[str, Any]) -> List[str]:
 
 
 def validate_relationship(obj: Dict[str, Any]) -> List[str]:
-    """Validate relationship specific fields."""
+    """Validate relationship specific fields with ADM compliance."""
     errors = []
+    
+    # ADM-compliant relationship types
+    ALLOWED_RELATIONSHIP_TYPES = [
+        "uses",       # Actor/Software uses Technique
+        "mitigates",  # Mitigation mitigates Technique
+        "detects",    # DataComponent detects Technique
+        "subtechnique-of",  # Subtechnique relationship
+        "revoked-by",       # Version control
+        "related-to"        # General relationship
+    ]
     
     if not obj.get("relationship_type"):
         errors.append("Relationship missing 'relationship_type'")
+    else:
+        rel_type = obj["relationship_type"]
+        if rel_type not in ALLOWED_RELATIONSHIP_TYPES:
+            errors.append(f"Invalid relationship_type '{rel_type}'. Allowed types: {', '.join(ALLOWED_RELATIONSHIP_TYPES)}")
     
     if not obj.get("source_ref"):
         errors.append("Relationship missing 'source_ref'")

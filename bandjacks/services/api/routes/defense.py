@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from bandjacks.services.api.deps import get_neo4j_session
 from bandjacks.services.api.settings import settings
 from bandjacks.loaders.d3fend_loader import D3FENDLoader
+from bandjacks.monitoring.defense_metrics import track_overlay_metrics, track_mincut_metrics, get_defense_metrics
 
 
 router = APIRouter(prefix="/defense", tags=["defense"])
@@ -65,11 +66,12 @@ class MinimalCutResponse(BaseModel):
         500: {"description": "Internal server error"}
     }
 )
+@track_overlay_metrics
 async def get_defense_overlay(
     flow_id: str,
     neo4j_session=Depends(get_neo4j_session)
 ) -> FlowDefenseOverlay:
-    """Get D3FEND defense overlay for an attack flow."""
+    """Get D3FEND defense overlay for an attack flow with metrics tracking."""
     
     try:
         # Initialize D3FEND loader
@@ -156,11 +158,12 @@ async def get_defense_overlay(
         500: {"description": "Internal server error"}
     }
 )
+@track_mincut_metrics
 async def compute_minimal_defense(
     request: MinimalCutRequest,
     neo4j_session=Depends(get_neo4j_session)
 ) -> MinimalCutResponse:
-    """Compute minimal defense set for an attack flow."""
+    """Compute minimal defense set for an attack flow with metrics tracking."""
     
     try:
         # Initialize D3FEND loader
@@ -389,3 +392,28 @@ async def get_defense_coverage(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get defense coverage: {str(e)}")
+
+
+@router.get("/metrics",
+    summary="Get Defense Metrics",
+    description="""
+    Get metrics for defense API endpoints.
+    
+    Returns performance and usage metrics including:
+    - Total API calls for overlay and mincut
+    - Average counters per step
+    - Coverage improvement statistics
+    - Latency percentiles
+    - Error rates
+    """,
+    responses={
+        200: {"description": "Metrics retrieved successfully"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def get_metrics() -> Dict[str, Any]:
+    """Get defense API metrics."""
+    try:
+        return get_defense_metrics()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get metrics: {str(e)}")

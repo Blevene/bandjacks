@@ -61,13 +61,25 @@ class D3FENDLoader:
             auth=(neo4j_user, neo4j_password)
         )
     
-    def load_d3fend_ontology(self, prefer_owl: bool = True) -> Dict[str, Any]:
+    def load_d3fend_ontology(self, prefer_owl: bool = True, use_n10s: bool = False) -> Dict[str, Any]:
         """
         Load D3FEND ontology. Attempt full OWL parse; fall back to MVP subset.
+        
+        Args:
+            prefer_owl: Whether to attempt OWL parsing (default: True)
+            use_n10s: Use neosemantics (n10s) for RDF import instead of rdflib (default: False)
 
         Returns a dict keyed by compact technique IDs (e.g., d3f:NetworkSegmentation)
         with fields: name, description, category, artifacts (list[str]).
         """
+        # Try n10s import if requested
+        if use_n10s and prefer_owl:
+            try:
+                logger.info("Loading D3FEND via neosemantics (n10s)...")
+                return self._load_via_n10s()
+            except Exception as e:
+                logger.warning(f"n10s import failed ({e}), falling back to rdflib")
+        
         # First try to parse the official OWL if requested
         if prefer_owl:
             try:
@@ -349,6 +361,77 @@ class D3FENDLoader:
             logger.error(f"Failed to load D3FEND ontology: {e}")
             raise
     
+    def _load_via_n10s(self) -> Dict[str, Any]:
+        """
+        Load D3FEND ontology using neosemantics (n10s) RDF bridge.
+        
+        Returns:
+            Dict of D3FEND techniques
+        """
+        with self.driver.session() as session:
+            # Initialize n10s if not already done
+            session.run("CALL n10s.graphconfig.init()")
+            
+            # Set namespace prefixes
+            session.run("""
+                CALL n10s.nsprefixes.add('d3f', 'http://d3fend.mitre.org/ontologies/d3fend.owl#')
+            """)
+            
+            # Import D3FEND OWL
+            result = session.run("""
+                CALL n10s.rdf.import.fetch($url, 'RDF/XML')
+                YIELD terminationStatus, triplesLoaded
+                RETURN terminationStatus, triplesLoaded
+            """, url=self.D3FEND_RDF_URL)
+            
+            import_result = result.single()
+            if import_result["terminationStatus"] != "OK":
+                raise Exception(f"n10s import failed: {import_result['terminationStatus']}")
+            
+            logger.info(f"Loaded {import_result['triplesLoaded']} triples via n10s")
+            
+            # Query for defensive techniques
+            techniques_query = """
+                MATCH (t:Resource)
+                WHERE t.uri STARTS WITH 'http://d3fend.mitre.org/ontologies/d3fend.owl#'
+                  AND EXISTS(t.`http://www.w3.org/2000/01/rdf-schema#label`)
+                  AND t.uri <> 'http://d3fend.mitre.org/ontologies/d3fend.owl#DefensiveTechnique'
+                OPTIONAL MATCH (t)-[:http://www.w3.org/2000/01/rdf-schema#subClassOf]->(parent:Resource)
+                WHERE parent.uri STARTS WITH 'http://d3fend.mitre.org/ontologies/d3fend.owl#'
+                RETURN t.uri as uri,
+                       t.`http://www.w3.org/2000/01/rdf-schema#label` as label,
+                       t.`http://d3fend.mitre.org/ontologies/d3fend.owl#definition` as definition,
+                       parent.uri as parent_uri
+                LIMIT 500
+            """
+            
+            techniques = {}
+            result = session.run(techniques_query)
+            
+            for record in result:
+                uri = record["uri"]
+                local_name = uri.split('#')[-1]
+                compact_id = f"d3f:{local_name}"
+                
+                # Extract category from parent
+                category = "General Defense"
+                if record["parent_uri"]:
+                    parent_name = record["parent_uri"].split('#')[-1]
+                    category = re.sub(r'([A-Z])', r' \1', parent_name).strip()
+                
+                techniques[compact_id] = {
+                    "name": record["label"] or local_name,
+                    "description": record["definition"] or f"Defensive technique: {local_name}",
+                    "category": category,
+                    "artifacts": []  # n10s doesn't easily extract these relationships
+                }
+            
+            if techniques:
+                logger.info(f"Extracted {len(techniques)} D3FEND techniques via n10s")
+                return techniques
+            else:
+                raise Exception("No techniques found via n10s import")
+    
     def create_d3fend_nodes(self, d3fend_data: Dict[str, Any]) -> int:
         """
         Create D3FEND technique nodes in Neo4j.
@@ -622,16 +705,19 @@ class D3FENDLoader:
                 }
             }
     
-    def initialize(self) -> Dict[str, Any]:
+    def initialize(self, use_n10s: bool = False) -> Dict[str, Any]:
         """
         Initialize D3FEND integration - load ontology and create relationships.
+        
+        Args:
+            use_n10s: Use neosemantics (n10s) for RDF import (default: False)
         
         Returns:
             Summary of initialization
         """
         try:
-            # Load D3FEND ontology
-            d3fend_data = self.load_d3fend_ontology()
+            # Load D3FEND ontology with optional n10s
+            d3fend_data = self.load_d3fend_ontology(prefer_owl=True, use_n10s=use_n10s)
             
             # Create D3FEND nodes
             nodes_created = self.create_d3fend_nodes(d3fend_data)

@@ -254,6 +254,26 @@ def upsert_to_graph_and_vectors(
             inserted += ins
             updated += upd
             
+            # Create SUBTECHNIQUE_OF relationship if this is a subtechnique
+            if x_is_sub and external_id and "." in external_id:
+                # Parse parent technique ID (e.g., T1059.001 -> T1059)
+                parent_id = external_id.split(".")[0]
+                
+                # Create parent node if it doesn't exist and link subtechnique
+                s.run("""
+                    MATCH (child:AttackPattern {external_id:$child_id})
+                    MERGE (parent:AttackPattern {external_id:$parent_id})
+                    ON CREATE SET parent.created_ts=timestamp(),
+                                  parent.type='attack-pattern',
+                                  parent.name=$parent_id,  // Placeholder name
+                                  parent.source_collection=$collection,
+                                  parent.source_version=$version
+                    MERGE (child)-[:SUBTECHNIQUE_OF]->(parent)
+                    """,
+                    child_id=external_id, parent_id=parent_id,
+                    collection=collection, version=version
+                )
+            
             # Add provenance if this is from extraction
             prov = obj.get("x_bj_provenance", {})
             if prov and prov.get("report_id"):

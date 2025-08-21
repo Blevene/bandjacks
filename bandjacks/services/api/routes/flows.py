@@ -13,6 +13,7 @@ from bandjacks.services.api.schemas import (
     FlowSearchResult
 )
 from bandjacks.llm.flow_builder import FlowBuilder
+from bandjacks.llm.flow_exporter import AttackFlowExporter
 from bandjacks.loaders.opensearch_index import upsert_flow_embedding
 from bandjacks.loaders.embedder import encode
 
@@ -539,3 +540,78 @@ async def delete_flow(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete flow: {str(e)}")
+
+
+@router.get("/{flow_id}/export",
+    summary="Export Attack Flow",
+    description="""
+    Export an internal flow to Attack Flow 2.0 JSON format.
+    
+    Converts the internal AttackEpisode/AttackAction representation
+    to the standard Attack Flow 2.0 format for interoperability.
+    
+    The exported flow can be imported into Attack Flow visualization
+    tools or shared with other systems.
+    """,
+    responses={
+        200: {"description": "Flow exported successfully"},
+        404: {"description": "Flow not found"},
+        500: {"description": "Export failed"}
+    }
+)
+async def export_attack_flow(
+    flow_id: str,
+    neo4j_session=Depends(get_neo4j_session)
+) -> Dict[str, Any]:
+    """Export a flow to Attack Flow 2.0 format."""
+    from datetime import datetime
+    
+    try:
+        # Check if flow exists
+        check_query = """
+            MATCH (e:AttackEpisode {flow_id: $flow_id})
+            RETURN e.flow_id as flow_id
+        """
+        check_result = neo4j_session.run(check_query, flow_id=flow_id)
+        if not check_result.single():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Flow {flow_id} not found"
+            )
+        
+        # Initialize exporter
+        exporter = AttackFlowExporter(
+            neo4j_uri=settings.neo4j_uri,
+            neo4j_user=settings.neo4j_user,
+            neo4j_password=settings.neo4j_password
+        )
+        
+        try:
+            # Export to Attack Flow 2.0
+            attack_flow_json = exporter.export_to_attack_flow(flow_id)
+            
+            # Validate the export
+            warnings = exporter.validate_export(attack_flow_json)
+            
+            # Add export metadata
+            response = {
+                "flow_id": flow_id,
+                "attack_flow": attack_flow_json,
+                "export_metadata": {
+                    "format": "Attack Flow 2.0",
+                    "spec_version": "2.1",
+                    "exported_at": datetime.utcnow().isoformat() + "Z",
+                    "object_count": len(attack_flow_json.get("objects", [])),
+                    "warnings": warnings
+                }
+            }
+            
+            return response
+            
+        finally:
+            exporter.close()
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to export flow: {str(e)}")
