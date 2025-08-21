@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from bandjacks.services.api.settings import settings
-from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs
+from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs, attackflow
 from bandjacks.services.api.middleware import TracingMiddleware
 from bandjacks.loaders.neo4j_ddl import ensure_ddl
 from bandjacks.loaders.opensearch_index import ensure_attack_nodes_index, ensure_attack_flows_index
@@ -139,6 +139,10 @@ tags_metadata = [
     {
         "name": "drift",
         "description": "Drift detection and monitoring for data quality and model performance",
+    },
+    {
+        "name": "attackflow",
+        "description": "Attack Flow 2.0 ingestion, export, and interoperability",
     }
 ]
 
@@ -162,6 +166,7 @@ app.include_router(analytics.router, prefix=settings.api_prefix)
 app.include_router(provenance.router, prefix=settings.api_prefix)
 app.include_router(drift.router, prefix=settings.api_prefix)
 app.include_router(extract_runs.router, prefix=settings.api_prefix)
+app.include_router(attackflow.router, prefix=settings.api_prefix)
 
 # Cache management endpoints
 @app.get("/v1/cache/stats", tags=["monitoring"])

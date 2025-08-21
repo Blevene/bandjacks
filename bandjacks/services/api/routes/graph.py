@@ -69,15 +69,27 @@ class AttackFlowRequest(BaseModel):
 )
 async def get_attack_flow(
     request: AttackFlowRequest,
+    include_revoked: bool = Query(False, description="Include revoked techniques"),
+    include_deprecated: bool = Query(False, description="Include deprecated techniques"),
     neo4j_session=Depends(get_neo4j_session)
 ) -> GraphResponse:
     nodes = []
     edges = []
     node_ids = set()
     
+    # Build filter clause for revoked/deprecated
+    filter_clauses = []
+    if not include_revoked:
+        filter_clauses.append("NOT t.revoked")
+    if not include_deprecated:
+        filter_clauses.append("NOT t.x_mitre_deprecated")
+    
+    filter_clause = f"WHERE {' AND '.join(filter_clauses)}" if filter_clauses else ""
+    
     # Get the center technique
-    technique_query = """
-        MATCH (t:AttackPattern {stix_id: $technique_id})
+    technique_query = f"""
+        MATCH (t:AttackPattern {{stix_id: $technique_id}})
+        {filter_clause}
         OPTIONAL MATCH (t)-[:HAS_TACTIC]->(tactic:Tactic)
         RETURN t, collect(tactic) as tactics
     """
