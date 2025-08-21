@@ -489,6 +489,315 @@ class CandidateStore:
         
         return results
     
+    def create_candidate_attack_pattern(
+        self,
+        name: str,
+        description: str,
+        source_text: str,
+        source_report: str,
+        extraction_metadata: Dict[str, Any],
+        embedding: Optional[List[float]] = None
+    ) -> str:
+        """
+        Create a candidate attack pattern for a potentially novel technique.
+        
+        Args:
+            name: Technique name
+            description: Technique description
+            source_text: Original text that led to this extraction
+            source_report: Source report ID
+            extraction_metadata: Extraction method, model, confidence
+            embedding: Optional pre-computed embedding vector
+            
+        Returns:
+            Candidate pattern ID
+        """
+        candidate_id = f"candidate-pattern--{uuid.uuid4()}"
+        
+        with self.driver.session() as session:
+            query = """
+                CREATE (c:CandidateAttackPattern {
+                    candidate_id: $candidate_id,
+                    name: $name,
+                    description: $description,
+                    source_text: $source_text,
+                    source_report: $source_report,
+                    extraction_method: $extraction_method,
+                    extraction_model: $extraction_model,
+                    confidence: $confidence,
+                    status: 'pending',
+                    created_at: datetime()
+                })
+                RETURN c.candidate_id as id
+            """
+            
+            result = session.run(
+                query,
+                candidate_id=candidate_id,
+                name=name,
+                description=description,
+                source_text=source_text[:1000],  # Limit source text length
+                source_report=source_report,
+                extraction_method=extraction_metadata.get("method", "unknown"),
+                extraction_model=extraction_metadata.get("model", "unknown"),
+                confidence=extraction_metadata.get("confidence", 50.0)
+            )
+            
+            if result.single():
+                # Store embedding if provided
+                if embedding:
+                    self._store_candidate_embedding(candidate_id, embedding)
+                
+                return candidate_id
+            
+            raise ValueError("Failed to create candidate attack pattern")
+    
+    def _store_candidate_embedding(self, candidate_id: str, embedding: List[float]):
+        """Store embedding for candidate pattern."""
+        # In production, would store in OpenSearch
+        # For now, store as property (limited by Neo4j property size)
+        with self.driver.session() as session:
+            session.run(
+                """
+                MATCH (c:CandidateAttackPattern {candidate_id: $candidate_id})
+                SET c.has_embedding = true,
+                    c.embedding_dim = $dim
+                """,
+                candidate_id=candidate_id,
+                dim=len(embedding)
+            )
+    
+    def get_candidate_patterns(
+        self,
+        status: Optional[str] = None,
+        min_confidence: Optional[float] = None,
+        limit: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        Get candidate attack patterns for review.
+        
+        Args:
+            status: Filter by status
+            min_confidence: Minimum confidence threshold
+            limit: Maximum results
+            
+        Returns:
+            List of candidate patterns
+        """
+        with self.driver.session() as session:
+            where_clauses = []
+            params = {"limit": limit}
+            
+            if status:
+                where_clauses.append("c.status = $status")
+                params["status"] = status
+            
+            if min_confidence:
+                where_clauses.append("c.confidence >= $min_confidence")
+                params["min_confidence"] = min_confidence
+            
+            where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+            
+            query = f"""
+                MATCH (c:CandidateAttackPattern)
+                {where_clause}
+                RETURN c.candidate_id as id,
+                       c.name as name,
+                       c.description as description,
+                       c.source_text as source_text,
+                       c.source_report as source_report,
+                       c.confidence as confidence,
+                       c.status as status,
+                       c.created_at as created_at,
+                       c.reviewed_by as reviewed_by,
+                       c.has_embedding as has_embedding
+                ORDER BY c.confidence DESC, c.created_at DESC
+                LIMIT $limit
+            """
+            
+            result = session.run(query, **params)
+            
+            patterns = []
+            for record in result:
+                patterns.append({
+                    "id": record["id"],
+                    "name": record["name"],
+                    "description": record["description"],
+                    "source_text": record["source_text"],
+                    "source_report": record["source_report"],
+                    "confidence": record["confidence"],
+                    "status": record["status"],
+                    "created_at": record["created_at"].isoformat() if record["created_at"] else None,
+                    "reviewed_by": record["reviewed_by"],
+                    "has_embedding": record["has_embedding"] or False
+                })
+            
+            return patterns
+    
+    def promote_candidate_pattern(
+        self,
+        candidate_id: str,
+        reviewer_id: str,
+        attack_id: Optional[str] = None,
+        external_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Promote a candidate pattern to a full AttackPattern.
+        
+        Args:
+            candidate_id: Candidate pattern ID
+            reviewer_id: Reviewer ID
+            attack_id: Optional STIX ID to assign
+            external_id: Optional MITRE ID (e.g., T1234.001)
+            
+        Returns:
+            Promotion result
+        """
+        with self.driver.session() as session:
+            # Get candidate details
+            get_query = """
+                MATCH (c:CandidateAttackPattern {candidate_id: $candidate_id})
+                RETURN c
+            """
+            
+            result = session.run(get_query, candidate_id=candidate_id)
+            candidate = result.single()
+            
+            if not candidate:
+                raise ValueError(f"Candidate pattern {candidate_id} not found")
+            
+            # Generate or use provided STIX ID
+            if not attack_id:
+                attack_id = f"attack-pattern--{uuid.uuid4()}"
+            
+            # Create AttackPattern node
+            create_query = """
+                MATCH (c:CandidateAttackPattern {candidate_id: $candidate_id})
+                CREATE (a:AttackPattern {
+                    stix_id: $attack_id,
+                    name: c.name,
+                    description: c.description,
+                    type: 'attack-pattern',
+                    created: datetime(),
+                    modified: datetime(),
+                    x_mitre_version: '1.0',
+                    x_bj_novel: true,
+                    x_bj_promoted_from: $candidate_id,
+                    x_bj_promoted_by: $reviewer_id,
+                    x_bj_confidence: c.confidence
+                })
+                WITH a, c
+                // Link to source report if exists
+                OPTIONAL MATCH (r:Report {stix_id: c.source_report})
+                FOREACH (_ IN CASE WHEN r IS NOT NULL THEN [1] ELSE [] END |
+                    MERGE (a)-[:EXTRACTED_FROM]->(r)
+                )
+                // Update candidate status
+                SET c.status = 'promoted',
+                    c.promoted_to = $attack_id,
+                    c.reviewed_by = $reviewer_id,
+                    c.reviewed_at = datetime()
+                RETURN a.stix_id as attack_id, a.name as name
+            """
+            
+            # Add external ID if provided
+            if external_id:
+                create_query = create_query.replace(
+                    "x_bj_confidence: c.confidence",
+                    f"x_bj_confidence: c.confidence, external_id: '{external_id}'"
+                )
+            
+            promote_result = session.run(
+                create_query,
+                candidate_id=candidate_id,
+                attack_id=attack_id,
+                reviewer_id=reviewer_id
+            )
+            
+            promoted = promote_result.single()
+            
+            if promoted:
+                return {
+                    "success": True,
+                    "candidate_id": candidate_id,
+                    "attack_id": promoted["attack_id"],
+                    "name": promoted["name"],
+                    "status": "promoted"
+                }
+            
+            raise ValueError("Failed to promote candidate pattern")
+    
+    def find_similar_patterns(
+        self,
+        candidate_id: str,
+        threshold: float = 0.8
+    ) -> List[Dict[str, Any]]:
+        """
+        Find existing attack patterns similar to a candidate.
+        
+        Args:
+            candidate_id: Candidate pattern ID
+            threshold: Similarity threshold (0-1)
+            
+        Returns:
+            List of similar patterns with scores
+        """
+        with self.driver.session() as session:
+            # Get candidate details
+            candidate_query = """
+                MATCH (c:CandidateAttackPattern {candidate_id: $candidate_id})
+                RETURN c.name as name, c.description as description
+            """
+            
+            result = session.run(candidate_query, candidate_id=candidate_id)
+            candidate = result.single()
+            
+            if not candidate:
+                return []
+            
+            # Search for similar patterns by name/description overlap
+            # In production, would use vector similarity
+            similarity_query = """
+                MATCH (c:CandidateAttackPattern {candidate_id: $candidate_id})
+                MATCH (a:AttackPattern)
+                WHERE (toLower(a.name) CONTAINS toLower($search_term) OR
+                       toLower(a.description) CONTAINS toLower($search_term))
+                RETURN a.stix_id as id,
+                       a.name as name,
+                       a.description as description,
+                       a.external_id as external_id
+                LIMIT 10
+            """
+            
+            # Simple keyword search for now
+            search_term = candidate["name"].split()[0] if candidate["name"] else ""
+            
+            similar_result = session.run(
+                similarity_query,
+                candidate_id=candidate_id,
+                search_term=search_term
+            )
+            
+            similar = []
+            for record in similar_result:
+                # Calculate simple similarity score
+                name_match = search_term.lower() in record["name"].lower()
+                desc_match = search_term.lower() in (record["description"] or "").lower()
+                score = (1.0 if name_match else 0.5) * (1.0 if desc_match else 0.8)
+                
+                if score >= threshold:
+                    similar.append({
+                        "id": record["id"],
+                        "name": record["name"],
+                        "description": record["description"][:200] + "..." 
+                                    if len(record["description"] or "") > 200 
+                                    else record["description"],
+                        "external_id": record["external_id"],
+                        "similarity_score": round(score, 2)
+                    })
+            
+            return sorted(similar, key=lambda x: x["similarity_score"], reverse=True)
+    
     def close(self):
         """Close the Neo4j connection."""
         if self.driver:

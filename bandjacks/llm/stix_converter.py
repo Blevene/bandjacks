@@ -1,3 +1,51 @@
+"""Shim module providing merge_with_vector_results used by mapper routes.
+
+This merges two STIX 2.1 bundles by deduplicating objects by `id` and
+preferring fields from the LLM bundle, while ensuring vector-only objects are
+retained when not present in the LLM output.
+"""
+from __future__ import annotations
+
+from typing import Dict, Any, List
+
+
+def _index_by_id(objs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    by_id: Dict[str, Dict[str, Any]] = {}
+    for obj in objs or []:
+        obj_id = obj.get("id")
+        if not obj_id:
+            continue
+        by_id[obj_id] = obj
+    return by_id
+
+
+def merge_with_vector_results(llm_bundle: Dict[str, Any], vector_bundle: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge two STIX bundles with simple precedence rules.
+
+    - Objects keyed by `id`
+    - Prefer LLM object when ids collide
+    - Append unique vector-only objects
+    - Keep type and essential fields as-is
+    """
+    llm_objects = (llm_bundle or {}).get("objects", [])
+    vec_objects = (vector_bundle or {}).get("objects", [])
+
+    merged_index = _index_by_id(llm_objects)
+
+    for obj in vec_objects:
+        obj_id = obj.get("id")
+        if not obj_id:
+            continue
+        if obj_id not in merged_index:
+            merged_index[obj_id] = obj
+
+    merged_objects = list(merged_index.values())
+    return {
+        "type": "bundle",
+        "id": (llm_bundle or {}).get("id") or (vector_bundle or {}).get("id") or "bundle--merged",
+        "objects": merged_objects,
+    }
+
 """Convert LLM extraction output to STIX bundles."""
 
 import uuid

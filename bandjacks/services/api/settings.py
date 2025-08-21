@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     neo4j_password: str = ""
 
     opensearch_url: str = "http://localhost:9200"
+    opensearch_user: str = "admin"
+    opensearch_password: str = ""
     os_index_nodes: str = "bandjacks_attack_nodes-v1"
 
     adm_mode: str = "schema"   # "sidecar" | "schema"

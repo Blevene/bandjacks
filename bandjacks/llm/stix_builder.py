@@ -127,17 +127,26 @@ class STIXBuilder:
             if entity:
                 entities.append(entity)
         
-        # Extract technique
-        technique_id = claim.get("technique_id", "")
-        if technique_id and re.match(r"T\d{4}(?:\.\d{3})?", technique_id):
-            technique = self._create_technique_object(
-                technique_id,
-                claim,
-                report_id,
-                extraction_metadata
-            )
-            if technique:
-                techniques.append(technique)
+        # Extract techniques from mappings
+        mappings = claim.get("mappings", [])
+        for mapping in mappings:
+            technique_id = mapping.get("external_id", "")
+            if technique_id and re.match(r"T\d{4}(?:\.\d{3})?", technique_id):
+                # Create enhanced claim with mapping info
+                enhanced_claim = claim.copy()
+                enhanced_claim["technique_name"] = mapping.get("name", "")
+                enhanced_claim["stix_id"] = mapping.get("stix_id", "")
+                enhanced_claim["confidence"] = mapping.get("confidence", 50)
+                enhanced_claim["rationale"] = mapping.get("rationale", "")
+                
+                technique = self._create_technique_object(
+                    technique_id,
+                    enhanced_claim,
+                    report_id,
+                    extraction_metadata
+                )
+                if technique:
+                    techniques.append(technique)
         
         return entities, techniques
     
@@ -196,12 +205,14 @@ class STIXBuilder:
     ) -> Optional[Dict[str, Any]]:
         """Create a STIX attack-pattern object for a technique."""
         
-        # Resolve to proper STIX ID
-        stix_id = None
-        if self.entity_resolver:
+        # Use pre-resolved STIX ID from LLM mapping if available
+        stix_id = claim.get("stix_id")
+        
+        # Fallback to entity resolver
+        if not stix_id and self.entity_resolver:
             stix_id = self.entity_resolver.resolve_technique(technique_id)
         
-        # Generate ID based on technique ID if not found
+        # Generate ID based on technique ID if still not found
         if not stix_id:
             # Standard format: attack-pattern--[uuid]
             # We'll use a deterministic UUID based on technique ID for consistency

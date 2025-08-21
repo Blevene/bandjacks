@@ -32,9 +32,10 @@ Your task is to analyze threat intelligence text and extract structured claims a
    - Mark infrastructure indicators (IPs, domains, hashes)
 
 2. **Technique Mapping**:
-   - Call vector_search_ttx for relevant techniques (1-2 searches max)
-   - Use graph_lookup to verify high-confidence matches
+   - Call vector_search_ttx for relevant techniques (2-4 focused searches)
+   - Use graph_lookup to verify high-confidence matches when needed
    - Call list_tactics once if tactic context needed
+   - Search broadly first, then refine with specific terms
 
 3. **Evidence Collection**:
    - Record exact text spans with line numbers
@@ -123,13 +124,14 @@ Text (with line numbers):
 
 EXTRACTION TASKS:
 1. Identify threat actors, malware, tools, and campaigns mentioned
-2. Search for relevant ATT&CK techniques using tools (1-2 searches max)
+2. Search for relevant ATT&CK techniques using tools (2-4 focused searches)
 3. Extract temporal information (dates, timeframes)
 4. Note infrastructure indicators (IPs, domains, hashes)
 5. Provide evidence with line numbers for all claims
 
 TOOL USAGE:
-- Use vector_search_ttx for technique discovery (1-2 calls max)
+- Use vector_search_ttx for technique discovery (2-4 focused searches)
+- Search broadly first (e.g., "injection", "c2"), then specifically
 - Use graph_lookup to verify high-confidence matches
 - Use list_tactics if tactic context needed
 

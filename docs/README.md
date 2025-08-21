@@ -6,7 +6,9 @@ Bandjacks is a Cyber Threat Defense World Modeling system that ingests and proce
 ## Quick Links
 
 - **[API Documentation](API_DOCUMENTATION.md)** - Complete REST API reference with all endpoints
+- **[Extraction Guide](EXTRACTION_GUIDE.md)** - How to use the high-performance extraction pipeline
 - **[CLI Usage Guide](CLI_USAGE.md)** - Comprehensive command-line interface documentation
+- **[Optimization Summary](OPTIMIZATION_SUMMARY.md)** - Performance improvements and benchmarks
 - **[OpenAPI Specification](openapi.json)** - Machine-readable API specification
 - **[Architecture Overview](../product_management_stuff/architecture.md)** - System design
 - **[Functional Specification](../product_management_stuff/functional_spec.md)** - Detailed requirements
@@ -16,7 +18,7 @@ Bandjacks is a Cyber Threat Defense World Modeling system that ingests and proce
 ### Core Capabilities
 - **ATT&CK Integration**: Full support for MITRE ATT&CK framework with ADM validation
 - **Natural Language Search**: Hybrid vector and graph search with query expansion
-- **Multi-Engine Extraction**: Vector-based, LLM-based (Gemini-2.0-Flash), and hybrid approaches
+- **High-Performance Extraction**: Async pipeline extracts techniques in 12-40 seconds
 - **Technique Phrase Recognition**: 150+ technique phrases and tool associations
 - **Knowledge Graph**: Neo4j-based graph with RDF/OWL semantics
 - **Vector Search**: OpenSearch KNN for semantic similarity
@@ -24,16 +26,19 @@ Bandjacks is a Cyber Threat Defense World Modeling system that ingests and proce
 - **STIX 2.1 Compliance**: Full STIX bundle generation and validation
 
 ### Performance Features
-- **Redis Caching**: Query result caching with configurable TTL
+- **Async Processing**: Parallel extraction with 94% performance improvement
+- **LLM Response Caching**: 87.5% speedup on repeated extractions
+- **Single-Pass Extraction**: Optimized processing for small documents (<500 words)
+- **Batch Operations**: Single LLM call processes multiple spans
+- **Early Termination**: Skip verification for high-confidence claims (>90%)
 - **Connection Pooling**: Efficient database connection management
-- **Query Optimization**: Automatic index creation and query hints
-- **Batch Operations**: Efficient bulk processing capabilities
 
 ## System Components
 
 1. **Ingestion & Mapping**
    - Document parsers (PDF, HTML, Markdown, JSON, CSV)
-   - Text chunking with overlap
+   - Async extraction pipeline with parallel processing
+   - Single-pass extraction for small documents
    - LLM-based extraction with tool grounding
    - Vector similarity search
 
@@ -42,12 +47,14 @@ Bandjacks is a Cyber Threat Defense World Modeling system that ingests and proce
    - OpenSearch vector store
    - ATT&CK catalog management
    - Tactic and technique storage
+   - In-memory LLM response cache
 
 3. **API Services**
    - FastAPI REST endpoints
-   - Real-time extraction
+   - Async extraction runs with status tracking
    - Bundle validation
    - Review and feedback
+   - Cache management endpoints
 
 ## Documentation Structure
 
@@ -56,6 +63,8 @@ docs/
 ├── README.md                 # This file
 ├── API_DOCUMENTATION.md     # Complete API reference
 ├── CLI_USAGE.md             # CLI commands and usage
+├── EXTRACTION_GUIDE.md      # Extraction pipeline guide
+├── OPTIMIZATION_SUMMARY.md  # Performance optimization details
 └── openapi.json             # OpenAPI specification
 ```
 

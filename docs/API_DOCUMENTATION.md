@@ -403,13 +403,129 @@ Find paths between two nodes.
 
 ### Document Extraction
 
-#### Extract from Document
+#### Start Extraction Run (Async Pipeline - Recommended)
+
+```http
+POST /v1/extract/runs
+```
+
+Start an async extraction run using the retrieval-first, evidence-anchored pipeline.
+
+**Request Body:**
+
+```json
+{
+  "method": "agentic_v2",
+  "content": "Report text or document content",
+  "title": "Optional report title",
+  "config": {
+    "top_k": 5,
+    "disable_discovery": true,
+    "max_discovery_per_span": 1,
+    "min_quotes": 2
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "run_id": "ex-27798222-d2ad-41a8-b879-666a6fcf33c6",
+  "accepted": true
+}
+```
+
+> PDF ingestion note: parse the PDF to text client-side (e.g., PyPDF2) or provide a `file://` URI and extract text prior to posting. The async endpoint expects plain text in `content`.
+
+#### Get Extraction Status
+
+```http
+GET /v1/extract/runs/{run_id}/status
+```
+
+Check the status of an extraction run.
+
+**Response:**
+
+```json
+{
+  "run_id": "ex-27798222-d2ad-41a8-b879-666a6fcf33c6",
+  "state": "running",            
+  "stage": "Mapper",             
+  "percent": 65,
+  "spans_total": 38,
+  "spans_processed": 22,
+  "counters": {
+    "llm_calls": 0,
+    "candidates": 0,
+    "verified_claims": 15,
+    "techniques": 12,
+    "spans_found": 38
+  },
+  "cost_usd": 0.0,
+  "dur_sec": 486,
+  "events_tail": []
+}
+```
+
+#### Get Extraction Result
+
+```http
+GET /v1/extract/runs/{run_id}/result
+```
+
+Get the final extraction results.
+
+**Response:**
+
+```json
+{
+  "techniques": {
+    "T1566.001": {
+      "name": "Phishing: Spearphishing Attachment",
+      "confidence": 95,
+      "evidence": ["The attackers sent spearphishing emails..."],
+      "line_refs": [15, 16],
+      "tactic": "initial-access",
+      "claim_count": 2
+    }
+  },
+  "bundle": {
+    "type": "bundle",
+    "id": "bundle--...",
+    "objects": [
+      
+    ]
+  },
+  "flow": { 
+    
+  },
+  "metrics": {
+    "run_id": "ex-27798222-d2ad-41a8-b879-666a6fcf33c6",
+    "stage": "Assembler",
+    "percent": 100,
+    "dur_sec": 512,
+    "spans_total": 38,
+    "spans_processed": 38,
+    "counters": {
+      "llm_calls": 0,
+      "candidates": 0,
+      "verified_claims": 19,
+      "techniques": 14,
+      "spans_found": 38
+    }
+  }
+}
+```
+
+#### Legacy Document Extraction
 
 ```http
 POST /v1/extract/document
 ```
 
-Extract CTI entities from a document.
+Extract CTI entities from a document (legacy endpoint, use /extract/runs instead).
 
 **Request Body (multipart/form-data):**
 
@@ -818,6 +934,56 @@ Events:
 - `search.update` - Search result updates
 - `queue.change` - Review queue changes
 - `extraction.progress` - Extraction progress
+
+### Cache Management
+
+#### Get Cache Statistics
+
+```http
+GET /v1/cache/stats
+```
+
+Get LLM response cache statistics.
+
+**Response:**
+
+```json
+{
+  "hits": 42,
+  "misses": 15,
+  "evictions": 3,
+  "hit_rate": "73.7%",
+  "size": 54
+}
+```
+
+**Example:**
+
+```bash
+curl http://localhost:8000/v1/cache/stats
+```
+
+#### Clear Cache
+
+```http
+POST /v1/cache/clear
+```
+
+Clear the LLM response cache.
+
+**Response:**
+
+```json
+{
+  "message": "Cache cleared successfully"
+}
+```
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:8000/v1/cache/clear
+```
 
 ## SDK Examples
 

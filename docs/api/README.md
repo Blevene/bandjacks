@@ -43,7 +43,14 @@ Extract TTPs from documents.
 
 - [`POST /mapper/propose`](./mapper.md#post-mapperpropose) - Analyze document and propose mappings
 
-### 5. LLM Extraction
+### 5. Extraction Runs (Async)
+High-performance, evidence-anchored extraction with status polling.
+
+- [`POST /extract/runs`](./extract.md#post-extractruns) - Start an async extraction run
+- [`GET /extract/runs/{run_id}/status`](./extract.md#get-extractrunsrun_idstatus) - Check run status
+- [`GET /extract/runs/{run_id}/result`](./extract.md#get-extractrunsrun_idresult) - Get final result
+
+### 6. LLM Extraction
 Advanced extraction using LLMs.
 
 - [`POST /llm/extract`](./llm.md#post-llmextract) - Extract with LLM and tool grounding
