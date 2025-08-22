@@ -34,7 +34,10 @@ class Neo4jDDL:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackAsset) REQUIRE n.asset_id IS UNIQUE",
             # Sprint 7 Detection additions
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Environment) REQUIRE n.env_id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AnalyticOverride) REQUIRE n.override_id IS UNIQUE"
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AnalyticOverride) REQUIRE n.override_id IS UNIQUE",
+            # Sprint 7 Extension - Sigma rules
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SigmaRule) REQUIRE n.rule_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SigmaFeedback) REQUIRE n.feedback_id IS UNIQUE"
         ]
         
         for constraint in constraints:
@@ -86,7 +89,18 @@ class Neo4jDDL:
             "CREATE INDEX IF NOT EXISTS FOR (n:Environment) ON (n.name)",
             "CREATE INDEX IF NOT EXISTS FOR (n:AnalyticOverride) ON (n.analytic_id)",
             "CREATE INDEX IF NOT EXISTS FOR (n:AnalyticOverride) ON (n.env_id)",
-            "CREATE INDEX IF NOT EXISTS FOR (n:AnalyticOverride) ON (n.timestamp)"
+            "CREATE INDEX IF NOT EXISTS FOR (n:AnalyticOverride) ON (n.timestamp)",
+            # Sprint 7 Extension - Sigma rules
+            "CREATE INDEX IF NOT EXISTS FOR (n:SigmaRule) ON (n.title)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SigmaRule) ON (n.status)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SigmaRule) ON (n.severity)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SigmaRule) ON (n.platforms)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SigmaRule) ON (n.logsource_product)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SigmaRule) ON (n.logsource_service)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SigmaRule) ON (n.commit_sha)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SigmaRule) ON (n.ingested_at)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SigmaFeedback) ON (n.rule_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SigmaFeedback) ON (n.timestamp)"
         ]
         
         for index in indexes:
@@ -109,6 +123,12 @@ class Neo4jDDL:
             CREATE FULLTEXT INDEX software_search IF NOT EXISTS
             FOR (n:Software)
             ON EACH [n.name, n.description]
+            """,
+            # Sprint 7 Extension - Sigma rules
+            """
+            CREATE FULLTEXT INDEX sigma_rule_search IF NOT EXISTS
+            FOR (n:SigmaRule)
+            ON EACH [n.title, n.description, n.tags]
             """
         ]
         
