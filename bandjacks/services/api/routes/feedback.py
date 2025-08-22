@@ -65,6 +65,26 @@ class FeedbackResponse(BaseModel):
     message: str
 
 
+class AnalyticFeedback(BaseModel):
+    """Feedback for detection analytics with mutable element overrides."""
+    score: int = Field(..., ge=1, le=5, description="Overall score (1-5)")
+    labels: List[str] = Field(default_factory=list, description="Labels like 'accurate', 'useful', 'noisy'")
+    overrides: Dict[str, str] = Field(default_factory=dict, description="Mutable element overrides")
+    env_id: str = Field("default", description="Environment ID for override scoping")
+    comment: Optional[str] = Field(None, description="Optional comment")
+    analyst_id: Optional[str] = Field(None, description="Analyst identifier")
+
+
+class AnalyticFeedbackResponse(BaseModel):
+    """Response for analytic feedback submission."""
+    feedback_id: str
+    analytic_id: str
+    overrides_applied: int
+    environment: str
+    message: str
+    trace_id: Optional[str]
+
+
 @router.post("/quality",
     response_model=QualityFeedbackResponse,
     summary="Submit Quality Feedback with Granular Scoring",
@@ -671,3 +691,169 @@ async def get_feedback_statistics(
             for status_counts in stats_by_type.values()
         )
     }
+
+
+@router.post("/analytic/{analytic_id}",
+    response_model=AnalyticFeedbackResponse,
+    summary="Submit Analytic Feedback with Overrides",
+    description="""
+    Submit feedback for a detection analytic with mutable element overrides.
+    
+    This endpoint allows analysts to:
+    - Score analytics on effectiveness (1-5 scale)
+    - Apply labels for categorization
+    - Override mutable elements (e.g., thresholds, time windows)
+    - Scope overrides to specific environments
+    
+    Overrides are persisted as OVERRIDDEN_IN relationships to Environment nodes
+    and are automatically applied when retrieving analytics for that environment.
+    """,
+    responses={
+        200: {"description": "Feedback successfully recorded"},
+        404: {"description": "Analytic not found"},
+        400: {"description": "Invalid feedback data"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def submit_analytic_feedback(
+    analytic_id: str,
+    feedback: AnalyticFeedback,
+    request: Request,
+    neo4j_session=Depends(get_neo4j_session)
+) -> AnalyticFeedbackResponse:
+    """Submit feedback and overrides for a detection analytic."""
+    
+    trace_id = get_trace_id()
+    feedback_id = f"afb-{uuid.uuid4().hex[:12]}"
+    timestamp = datetime.utcnow().isoformat()
+    
+    # Verify analytic exists
+    check_query = """
+        MATCH (a:Analytic {stix_id: $analytic_id})
+        RETURN a.name as name, a.x_mitre_mutable_elements as mutable_elements
+    """
+    check_result = neo4j_session.run(check_query, analytic_id=analytic_id)
+    record = check_result.single()
+    
+    if not record:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Analytic {analytic_id} not found"
+        )
+    
+    analytic_name = record["name"]
+    mutable_elements = json.loads(record["mutable_elements"] or "[]")
+    valid_fields = {elem.get("field") for elem in mutable_elements if elem.get("field")}
+    
+    # Validate override fields
+    invalid_overrides = set(feedback.overrides.keys()) - valid_fields
+    if invalid_overrides:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid override fields: {invalid_overrides}. Valid fields: {valid_fields}"
+        )
+    
+    # Create or get environment
+    env_query = """
+        MERGE (env:Environment {env_id: $env_id})
+        ON CREATE SET 
+            env.name = $env_id,
+            env.created = datetime()
+        SET env.modified = datetime()
+        RETURN env
+    """
+    neo4j_session.run(env_query, env_id=feedback.env_id)
+    
+    # Record feedback
+    feedback_query = """
+        MATCH (a:Analytic {stix_id: $analytic_id})
+        CREATE (f:AnalyticFeedback {
+            feedback_id: $feedback_id,
+            analytic_id: $analytic_id,
+            score: $score,
+            labels: $labels,
+            comment: $comment,
+            analyst_id: $analyst_id,
+            env_id: $env_id,
+            timestamp: datetime($timestamp),
+            trace_id: $trace_id
+        })
+        CREATE (a)-[:HAS_FEEDBACK]->(f)
+        RETURN f
+    """
+    
+    neo4j_session.run(
+        feedback_query,
+        analytic_id=analytic_id,
+        feedback_id=feedback_id,
+        score=feedback.score,
+        labels=json.dumps(feedback.labels),
+        comment=feedback.comment,
+        analyst_id=feedback.analyst_id or "anonymous",
+        env_id=feedback.env_id,
+        timestamp=timestamp,
+        trace_id=trace_id
+    )
+    
+    # Apply overrides
+    overrides_applied = 0
+    for field, value in feedback.overrides.items():
+        override_id = f"override-{uuid.uuid4().hex[:12]}"
+        
+        override_query = """
+            MATCH (a:Analytic {stix_id: $analytic_id})
+            MATCH (env:Environment {env_id: $env_id})
+            CREATE (o:AnalyticOverride {
+                override_id: $override_id,
+                analytic_id: $analytic_id,
+                env_id: $env_id,
+                field: $field,
+                value: $value,
+                timestamp: datetime($timestamp),
+                applied_by: $analyst_id,
+                feedback_id: $feedback_id
+            })
+            CREATE (a)-[:OVERRIDDEN_IN {
+                field: $field,
+                value: $value,
+                timestamp: datetime($timestamp)
+            }]->(env)
+            CREATE (o)-[:APPLIES_TO]->(a)
+            CREATE (o)-[:IN_ENVIRONMENT]->(env)
+            RETURN o
+        """
+        
+        result = neo4j_session.run(
+            override_query,
+            override_id=override_id,
+            analytic_id=analytic_id,
+            env_id=feedback.env_id,
+            field=field,
+            value=value,
+            timestamp=timestamp,
+            analyst_id=feedback.analyst_id or "anonymous",
+            feedback_id=feedback_id
+        )
+        
+        if result.single():
+            overrides_applied += 1
+    
+    # Update analytic's last feedback timestamp
+    neo4j_session.run("""
+        MATCH (a:Analytic {stix_id: $analytic_id})
+        SET a.last_feedback = datetime($timestamp),
+            a.feedback_count = COALESCE(a.feedback_count, 0) + 1,
+            a.average_score = COALESCE(
+                (a.average_score * COALESCE(a.feedback_count - 1, 0) + $score) / a.feedback_count,
+                $score
+            )
+    """, analytic_id=analytic_id, timestamp=timestamp, score=feedback.score)
+    
+    return AnalyticFeedbackResponse(
+        feedback_id=feedback_id,
+        analytic_id=analytic_id,
+        overrides_applied=overrides_applied,
+        environment=feedback.env_id,
+        message=f"Feedback recorded for '{analytic_name}' with {overrides_applied} overrides in environment '{feedback.env_id}'",
+        trace_id=trace_id
+    )
