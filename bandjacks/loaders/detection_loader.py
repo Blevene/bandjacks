@@ -5,6 +5,7 @@ import logging
 from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime
 from neo4j import GraphDatabase, Session
+from bandjacks.llm.detection_validator import DetectionValidator
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,8 @@ class DetectionLoader:
         bundle: Dict[str, Any],
         collection: str = "detection-strategies",
         version: str = "latest",
-        domain: str = "enterprise-attack"
+        domain: str = "enterprise-attack",
+        strict_validation: bool = True
     ) -> Dict[str, Any]:
         """
         Ingest a STIX 2.1 bundle containing detection strategies, analytics, and log sources.
@@ -41,15 +43,31 @@ class DetectionLoader:
             collection: Source collection name
             version: Collection version
             domain: ATT&CK domain
+            strict_validation: Enforce strict ADM validation
             
         Returns:
-            Summary of ingestion results
+            Summary of ingestion results with validation details
         """
-        with self.driver.session() as session:
-            # Validate bundle structure
-            if not isinstance(bundle, dict) or bundle.get("type") != "bundle":
-                raise ValueError("Invalid bundle format")
+        # Validate bundle if strict mode
+        rejected = []
+        warnings = []
+        
+        if strict_validation:
+            validator = DetectionValidator()
+            is_valid, rejected, warnings, errors = validator.validate_bundle(bundle)
             
+            if errors:
+                return {
+                    "success": False,
+                    "inserted": 0,
+                    "updated": 0,
+                    "rejected": rejected,
+                    "warnings": warnings,
+                    "errors": errors,
+                    "trace_id": None
+                }
+        
+        with self.driver.session() as session:
             objects = bundle.get("objects", [])
             
             # Separate objects by type
@@ -81,15 +99,26 @@ class DetectionLoader:
             # Build USES_LOG_SOURCE relationships from analytic log sources arrays
             uses_log_source_count = self._build_uses_log_source_relationships(session, analytics)
             
+            # Count inserted vs updated
+            total_inserted = strategy_count + analytic_count + log_source_count
+            total_relationships = relationship_count + has_analytic_count + uses_log_source_count
+            
             return {
                 "success": True,
-                "detection_strategies": strategy_count,
-                "analytics": analytic_count,
-                "log_sources": log_source_count,
-                "detects_relationships": relationship_count,
-                "has_analytic_relationships": has_analytic_count,
-                "uses_log_source_relationships": uses_log_source_count,
-                "total_objects": len(objects)
+                "inserted": total_inserted,
+                "updated": 0,  # TODO: Track updates separately
+                "rejected": rejected,
+                "warnings": warnings,
+                "details": {
+                    "detection_strategies": strategy_count,
+                    "analytics": analytic_count,
+                    "log_sources": log_source_count,
+                    "detects_relationships": relationship_count,
+                    "has_analytic_relationships": has_analytic_count,
+                    "uses_log_source_relationships": uses_log_source_count,
+                    "total_objects": len(objects)
+                },
+                "trace_id": None
             }
     
     def _process_log_sources(

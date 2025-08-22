@@ -66,9 +66,11 @@ class AnalyticDetail(BaseModel):
     description: Optional[str]
     platforms: List[str]
     x_mitre_detects: str
-    x_mitre_mutable_elements: List[str]
+    x_mitre_mutable_elements: List[Dict[str, Any]]  # Changed to Dict to include override info
     log_sources: List[Dict[str, Any]]
     parent_strategies: List[str]
+    environment: Optional[str] = Field(None, description="Environment ID if overrides applied")
+    has_overrides: bool = Field(False, description="Whether environment overrides are applied")
 
 
 @router.post("/ingest",
@@ -259,26 +261,52 @@ async def get_detection_strategies(
 )
 async def get_analytic_details(
     analytic_id: str,
+    env_id: Optional[str] = Query(None, description="Environment ID for overrides"),
     neo4j_session=Depends(get_neo4j_session)
 ) -> AnalyticDetail:
-    """Get detailed information about an analytic."""
+    """Get detailed information about an analytic with optional environment overrides."""
     
-    query = """
-        MATCH (a:Analytic {stix_id: $analytic_id})
-        OPTIONAL MATCH (ds:DetectionStrategy)-[:HAS_ANALYTIC]->(a)
-        OPTIONAL MATCH (a)-[uls:USES_LOG_SOURCE]->(ls:LogSource)
-        RETURN a {
-            .*,
-            parent_strategies: collect(DISTINCT ds.stix_id),
-            log_sources_detail: collect(DISTINCT {
-                log_source_id: ls.stix_id,
-                log_source_name: ls.name,
-                keys: uls.keys
-            })
-        } as analytic
-    """
-    
-    result = neo4j_session.run(query, analytic_id=analytic_id)
+    # Build query with optional environment overrides
+    if env_id:
+        query = """
+            MATCH (a:Analytic {stix_id: $analytic_id})
+            OPTIONAL MATCH (ds:DetectionStrategy)-[:HAS_ANALYTIC]->(a)
+            OPTIONAL MATCH (a)-[uls:USES_LOG_SOURCE]->(ls:LogSource)
+            OPTIONAL MATCH (ao:AnalyticOverride {analytic_id: $analytic_id, env_id: $env_id})
+            RETURN a {
+                .*,
+                parent_strategies: collect(DISTINCT ds.stix_id),
+                log_sources_detail: collect(DISTINCT {
+                    log_source_id: ls.stix_id,
+                    log_source_name: ls.name,
+                    keys: uls.keys
+                }),
+                overrides: collect(DISTINCT {
+                    field: ao.field,
+                    value: ao.value,
+                    applied_by: ao.applied_by,
+                    timestamp: ao.timestamp
+                })
+            } as analytic
+        """
+        result = neo4j_session.run(query, analytic_id=analytic_id, env_id=env_id)
+    else:
+        query = """
+            MATCH (a:Analytic {stix_id: $analytic_id})
+            OPTIONAL MATCH (ds:DetectionStrategy)-[:HAS_ANALYTIC]->(a)
+            OPTIONAL MATCH (a)-[uls:USES_LOG_SOURCE]->(ls:LogSource)
+            RETURN a {
+                .*,
+                parent_strategies: collect(DISTINCT ds.stix_id),
+                log_sources_detail: collect(DISTINCT {
+                    log_source_id: ls.stix_id,
+                    log_source_name: ls.name,
+                    keys: uls.keys
+                }),
+                overrides: []
+            } as analytic
+        """
+        result = neo4j_session.run(query, analytic_id=analytic_id)
     record = result.single()
     
     if not record:
@@ -292,6 +320,28 @@ async def get_analytic_details(
     # Parse JSON fields
     platforms = json.loads(analytic_data.get("platforms", "[]"))
     mutable_elements = json.loads(analytic_data.get("x_mitre_mutable_elements", "[]"))
+    
+    # Apply overrides to mutable elements if present
+    overrides = analytic_data.get("overrides", [])
+    if overrides and env_id:
+        # Filter out empty overrides
+        valid_overrides = [o for o in overrides if o.get("field")]
+        
+        # Apply overrides to mutable elements
+        for override in valid_overrides:
+            field = override["field"]
+            value = override["value"]
+            
+            # Update the mutable element with the override value
+            for elem in mutable_elements:
+                if elem.get("field") == field:
+                    elem["current_value"] = value
+                    elem["overridden"] = True
+                    elem["override_info"] = {
+                        "applied_by": override.get("applied_by"),
+                        "timestamp": str(override.get("timestamp"))
+                    }
+                    break
     
     # Process log sources
     log_sources = []
@@ -311,5 +361,98 @@ async def get_analytic_details(
         x_mitre_detects=analytic_data.get("x_mitre_detects", ""),
         x_mitre_mutable_elements=mutable_elements,
         log_sources=log_sources,
-        parent_strategies=analytic_data.get("parent_strategies", [])
+        parent_strategies=analytic_data.get("parent_strategies", []),
+        environment=env_id,
+        has_overrides=bool(valid_overrides) if env_id else False
     )
+
+
+@router.get("/strategies",
+    response_model=List[DetectionStrategy],
+    summary="Query Detection Strategies",
+    description="""
+    Query detection strategies by technique and/or platform.
+    
+    By default, excludes revoked and deprecated strategies.
+    Use include_revoked and include_deprecated to override.
+    """
+)
+async def get_detection_strategies(
+    technique_id: Optional[str] = Query(None, description="ATT&CK technique ID (e.g., T1003)"),
+    platform: Optional[str] = Query(None, description="Platform filter (e.g., windows, linux)"),
+    include_revoked: bool = Query(False, description="Include revoked strategies"),
+    include_deprecated: bool = Query(False, description="Include deprecated strategies"),
+    limit: int = Query(10, ge=1, le=100),
+    neo4j_session=Depends(get_neo4j_session)
+) -> List[DetectionStrategy]:
+    """Get detection strategies filtered by technique and platform."""
+    
+    # Build filters
+    filters = []
+    if not include_revoked:
+        filters.append("NOT ds.revoked")
+    if not include_deprecated:
+        filters.append("NOT ds.x_mitre_deprecated")
+    
+    filter_clause = " AND ".join(filters) if filters else "TRUE"
+    
+    # Build query
+    query = f"""
+        MATCH (ds:DetectionStrategy)
+        WHERE {filter_clause}
+    """
+    
+    # Add technique filter
+    if technique_id:
+        query += """
+        WITH ds
+        MATCH (ds)-[:DETECTS]->(ap:AttackPattern)
+        WHERE ap.external_id = $technique_id OR ap.external_id STARTS WITH ($technique_id + '.')
+        """
+    
+    # Add platform filter via analytics
+    if platform:
+        query += """
+        WITH ds
+        MATCH (ds)-[:HAS_ANALYTIC]->(a:Analytic)
+        WHERE $platform IN a.platforms
+        """
+    
+    # Complete query
+    query += """
+        WITH DISTINCT ds
+        OPTIONAL MATCH (ds)-[:HAS_ANALYTIC]->(a:Analytic)
+        OPTIONAL MATCH (ds)-[:DETECTS]->(ap:AttackPattern)
+        RETURN ds,
+               count(DISTINCT a) as analytics_count,
+               collect(DISTINCT ap.external_id) as detected_techniques
+        LIMIT $limit
+    """
+    
+    params = {
+        "technique_id": technique_id,
+        "platform": platform,
+        "limit": limit
+    }
+    
+    result = neo4j_session.run(query, **params)
+    
+    strategies = []
+    for record in result:
+        ds_data = dict(record["ds"])
+        
+        # Parse JSON fields
+        domains = json.loads(ds_data.get("x_mitre_domains", "[]"))
+        
+        strategies.append(DetectionStrategy(
+            stix_id=ds_data["stix_id"],
+            name=ds_data["name"],
+            description=ds_data.get("description"),
+            det_id=ds_data.get("det_id"),
+            x_mitre_version=ds_data.get("x_mitre_version"),
+            x_mitre_domains=domains,
+            analytics_count=record["analytics_count"],
+            detected_techniques=record["detected_techniques"] or []
+        ))
+    
+    return strategies

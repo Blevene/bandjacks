@@ -31,7 +31,10 @@ class Neo4jDDL:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackFlow) REQUIRE n.flow_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackCondition) REQUIRE n.condition_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackOperator) REQUIRE n.operator_id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackAsset) REQUIRE n.asset_id IS UNIQUE"
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackAsset) REQUIRE n.asset_id IS UNIQUE",
+            # Sprint 7 Detection additions
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Environment) REQUIRE n.env_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AnalyticOverride) REQUIRE n.override_id IS UNIQUE"
         ]
         
         for constraint in constraints:
@@ -73,7 +76,17 @@ class Neo4jDDL:
             "CREATE INDEX IF NOT EXISTS FOR (n:AttackCondition) ON (n.created)",
             "CREATE INDEX IF NOT EXISTS FOR (n:AttackOperator) ON (n.operator)",
             "CREATE INDEX IF NOT EXISTS FOR (n:AttackAsset) ON (n.name)",
-            "CREATE INDEX IF NOT EXISTS FOR (n:AttackAsset) ON (n.type)"
+            "CREATE INDEX IF NOT EXISTS FOR (n:AttackAsset) ON (n.type)",
+            # Sprint 7 Detection additions
+            "CREATE INDEX IF NOT EXISTS FOR (n:DetectionStrategy) ON (n.det_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:DetectionStrategy) ON (n.source_domain)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:Analytic) ON (n.revoked)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:Analytic) ON (n.x_mitre_deprecated)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:LogSource) ON (n.source_domain)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:Environment) ON (n.name)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:AnalyticOverride) ON (n.analytic_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:AnalyticOverride) ON (n.env_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:AnalyticOverride) ON (n.timestamp)"
         ]
         
         for index in indexes:
