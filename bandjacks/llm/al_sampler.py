@@ -281,7 +281,8 @@ class ALSampler:
                     import json
                     import hashlib
                     
-                    queue_id = f"queue-{hashlib.md5(f'{item["item_type"]}-{item["item_id"]}'.encode()).hexdigest()[:12]}"
+                    item_str = f'{item["item_type"]}-{item["item_id"]}'
+                    queue_id = f"queue-{hashlib.md5(item_str.encode()).hexdigest()[:12]}"
                     
                     session.run(
                         enqueue_query,
@@ -331,8 +332,22 @@ class ALSampler:
     
     async def _trigger_notifications(self, job_id: str, enqueued_count: int):
         """Trigger notifications for reviewers."""
-        # This will be implemented by the notification service
-        logger.info(f"Triggering notifications for job {job_id}: {enqueued_count} items need review")
+        try:
+            from ..services.notification_service import get_notification_service
+            
+            notification_service = get_notification_service()
+            result = await notification_service.notify_review_needed(
+                job_id=job_id,
+                item_count=enqueued_count,
+                high_priority_count=0,  # Could calculate from queue
+                item_types=["flow_edge", "mapping", "extraction", "detection"]
+            )
+            
+            logger.info(f"Notifications sent for job {job_id}: {result}")
+        except Exception as e:
+            logger.error(f"Failed to send notifications: {e}")
+            # Don't fail the job if notifications fail
+            logger.info(f"Triggering notifications for job {job_id}: {enqueued_count} items need review")
     
     def close(self):
         """Close Neo4j connection."""
