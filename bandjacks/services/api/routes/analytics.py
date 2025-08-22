@@ -102,6 +102,29 @@ def get_neo4j_driver():
     )
 
 
+@router.get("/coverage", response_model=CoverageResponse)
+async def analyze_coverage_get(
+    tactics: Optional[str] = Query(None, description="Comma-separated list of tactics"),
+    platforms: Optional[str] = Query(None, description="Comma-separated list of platforms"),
+    groups: Optional[str] = Query(None, description="Comma-separated list of threat groups"),
+    include_sub_techniques: bool = Query(True, description="Include sub-techniques in analysis")
+) -> CoverageResponse:
+    """
+    Analyze attack coverage across tactics, platforms, and groups (GET version).
+    
+    Identifies gaps in detection and defensive capabilities.
+    """
+    # Convert query params to request object
+    request = CoverageRequest(
+        tactics=tactics.split(",") if tactics else None,
+        platforms=platforms.split(",") if platforms else None,
+        groups=groups.split(",") if groups else None,
+        include_sub_techniques=include_sub_techniques
+    )
+    
+    return await analyze_coverage(request)
+
+
 @router.post("/coverage", response_model=CoverageResponse)
 async def analyze_coverage(request: CoverageRequest) -> CoverageResponse:
     """
@@ -349,18 +372,19 @@ def _get_coverage_summary(session) -> Dict[str, Any]:
 def _analyze_tactics_coverage(session, tactics: Optional[List[str]], include_sub: bool) -> List[TacticCoverage]:
     """Analyze coverage by tactics."""
     query = """
-        MATCH (t:AttackPattern)
-        WHERE $tactics IS NULL OR ANY(kc IN t.kill_chain_phases WHERE kc.phase_name IN $tactics)
+        MATCH (t:AttackPattern)-[:HAS_TACTIC]->(tac:Tactic)
+        WHERE ($tactics IS NULL OR tac.name IN $tactics)
         AND ($include_sub OR t.x_mitre_is_subtechnique = false OR t.x_mitre_is_subtechnique IS NULL)
-        WITH t.kill_chain_phases as phases, t
-        UNWIND phases as phase
-        WITH phase.phase_name as tactic, collect(DISTINCT t) as techniques
-        OPTIONAL MATCH (techniques)<-[:MITIGATES]-(m:Mitigation)
-        WITH tactic, techniques, collect(DISTINCT m) as mitigations
+        WITH tac.name as tactic, collect(DISTINCT t) as techniques
+        WITH tactic, techniques,
+             size(techniques) as technique_count,
+             size([tech IN techniques WHERE EXISTS((tech)<-[:MITIGATES]-())]) as covered_count
         RETURN tactic,
-               size(techniques) as technique_count,
-               size([t IN techniques WHERE EXISTS((t)<-[:MITIGATES]-())]) as covered_count,
-               round(100.0 * size([t IN techniques WHERE EXISTS((t)<-[:MITIGATES]-())]) / size(techniques), 2) as coverage_percentage
+               technique_count,
+               covered_count,
+               CASE WHEN technique_count > 0 
+                    THEN round(100.0 * covered_count / technique_count, 2) 
+                    ELSE 0.0 END as coverage_percentage
         ORDER BY coverage_percentage ASC
     """
     
@@ -370,8 +394,8 @@ def _analyze_tactics_coverage(session, tactics: Optional[List[str]], include_sub
     for record in result:
         # Get top gaps for this tactic
         gaps_result = session.run("""
-            MATCH (t:AttackPattern)
-            WHERE ANY(kc IN t.kill_chain_phases WHERE kc.phase_name = $tactic)
+            MATCH (t:AttackPattern)-[:HAS_TACTIC]->(tac:Tactic)
+            WHERE tac.name = $tactic
             AND NOT EXISTS((t)<-[:MITIGATES]-())
             RETURN t.stix_id as technique_id, t.name as name
             LIMIT 5

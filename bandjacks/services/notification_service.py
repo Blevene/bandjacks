@@ -49,6 +49,10 @@ class NotificationService:
         
         # Default to log channel if not configured
         self.default_channel = NotificationChannel.LOG
+        
+        # Notification history for testing/debugging
+        self.notification_history = []
+        self.max_history_size = 1000
     
     async def notify_review_needed(
         self,
@@ -98,6 +102,8 @@ class NotificationService:
                     "channel": channel.value,
                     "success": result["success"]
                 })
+                # Record in history
+                self._record_notification(notification, channel.value, result["success"])
         
         return {
             "notification_id": f"notif-{job_id}",
@@ -149,6 +155,7 @@ class NotificationService:
         
         # Just log if no admin configured
         logger.info(f"Review completed: {notification}")
+        self._record_notification(notification, "log", True)
         return {"success": True, "channel": "log"}
     
     async def notify_threshold_alert(
@@ -432,6 +439,70 @@ class NotificationService:
         message += f"\n\nPlease visit the review queue to process these items."
         
         return message
+    
+    def _record_notification(
+        self,
+        notification: Dict[str, Any],
+        channel: str,
+        success: bool
+    ):
+        """Record notification in history."""
+        history_entry = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "notification": notification,
+            "channel": channel,
+            "success": success
+        }
+        
+        # Add to history with size limit
+        self.notification_history.append(history_entry)
+        if len(self.notification_history) > self.max_history_size:
+            self.notification_history.pop(0)
+    
+    def get_notification_history(
+        self,
+        limit: Optional[int] = None,
+        notification_type: Optional[str] = None,
+        since: Optional[datetime] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get notification history.
+        
+        Args:
+            limit: Maximum number of entries to return
+            notification_type: Filter by notification type
+            since: Only return notifications after this time
+            
+        Returns:
+            List of notification history entries
+        """
+        history = self.notification_history
+        
+        # Filter by type if specified
+        if notification_type:
+            history = [
+                h for h in history
+                if h["notification"].get("type", {}).value == notification_type
+            ]
+        
+        # Filter by time if specified
+        if since:
+            since_iso = since.isoformat()
+            history = [
+                h for h in history
+                if h["timestamp"] >= since_iso
+            ]
+        
+        # Apply limit
+        if limit:
+            history = history[-limit:]
+        
+        return history
+    
+    def clear_notification_history(self):
+        """Clear notification history."""
+        self.notification_history = []
+        logger.info("Notification history cleared")
 
 
 # Singleton instance

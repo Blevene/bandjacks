@@ -4,7 +4,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from bandjacks.services.api.settings import settings
-from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs, attackflow, detections, coverage, compliance
+from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs, attackflow, detections, coverage, compliance, ml_metrics, notifications
 from bandjacks.services.api.middleware import TracingMiddleware
 from bandjacks.services.api.middleware.error_handler import ErrorHandlerMiddleware
 from bandjacks.services.api.middleware.auth import JWTAuthMiddleware
@@ -175,6 +175,10 @@ tags_metadata = [
     {
         "name": "compliance",
         "description": "Compliance metrics and reporting for ADM validation and review processes",
+    },
+    {
+        "name": "ml-metrics",
+        "description": "Machine learning model performance metrics and monitoring",
     }
 ]
 
@@ -202,6 +206,8 @@ app.include_router(attackflow.router, prefix=settings.api_prefix)
 app.include_router(detections.router, prefix=settings.api_prefix)
 app.include_router(coverage.router, prefix=settings.api_prefix)
 app.include_router(compliance.router, prefix=settings.api_prefix)
+app.include_router(ml_metrics.router, prefix=settings.api_prefix)
+app.include_router(notifications.router, prefix=settings.api_prefix)
 
 # Cache management endpoints
 @app.get("/v1/cache/stats", tags=["monitoring"])
