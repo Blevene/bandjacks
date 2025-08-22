@@ -74,6 +74,19 @@ async def build_flow(
                 source_id=request.source_id or source_id
             )
             
+        elif request and request.intrusion_set_id:
+            # From an Intrusion Set's known technique usages
+            flow_data = builder.build_from_intrusion_set(
+                intrusion_set_id=request.intrusion_set_id
+            )
+
+        elif request and request.techniques:
+            # From an explicit list of techniques (STIX or ATT&CK IDs)
+            flow_data = builder.build_from_techniques(
+                techniques=request.techniques,
+                name=f"Flow from techniques ({len(request.techniques)})"
+            )
+
         elif source_id:
             # Load from stored source
             flow_data = builder.build_from_source(source_id)

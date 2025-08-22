@@ -1,0 +1,160 @@
+{
+  "type": "bundle",
+  "id": "bundle--example-linear-001",
+  "spec_version": "2.1",
+  "created": "2025-08-22T12:00:00.000Z",
+  "modified": "2025-08-22T12:00:00.000Z",
+  "objects": [
+    {
+      "type": "identity",
+      "id": "identity--example-creator",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Example Attack Flow Creator",
+      "identity_class": "system"
+    },
+    {
+      "type": "attack-flow",
+      "id": "attack-flow--linear-example",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Linear Attack Flow Example",
+      "description": "A simple linear progression: T1003 → T1059 → T1071",
+      "scope": "incident",
+      "start_refs": ["attack-action--step1"],
+      "created_by_ref": "identity--example-creator"
+    },
+    {
+      "type": "attack-action",
+      "id": "attack-action--step1",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Credential Dumping",
+      "technique_id": "T1003",
+      "description": "Adversary dumps credentials from memory",
+      "confidence": 85,
+      "execution_start": 0,
+      "execution_end": 1,
+      "tactic_refs": ["x-mitre-tactic--credential-access"]
+    },
+    {
+      "type": "attack-action",
+      "id": "attack-action--step2",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Command and Scripting Interpreter",
+      "technique_id": "T1059",
+      "description": "Execute commands using stolen credentials",
+      "confidence": 80,
+      "execution_start": 1,
+      "execution_end": 2,
+      "tactic_refs": ["x-mitre-tactic--execution"]
+    },
+    {
+      "type": "attack-action",
+      "id": "attack-action--step3",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Application Layer Protocol",
+      "technique_id": "T1071",
+      "description": "Establish C2 channel over application protocols",
+      "confidence": 75,
+      "execution_start": 2,
+      "execution_end": 3,
+      "tactic_refs": ["x-mitre-tactic--command-and-control"]
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--step1-to-step2",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "relationship_type": "followed-by",
+      "source_ref": "attack-action--step1",
+      "target_ref": "attack-action--step2",
+      "confidence": 90
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--step2-to-step3",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "relationship_type": "followed-by",
+      "source_ref": "attack-action--step2",
+      "target_ref": "attack-action--step3",
+      "confidence": 85
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--t1003",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "OS Credential Dumping",
+      "description": "Adversaries may attempt to dump credentials to obtain account login and credential material",
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "T1003",
+          "url": "https://attack.mitre.org/techniques/T1003"
+        }
+      ],
+      "kill_chain_phases": [
+        {
+          "kill_chain_name": "mitre-attack",
+          "phase_name": "credential-access"
+        }
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--t1059",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Command and Scripting Interpreter",
+      "description": "Adversaries may abuse command and script interpreters to execute commands",
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "T1059",
+          "url": "https://attack.mitre.org/techniques/T1059"
+        }
+      ],
+      "kill_chain_phases": [
+        {
+          "kill_chain_name": "mitre-attack",
+          "phase_name": "execution"
+        }
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--t1071",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Application Layer Protocol",
+      "description": "Adversaries may communicate using application layer protocols",
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "T1071",
+          "url": "https://attack.mitre.org/techniques/T1071"
+        }
+      ],
+      "kill_chain_phases": [
+        {
+          "kill_chain_name": "mitre-attack",
+          "phase_name": "command-and-control"
+        }
+      ]
+    }
+  ]
+}

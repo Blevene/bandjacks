@@ -1,0 +1,145 @@
+{
+  "type": "bundle",
+  "id": "bundle--example-branching-001",
+  "spec_version": "2.1",
+  "created": "2025-08-22T12:00:00.000Z",
+  "modified": "2025-08-22T12:00:00.000Z",
+  "objects": [
+    {
+      "type": "identity",
+      "id": "identity--example-creator",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Example Attack Flow Creator",
+      "identity_class": "system"
+    },
+    {
+      "type": "attack-flow",
+      "id": "attack-flow--branching-example",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Branching Attack Flow with Conditions",
+      "description": "Attack flow with conditional execution based on credential success",
+      "scope": "incident",
+      "start_refs": ["attack-action--initial-access"],
+      "created_by_ref": "identity--example-creator"
+    },
+    {
+      "type": "attack-action",
+      "id": "attack-action--initial-access",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Initial Access via Phishing",
+      "technique_id": "T1566",
+      "description": "Phishing email with malicious attachment",
+      "confidence": 90,
+      "execution_start": 0,
+      "execution_end": 1
+    },
+    {
+      "type": "attack-action",
+      "id": "attack-action--cred-dumping",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Attempt Credential Dumping",
+      "technique_id": "T1003",
+      "description": "Try to dump credentials from LSASS",
+      "confidence": 70,
+      "execution_start": 1,
+      "execution_end": 2
+    },
+    {
+      "type": "attack-condition",
+      "id": "attack-condition--cred-success",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "description": "Check if credential dumping was successful",
+      "pattern": "credential_access == 'success'",
+      "on_true_refs": ["attack-action--lateral-movement"],
+      "on_false_refs": ["attack-action--privilege-escalation"]
+    },
+    {
+      "type": "attack-action",
+      "id": "attack-action--lateral-movement",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Lateral Movement with Valid Accounts",
+      "technique_id": "T1078",
+      "description": "Use dumped credentials for lateral movement",
+      "confidence": 85,
+      "execution_start": 2,
+      "execution_end": 3
+    },
+    {
+      "type": "attack-action",
+      "id": "attack-action--privilege-escalation",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Privilege Escalation",
+      "technique_id": "T1548",
+      "description": "Attempt to escalate privileges locally",
+      "confidence": 75,
+      "execution_start": 2,
+      "execution_end": 3
+    },
+    {
+      "type": "attack-operator",
+      "id": "attack-operator--final-objective",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "operator": "OR",
+      "effect_refs": ["attack-action--lateral-movement", "attack-action--privilege-escalation"]
+    },
+    {
+      "type": "attack-action",
+      "id": "attack-action--exfiltration",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "name": "Data Exfiltration",
+      "technique_id": "T1041",
+      "description": "Exfiltrate collected data over C2 channel",
+      "confidence": 80,
+      "execution_start": 3,
+      "execution_end": 4
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--r1",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "relationship_type": "followed-by",
+      "source_ref": "attack-action--initial-access",
+      "target_ref": "attack-action--cred-dumping"
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--r2",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "relationship_type": "followed-by",
+      "source_ref": "attack-action--cred-dumping",
+      "target_ref": "attack-condition--cred-success"
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--r3",
+      "spec_version": "2.1",
+      "created": "2025-08-22T12:00:00.000Z",
+      "modified": "2025-08-22T12:00:00.000Z",
+      "relationship_type": "followed-by",
+      "source_ref": "attack-operator--final-objective",
+      "target_ref": "attack-action--exfiltration"
+    }
+  ]
+}

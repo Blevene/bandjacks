@@ -2,7 +2,8 @@
 
 import json
 import uuid
-from typing import Dict, Any, Optional, List
+import hashlib
+from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel, Field
@@ -10,6 +11,9 @@ import httpx
 
 from bandjacks.services.api.deps import get_neo4j_session
 from bandjacks.services.api.settings import settings
+from bandjacks.llm.attack_flow_validator import AttackFlowValidator
+from bandjacks.llm.attack_flow_generator import AttackFlowGenerator
+from bandjacks.llm.attack_flow_simulator import AttackFlowSimulator
 
 
 router = APIRouter(prefix="/attackflow", tags=["attackflow"])
@@ -33,6 +37,8 @@ class AttackFlowIngestResponse(BaseModel):
     normalized_nodes: int = Field(..., description="Number of nodes created")
     normalized_edges: int = Field(..., description="Number of edges created")
     warnings: List[str] = Field(default_factory=list, description="Any warnings during ingestion")
+    sha256: Optional[str] = Field(None, description="SHA256 hash of the flow JSON")
+    storage_uri: Optional[str] = Field(None, description="Storage location of the original flow")
 
 
 class AttackFlowResponse(BaseModel):
@@ -53,36 +59,10 @@ def validate_attack_flow_schema(flow_json: Dict[str, Any]) -> List[str]:
     Returns:
         List of validation errors (empty if valid)
     """
-    errors = []
-    
-    # Basic structure validation
-    if not isinstance(flow_json, dict):
-        errors.append("Attack Flow must be a JSON object")
-        return errors
-    
-    # Check for required Attack Flow properties
-    if flow_json.get("type") != "bundle":
-        errors.append("Attack Flow must be a STIX bundle (type='bundle')")
-    
-    if "objects" not in flow_json:
-        errors.append("Attack Flow must have 'objects' array")
-    
-    # Check for attack-flow object
-    objects = flow_json.get("objects", [])
-    has_flow = any(obj.get("type") == "attack-flow" for obj in objects)
-    
-    if not has_flow:
-        errors.append("Bundle must contain at least one 'attack-flow' object")
-    
-    # Validate attack-action objects
-    for obj in objects:
-        if obj.get("type") == "attack-action":
-            if not obj.get("technique_id"):
-                errors.append(f"Attack action {obj.get('id', 'unknown')} missing technique_id")
-            if not obj.get("name"):
-                errors.append(f"Attack action {obj.get('id', 'unknown')} missing name")
-    
-    return errors
+    # Use the new validator with official schema
+    validator = AttackFlowValidator()
+    is_valid, errors = validator.validate(flow_json)
+    return errors if not is_valid else []
 
 
 def normalize_to_episode_action(flow_json: Dict[str, Any], neo4j_session) -> Dict[str, Any]:
@@ -101,7 +81,20 @@ def normalize_to_episode_action(flow_json: Dict[str, Any], neo4j_session) -> Dic
     edges_created = 0
     warnings = []
     
+    # Extract markings for preservation
+    markings_map = {}  # Map object IDs to their markings
+    
     objects = flow_json.get("objects", [])
+    
+    # Extract markings from all objects
+    for obj in objects:
+        obj_id = obj.get("id")
+        if obj_id:
+            markings_map[obj_id] = {
+                "object_marking_refs": obj.get("object_marking_refs", []),
+                "created_by_ref": obj.get("created_by_ref"),
+                "granular_markings": obj.get("granular_markings", [])
+            }
     
     # Find the attack-flow object
     flow_obj = None
@@ -117,6 +110,16 @@ def normalize_to_episode_action(flow_json: Dict[str, Any], neo4j_session) -> Dic
     episode_name = flow_obj.get("name", "Unnamed Flow")
     episode_desc = flow_obj.get("description", "")
     
+    # Get markings for the flow object
+    flow_markings = markings_map.get(flow_obj.get("id", ""), {})
+    
+    # Calculate SHA256 hash of the flow JSON
+    flow_json_str = json.dumps(flow_json, sort_keys=True)
+    flow_sha256 = hashlib.sha256(flow_json_str.encode()).hexdigest()
+    
+    # Generate storage URI (in production, this would be actual blob storage)
+    storage_uri = f"s3://attack-flows/{flow_id}/original.json"
+    
     result = neo4j_session.run("""
         CREATE (e:AttackEpisode {
             flow_id: $flow_id,
@@ -125,11 +128,21 @@ def normalize_to_episode_action(flow_json: Dict[str, Any], neo4j_session) -> Dic
             created: datetime(),
             modified: datetime(),
             source_type: 'attack-flow-2.0',
-            original_id: $original_id
+            original_id: $original_id,
+            object_marking_refs: $object_marking_refs,
+            created_by_ref: $created_by_ref,
+            granular_markings: $granular_markings,
+            sha256: $sha256,
+            storage_uri: $storage_uri
         })
         RETURN e
     """, flow_id=flow_id, name=episode_name, description=episode_desc,
-        original_id=flow_obj.get("id", ""))
+        original_id=flow_obj.get("id", ""),
+        object_marking_refs=json.dumps(flow_markings.get("object_marking_refs", [])),
+        created_by_ref=flow_markings.get("created_by_ref"),
+        granular_markings=json.dumps(flow_markings.get("granular_markings", [])),
+        sha256=flow_sha256,
+        storage_uri=storage_uri)
     
     if result.single():
         nodes_created += 1
@@ -159,6 +172,9 @@ def normalize_to_episode_action(flow_json: Dict[str, Any], neo4j_session) -> Dic
             if not pattern_ref:
                 warnings.append(f"Technique {technique_id} not found in knowledge base")
             
+            # Get markings for this action
+            action_markings = markings_map.get(obj.get("id", ""), {})
+            
             # Create AttackAction node
             result = neo4j_session.run("""
                 CREATE (a:AttackAction {
@@ -169,13 +185,19 @@ def normalize_to_episode_action(flow_json: Dict[str, Any], neo4j_session) -> Dic
                     attack_pattern_ref: $pattern_ref,
                     confidence: $confidence,
                     original_id: $original_id,
-                    order: $order
+                    order: $order,
+                    object_marking_refs: $object_marking_refs,
+                    created_by_ref: $created_by_ref,
+                    granular_markings: $granular_markings
                 })
                 RETURN a
             """, action_id=action_id, name=action_name, description=action_desc,
                 technique_id=technique_id, pattern_ref=pattern_ref,
                 confidence=confidence, original_id=obj.get("id", ""),
-                order=obj.get("order", 0))
+                order=obj.get("order", 0),
+                object_marking_refs=json.dumps(action_markings.get("object_marking_refs", [])),
+                created_by_ref=action_markings.get("created_by_ref"),
+                granular_markings=json.dumps(action_markings.get("granular_markings", [])))
             
             if result.single():
                 nodes_created += 1
@@ -219,7 +241,9 @@ def normalize_to_episode_action(flow_json: Dict[str, Any], neo4j_session) -> Dic
         "flow_id": flow_id,
         "nodes_created": nodes_created,
         "edges_created": edges_created,
-        "warnings": warnings
+        "warnings": warnings,
+        "sha256": flow_sha256,
+        "storage_uri": storage_uri
     }
 
 
@@ -277,7 +301,9 @@ async def ingest_attack_flow(
             status="success",
             normalized_nodes=result["nodes_created"],
             normalized_edges=result["edges_created"],
-            warnings=result["warnings"]
+            warnings=result["warnings"],
+            sha256=result.get("sha256"),
+            storage_uri=result.get("storage_uri")
         )
         
     except HTTPException:
@@ -319,6 +345,11 @@ async def get_attack_flow(
                    e.description as description,
                    e.created as created,
                    e.original_json as original_json,
+                   e.sha256 as sha256,
+                   e.storage_uri as storage_uri,
+                   e.object_marking_refs as object_marking_refs,
+                   e.created_by_ref as created_by_ref,
+                   e.granular_markings as granular_markings,
                    collect(DISTINCT a.action_id) as action_ids
         """, flow_id=flow_id)
         
@@ -337,6 +368,21 @@ async def get_attack_flow(
             except:
                 pass
         
+        # Parse markings if they exist
+        markings_metadata = {}
+        if record["object_marking_refs"]:
+            try:
+                markings_metadata["object_marking_refs"] = json.loads(record["object_marking_refs"])
+            except:
+                pass
+        if record["created_by_ref"]:
+            markings_metadata["created_by_ref"] = record["created_by_ref"]
+        if record["granular_markings"]:
+            try:
+                markings_metadata["granular_markings"] = json.loads(record["granular_markings"])
+            except:
+                pass
+        
         return AttackFlowResponse(
             flow_id=flow_id,
             original_json=original_json,
@@ -345,7 +391,10 @@ async def get_attack_flow(
                 "name": record["name"],
                 "description": record["description"],
                 "created": str(record["created"]) if record["created"] else None,
-                "action_count": len(record["action_ids"]) if record["action_ids"] else 0
+                "action_count": len(record["action_ids"]) if record["action_ids"] else 0,
+                "sha256": record["sha256"],
+                "storage_uri": record["storage_uri"],
+                **markings_metadata
             }
         )
         
@@ -466,3 +515,204 @@ async def render_attack_flow(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to render Attack Flow: {str(e)}"
         )
+
+
+class AttackFlowGenerateRequest(BaseModel):
+    """Request to generate an Attack Flow."""
+    techniques: List[str] = Field(..., description="List of technique IDs (e.g., ['T1003', 'T1059'])")
+    name: str = Field("Generated Attack Flow", description="Name for the flow")
+    description: str = Field("", description="Description of the flow")
+    conditions: Optional[List[Dict[str, Any]]] = Field(None, description="Conditional branches")
+    operators: Optional[List[Dict[str, Any]]] = Field(None, description="Logical operators (AND/OR)")
+    assets: Optional[List[Dict[str, Any]]] = Field(None, description="Assets involved")
+    sequence: Optional[List[Tuple[str, str]]] = Field(None, description="Edge sequence as (source, target) tuples")
+    scope: str = Field("incident", description="Flow scope: incident, campaign, or global")
+
+
+class AttackFlowGenerateResponse(BaseModel):
+    """Response from Attack Flow generation."""
+    flow_json: Dict[str, Any] = Field(..., description="Generated Attack Flow 2.0 JSON")
+    validation_status: str = Field(..., description="Validation status")
+    validation_errors: List[str] = Field(default_factory=list, description="Any validation errors")
+
+
+@router.post("/generate",
+    response_model=AttackFlowGenerateResponse,
+    summary="Generate Attack Flow",
+    description="""
+    Generate a valid Attack Flow 2.0 document from techniques and conditions.
+    
+    This endpoint creates a complete Attack Flow bundle with:
+    - Attack actions for each technique
+    - Conditions for branching logic
+    - Operators for AND/OR combinations
+    - Assets for targeted systems
+    - Relationships defining the flow sequence
+    
+    The generated flow is validated against the official schema.
+    """,
+    responses={
+        200: {"description": "Flow successfully generated"},
+        400: {"description": "Invalid generation parameters"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def generate_attack_flow(
+    request: AttackFlowGenerateRequest,
+    neo4j_session=Depends(get_neo4j_session)
+) -> AttackFlowGenerateResponse:
+    """Generate an Attack Flow 2.0 document."""
+    
+    try:
+        # Initialize generator with Neo4j for technique lookups
+        generator = AttackFlowGenerator(
+            neo4j_uri=settings.neo4j_uri,
+            neo4j_user=settings.neo4j_user,
+            neo4j_password=settings.neo4j_password
+        )
+        
+        # Generate the flow
+        flow_json = generator.generate(
+            techniques=request.techniques,
+            name=request.name,
+            description=request.description,
+            conditions=request.conditions,
+            operators=request.operators,
+            assets=request.assets,
+            sequence=request.sequence,
+            scope=request.scope
+        )
+        
+        # Validate the generated flow
+        is_valid, errors = generator.validate_generated(flow_json)
+        
+        return AttackFlowGenerateResponse(
+            flow_json=flow_json,
+            validation_status="valid" if is_valid else "invalid",
+            validation_errors=errors
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate Attack Flow: {str(e)}"
+        )
+    finally:
+        if 'generator' in locals():
+            generator.close()
+
+
+class AttackFlowSimulateRequest(BaseModel):
+    """Request to simulate an Attack Flow."""
+    flow_id: Optional[str] = Field(None, description="ID of stored flow to simulate")
+    flow_json: Optional[Dict[str, Any]] = Field(None, description="Attack Flow JSON to simulate")
+    initial_conditions: Dict[str, Any] = Field(default_factory=dict, description="Initial conditions/state")
+    max_steps: int = Field(100, description="Maximum simulation steps")
+    check_coverage: bool = Field(True, description="Check detection coverage during simulation")
+
+
+class AttackFlowSimulateResponse(BaseModel):
+    """Response from Attack Flow simulation."""
+    simulation_id: str = Field(..., description="Unique simulation ID")
+    flow_name: str = Field(..., description="Name of simulated flow")
+    status: str = Field(..., description="Simulation status")
+    summary: Dict[str, Any] = Field(..., description="Simulation summary statistics")
+    execution_path: List[Dict[str, Any]] = Field(..., description="Detailed execution path")
+    coverage_analysis: Optional[Dict[str, Any]] = Field(None, description="Coverage analysis results")
+    visualization: Dict[str, Any] = Field(..., description="Visualization data")
+
+
+@router.post("/simulate",
+    response_model=AttackFlowSimulateResponse,
+    summary="Simulate Attack Flow",
+    description="""
+    Simulate the execution of an Attack Flow.
+    
+    This endpoint:
+    - Steps through the flow evaluating conditions
+    - Tracks execution path and outcomes
+    - Checks detection coverage for techniques (optional)
+    - Identifies coverage gaps
+    - Provides visualization data
+    
+    You can simulate either a stored flow (by ID) or provide the flow JSON directly.
+    """,
+    responses={
+        200: {"description": "Simulation completed"},
+        400: {"description": "Invalid simulation parameters"},
+        404: {"description": "Flow not found"},
+        500: {"description": "Internal server error"}
+    }
+)
+async def simulate_attack_flow(
+    request: AttackFlowSimulateRequest,
+    neo4j_session=Depends(get_neo4j_session)
+) -> AttackFlowSimulateResponse:
+    """Simulate an Attack Flow execution."""
+    
+    try:
+        # Get the flow to simulate
+        if request.flow_id:
+            # Fetch stored flow
+            result = neo4j_session.run("""
+                MATCH (e:AttackEpisode {flow_id: $flow_id})
+                RETURN e.original_json as flow_json
+            """, flow_id=request.flow_id)
+            
+            record = result.single()
+            if not record or not record["flow_json"]:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Flow {request.flow_id} not found"
+                )
+            
+            flow_json = json.loads(record["flow_json"])
+            
+        elif request.flow_json:
+            flow_json = request.flow_json
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Must provide either flow_id or flow_json"
+            )
+        
+        # Initialize simulator
+        simulator = AttackFlowSimulator(
+            neo4j_uri=settings.neo4j_uri,
+            neo4j_user=settings.neo4j_user,
+            neo4j_password=settings.neo4j_password
+        )
+        
+        # Run simulation
+        result = simulator.simulate(
+            attack_flow=flow_json,
+            initial_conditions=request.initial_conditions,
+            max_steps=request.max_steps,
+            check_coverage=request.check_coverage
+        )
+        
+        # Format response
+        response = AttackFlowSimulateResponse(
+            simulation_id=result["simulation_id"],
+            flow_name=result["flow_name"],
+            status=result["status"],
+            summary=result["summary"],
+            execution_path=result["execution_path"],
+            visualization=result["visualization"]
+        )
+        
+        if request.check_coverage and "coverage_analysis" in result:
+            response.coverage_analysis = result["coverage_analysis"]
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to simulate Attack Flow: {str(e)}"
+        )
+    finally:
+        if 'simulator' in locals():
+            simulator.close()
