@@ -1,0 +1,173 @@
+{
+  "type": "bundle",
+  "id": "bundle--19833d69-d834-4454-b635-86a07083ea65",
+  "spec_version": "2.1",
+  "created": "2025-08-22T14:32:09.639776Z",
+  "modified": "2025-08-22T14:32:09.639781Z",
+  "objects": [
+    {
+      "type": "identity",
+      "id": "identity--bandjacks-generator",
+      "spec_version": "2.1",
+      "created": "2025-08-22T14:32:09.639783Z",
+      "modified": "2025-08-22T14:32:09.639783Z",
+      "name": "Bandjacks Attack Flow Generator",
+      "identity_class": "system"
+    },
+    {
+      "type": "attack-action",
+      "id": "attack-action--39975b7d-6da3-4297-ab07-b6c0c4a1ae0a",
+      "spec_version": "2.1",
+      "created": "2025-08-22T14:32:09.649422Z",
+      "modified": "2025-08-22T14:32:09.649426Z",
+      "name": "OS Credential Dumping",
+      "technique_id": "T1003",
+      "description": "Adversaries may attempt to dump credentials to obtain account login and credential material, normally in the form of a hash or a clear text password. Credentials can be obtained from OS caches, memory, or structures.(Citation: Brining MimiKatz to Unix) Credentials can then be used to perform [Lateral Movement](https://attack.mitre.org/tactics/TA0008) and access restricted information.\n\nSeveral of the tools mentioned in associated sub-techniques may be used by both adversaries and professional se",
+      "confidence": 75,
+      "execution_start": 0,
+      "execution_end": 1,
+      "tactic_refs": [
+        "x-mitre-tactic--credential-access"
+      ]
+    },
+    {
+      "type": "attack-action",
+      "id": "attack-action--d02b76ce-35cd-494b-b512-874c18c9f1d0",
+      "spec_version": "2.1",
+      "created": "2025-08-22T14:32:09.650540Z",
+      "modified": "2025-08-22T14:32:09.650543Z",
+      "name": "Process Injection",
+      "technique_id": "T1055",
+      "description": "Adversaries may inject code into processes in order to evade process-based defenses as well as possibly elevate privileges. Process injection is a method of executing arbitrary code in the address space of a separate live process. Running code in the context of another process may allow access to the process's memory, system/network resources, and possibly elevated privileges. Execution via process injection may also evade detection from security products since the execution is masked under a le",
+      "confidence": 75,
+      "execution_start": 1,
+      "execution_end": 2,
+      "tactic_refs": [
+        "x-mitre-tactic--defense-evasion",
+        "x-mitre-tactic--privilege-escalation"
+      ]
+    },
+    {
+      "type": "attack-action",
+      "id": "attack-action--083e8c72-2242-4c1f-b6e6-59c3634b2d22",
+      "spec_version": "2.1",
+      "created": "2025-08-22T14:32:09.656143Z",
+      "modified": "2025-08-22T14:32:09.656149Z",
+      "name": "Command and Scripting Interpreter",
+      "technique_id": "T1059",
+      "description": "Adversaries may abuse command and script interpreters to execute commands, scripts, or binaries. These interfaces and languages provide ways of interacting with computer systems and are a common feature across many different platforms. Most systems come with some built-in command-line interface and scripting capabilities, for example, macOS and Linux distributions include some flavor of [Unix Shell](https://attack.mitre.org/techniques/T1059/004) while Windows installations include the [Windows C",
+      "confidence": 75,
+      "execution_start": 2,
+      "execution_end": 3,
+      "tactic_refs": [
+        "x-mitre-tactic--execution"
+      ]
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--274c6e1d-840c-4369-8969-f9985d9a2c4d",
+      "spec_version": "2.1",
+      "created": "2025-08-22T14:32:09.656170Z",
+      "modified": "2025-08-22T14:32:09.656171Z",
+      "relationship_type": "followed-by",
+      "source_ref": "attack-action--39975b7d-6da3-4297-ab07-b6c0c4a1ae0a",
+      "target_ref": "attack-action--d02b76ce-35cd-494b-b512-874c18c9f1d0",
+      "confidence": 80
+    },
+    {
+      "type": "relationship",
+      "id": "relationship--6ae5070d-2b4f-4aff-95e5-bbb11290c3e2",
+      "spec_version": "2.1",
+      "created": "2025-08-22T14:32:09.656181Z",
+      "modified": "2025-08-22T14:32:09.656182Z",
+      "relationship_type": "followed-by",
+      "source_ref": "attack-action--d02b76ce-35cd-494b-b512-874c18c9f1d0",
+      "target_ref": "attack-action--083e8c72-2242-4c1f-b6e6-59c3634b2d22",
+      "confidence": 80
+    },
+    {
+      "type": "attack-flow",
+      "id": "attack-flow--58d2b39d-2f6b-4ca5-b313-398f8f681193",
+      "spec_version": "2.1",
+      "created": "2025-08-22T14:32:09.639782Z",
+      "modified": "2025-08-22T14:32:09.639782Z",
+      "name": "Credential Theft to C2 Communication",
+      "description": "Attack flow demonstrating progression from credential access through execution to command and control",
+      "scope": "incident",
+      "start_refs": [
+        "attack-action--39975b7d-6da3-4297-ab07-b6c0c4a1ae0a"
+      ],
+      "created_by_ref": "identity--bandjacks-generator"
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--0a3ead4e-6d47-4ccb-854c-a6a4f9d96b22",
+      "spec_version": "2.1",
+      "created": "2025-08-22T14:32:09.657384Z",
+      "modified": "2025-08-22T14:32:09.657385Z",
+      "name": "OS Credential Dumping",
+      "description": "Adversaries may attempt to dump credentials to obtain account login and credential material, normally in the form of a hash or a clear text password. Credentials can be obtained from OS caches, memory, or structures.(Citation: Brining MimiKatz to Unix) Credentials can then be used to perform [Lateral Movement](https://attack.mitre.org/tactics/TA0008) and access restricted information.\n\nSeveral of the tools mentioned in associated sub-techniques may be used by both adversaries and professional se",
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "T1003",
+          "url": "https://attack.mitre.org/techniques/T1003"
+        }
+      ],
+      "kill_chain_phases": [
+        {
+          "kill_chain_name": "mitre-attack",
+          "phase_name": "credential-access"
+        }
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--43e7dc91-05b2-474c-b9ac-2ed4fe101f4d",
+      "spec_version": "2.1",
+      "created": "2025-08-22T14:32:09.658216Z",
+      "modified": "2025-08-22T14:32:09.658217Z",
+      "name": "Process Injection",
+      "description": "Adversaries may inject code into processes in order to evade process-based defenses as well as possibly elevate privileges. Process injection is a method of executing arbitrary code in the address space of a separate live process. Running code in the context of another process may allow access to the process's memory, system/network resources, and possibly elevated privileges. Execution via process injection may also evade detection from security products since the execution is masked under a le",
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "T1055",
+          "url": "https://attack.mitre.org/techniques/T1055"
+        }
+      ],
+      "kill_chain_phases": [
+        {
+          "kill_chain_name": "mitre-attack",
+          "phase_name": "defense-evasion"
+        },
+        {
+          "kill_chain_name": "mitre-attack",
+          "phase_name": "privilege-escalation"
+        }
+      ]
+    },
+    {
+      "type": "attack-pattern",
+      "id": "attack-pattern--7385dfaf-6886-4229-9ecd-6fd678040830",
+      "spec_version": "2.1",
+      "created": "2025-08-22T14:32:09.659015Z",
+      "modified": "2025-08-22T14:32:09.659016Z",
+      "name": "Command and Scripting Interpreter",
+      "description": "Adversaries may abuse command and script interpreters to execute commands, scripts, or binaries. These interfaces and languages provide ways of interacting with computer systems and are a common feature across many different platforms. Most systems come with some built-in command-line interface and scripting capabilities, for example, macOS and Linux distributions include some flavor of [Unix Shell](https://attack.mitre.org/techniques/T1059/004) while Windows installations include the [Windows C",
+      "external_references": [
+        {
+          "source_name": "mitre-attack",
+          "external_id": "T1059",
+          "url": "https://attack.mitre.org/techniques/T1059"
+        }
+      ],
+      "kill_chain_phases": [
+        {
+          "kill_chain_name": "mitre-attack",
+          "phase_name": "execution"
+        }
+      ]
+    }
+  ]
+}

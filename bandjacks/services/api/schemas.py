@@ -104,6 +104,8 @@ class FlowBuildRequest(BaseModel):
     bundle: Optional[Dict[str, Any]] = Field(None, description="STIX bundle")
     strict: bool = Field(True, description="Enforce strict validation")
     use_llm_synthesis: bool = Field(True, description="Use AttackFlowSynthesizer for LLM-based flow generation")
+    intrusion_set_id: Optional[str] = Field(None, description="Build from an Intrusion Set (group) by stix_id")
+    techniques: Optional[List[str]] = Field(None, description="List of technique identifiers (STIX IDs like 'attack-pattern--...' or ATT&CK IDs like 'T1059.001')")
 
 
 class FlowStep(BaseModel):
