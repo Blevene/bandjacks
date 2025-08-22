@@ -26,7 +26,12 @@ class Neo4jDDL:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:DetectionStrategy) REQUIRE n.stix_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Analytic) REQUIRE n.stix_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:LogSource) REQUIRE n.stix_id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:ReviewProvenance) REQUIRE n.provenance_id IS UNIQUE"
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:ReviewProvenance) REQUIRE n.provenance_id IS UNIQUE",
+            # Attack Flow 2.0 Sprint 6 additions
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackFlow) REQUIRE n.flow_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackCondition) REQUIRE n.condition_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackOperator) REQUIRE n.operator_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackAsset) REQUIRE n.asset_id IS UNIQUE"
         ]
         
         for constraint in constraints:
@@ -59,7 +64,16 @@ class Neo4jDDL:
             "CREATE INDEX IF NOT EXISTS FOR (n:ReviewProvenance) ON (n.timestamp)",
             "CREATE INDEX IF NOT EXISTS FOR (n:ReviewProvenance) ON (n.reviewer_id)",
             "CREATE INDEX IF NOT EXISTS FOR (n:ReviewProvenance) ON (n.object_id)",
-            "CREATE INDEX IF NOT EXISTS FOR (n:ReviewProvenance) ON (n.review_type)"
+            "CREATE INDEX IF NOT EXISTS FOR (n:ReviewProvenance) ON (n.review_type)",
+            # Attack Flow 2.0 Sprint 6 additions
+            "CREATE INDEX IF NOT EXISTS FOR (n:AttackFlow) ON (n.name)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:AttackFlow) ON (n.scope)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:AttackFlow) ON (n.created)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:AttackCondition) ON (n.pattern)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:AttackCondition) ON (n.created)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:AttackOperator) ON (n.operator)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:AttackAsset) ON (n.name)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:AttackAsset) ON (n.type)"
         ]
         
         for index in indexes:

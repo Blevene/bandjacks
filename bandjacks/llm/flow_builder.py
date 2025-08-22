@@ -139,6 +139,114 @@ class FlowBuilder:
             
             # If not a report, treat as bundle ID and load from storage
             raise ValueError(f"Source {source_id} not found")
+
+    def build_from_intrusion_set(self, intrusion_set_id: str) -> Dict[str, Any]:
+        """
+        Build a flow from an Intrusion Set's known technique usages.
+        
+        Args:
+            intrusion_set_id: STIX ID of the IntrusionSet (e.g., intrusion-set--...)
+        
+        Returns:
+            Flow data with episode and actions
+        """
+        with self.driver.session() as session:
+            # Fetch techniques used by the group
+            techniques_query = (
+                """
+                MATCH (g:IntrusionSet {stix_id: $group_id})-[:USES]->(t:AttackPattern)
+                RETURN t.stix_id as technique_id, t.name as name,
+                       coalesce(t.description, "") as description
+                """
+            )
+            result = session.run(techniques_query, group_id=intrusion_set_id)
+            steps: List[Dict[str, Any]] = []
+            for rec in result:
+                steps.append({
+                    "technique_id": rec["technique_id"],
+                    "name": rec["name"] or "Unknown",
+                    "description": rec["description"][:200],
+                    "confidence": 60.0
+                })
+        if not steps:
+            raise ValueError(f"No techniques found for intrusion set {intrusion_set_id}")
+
+        ordered_steps = self._order_steps(steps)
+        edges = self._compute_next_edges(ordered_steps)
+        return self._create_episode(
+            name=f"Flow for {intrusion_set_id}",
+            steps=ordered_steps,
+            edges=edges,
+            source_id=intrusion_set_id,
+            llm_synthesized=False
+        )
+
+    def build_from_techniques(self, techniques: List[str], name: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Build a flow from a list of technique identifiers.
+        
+        Each identifier may be a STIX ID (attack-pattern--...) or an ATT&CK ID (e.g., T1059.001).
+        """
+        if not techniques:
+            raise ValueError("No techniques provided")
+
+        # Resolve to STIX IDs and names
+        steps: List[Dict[str, Any]] = []
+        with self.driver.session() as session:
+            for tech in techniques:
+                stix_id, tech_name, desc = self._resolve_technique_identifier(session, tech)
+                if not stix_id:
+                    # Skip unknown techniques but continue
+                    continue
+                steps.append({
+                    "technique_id": stix_id,
+                    "name": tech_name or "Unknown",
+                    "description": (desc or "")[:200],
+                    "confidence": 55.0
+                })
+
+        if not steps:
+            raise ValueError("None of the techniques could be resolved in the knowledge base")
+
+        ordered_steps = self._order_steps(steps)
+        edges = self._compute_next_edges(ordered_steps)
+        flow_name = name or self._generate_flow_name({"objects": []}, ordered_steps)
+        return self._create_episode(
+            name=flow_name,
+            steps=ordered_steps,
+            edges=edges,
+            source_id=None,
+            llm_synthesized=False
+        )
+
+    def _resolve_technique_identifier(self, session, identifier: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        Resolve a technique identifier (STIX ID or ATT&CK external ID) to (stix_id, name, description).
+        """
+        if identifier.startswith("attack-pattern--"):
+            query = (
+                """
+                MATCH (t:AttackPattern {stix_id: $id})
+                RETURN t.stix_id as stix_id, t.name as name, t.description as description
+                """
+            )
+            rec = session.run(query, id=identifier).single()
+            if rec:
+                return rec["stix_id"], rec["name"], rec["description"]
+            return None, None, None
+        # Otherwise treat as external ATT&CK ID (e.g., T1059 or T1059.001)
+        query = (
+            """
+            MATCH (t:AttackPattern)
+            WHERE t.external_id = $ext OR $ext IN t.external_ids
+            RETURN t.stix_id as stix_id, t.name as name, t.description as description
+            LIMIT 1
+            """
+        )
+        rec = session.run(query, ext=identifier).single()
+        if rec:
+            return rec["stix_id"], rec["name"], rec["description"]
+        return None, None, None
     
     def _convert_to_episode(
         self,
