@@ -122,11 +122,151 @@ class OpenSearchIndexManager:
         self.client.indices.create(index=index_name, body=mapping)
         print(f"Created index: {index_name}")
     
+    def create_detection_strategies_index(self):
+        """Create index for detection strategies."""
+        index_name = "detection_strategies"
+        
+        if self.client.indices.exists(index=index_name):
+            print(f"Index {index_name} already exists")
+            return
+        
+        mapping = {
+            "settings": {
+                "index": {
+                    "knn": True,
+                    "knn.algo_param.ef_search": 100
+                }
+            },
+            "mappings": {
+                "properties": {
+                    "stix_id": {"type": "keyword"},
+                    "name": {"type": "text"},
+                    "description": {"type": "text"},
+                    "det_id": {"type": "keyword"},
+                    "x_mitre_version": {"type": "keyword"},
+                    "x_mitre_domains": {"type": "keyword"},
+                    "revoked": {"type": "boolean"},
+                    "x_mitre_deprecated": {"type": "boolean"},
+                    "created": {"type": "date"},
+                    "modified": {"type": "date"},
+                    "strategy_embedding": {
+                        "type": "knn_vector",
+                        "dimension": 768,
+                        "method": {
+                            "name": "hnsw",
+                            "space_type": "cosinesimil",
+                            "engine": "nmslib",
+                            "parameters": {
+                                "ef_construction": 128,
+                                "m": 24
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        self.client.indices.create(index=index_name, body=mapping)
+        print(f"Created index: {index_name}")
+    
+    def create_analytics_index(self):
+        """Create index for analytics."""
+        index_name = "analytics"
+        
+        if self.client.indices.exists(index=index_name):
+            print(f"Index {index_name} already exists")
+            return
+        
+        mapping = {
+            "settings": {
+                "index": {
+                    "knn": True,
+                    "knn.algo_param.ef_search": 100
+                }
+            },
+            "mappings": {
+                "properties": {
+                    "stix_id": {"type": "keyword"},
+                    "name": {"type": "text"},
+                    "description": {"type": "text"},
+                    "platforms": {"type": "keyword"},
+                    "x_mitre_detects": {"type": "text"},
+                    "x_mitre_mutable_elements": {"type": "keyword"},
+                    "revoked": {"type": "boolean"},
+                    "x_mitre_deprecated": {"type": "boolean"},
+                    "created": {"type": "date"},
+                    "modified": {"type": "date"},
+                    "analytic_embedding": {
+                        "type": "knn_vector",
+                        "dimension": 768,
+                        "method": {
+                            "name": "hnsw",
+                            "space_type": "cosinesimil",
+                            "engine": "nmslib",
+                            "parameters": {
+                                "ef_construction": 128,
+                                "m": 24
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        self.client.indices.create(index=index_name, body=mapping)
+        print(f"Created index: {index_name}")
+    
+    def create_log_sources_index(self):
+        """Create index for log sources."""
+        index_name = "log_sources"
+        
+        if self.client.indices.exists(index=index_name):
+            print(f"Index {index_name} already exists")
+            return
+        
+        mapping = {
+            "settings": {
+                "index": {
+                    "knn": True,
+                    "knn.algo_param.ef_search": 100
+                }
+            },
+            "mappings": {
+                "properties": {
+                    "stix_id": {"type": "keyword"},
+                    "name": {"type": "text"},
+                    "description": {"type": "text"},
+                    "x_mitre_log_source_permutations": {"type": "nested"},
+                    "created": {"type": "date"},
+                    "modified": {"type": "date"},
+                    "log_source_embedding": {
+                        "type": "knn_vector",
+                        "dimension": 768,
+                        "method": {
+                            "name": "hnsw",
+                            "space_type": "cosinesimil",
+                            "engine": "nmslib",
+                            "parameters": {
+                                "ef_construction": 128,
+                                "m": 24
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        self.client.indices.create(index=index_name, body=mapping)
+        print(f"Created index: {index_name}")
+    
     def initialize_indexes(self):
         """Initialize all required indexes."""
         self.create_attack_pattern_index()
         self.create_attack_flow_index()
         self.create_review_queue_index()
+        self.create_detection_strategies_index()
+        self.create_analytics_index()
+        self.create_log_sources_index()
         print("OpenSearch indexes initialized successfully")
 
 

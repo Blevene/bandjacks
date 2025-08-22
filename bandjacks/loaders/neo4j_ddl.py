@@ -22,7 +22,11 @@ class Neo4jDDL:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AttackAction) REQUIRE n.action_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:D3fendTechnique) REQUIRE n.d3fend_id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:DigitalArtifact) REQUIRE n.name IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:CandidateAttackPattern) REQUIRE n.candidate_id IS UNIQUE"
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:CandidateAttackPattern) REQUIRE n.candidate_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:DetectionStrategy) REQUIRE n.stix_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Analytic) REQUIRE n.stix_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:LogSource) REQUIRE n.stix_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:ReviewProvenance) REQUIRE n.provenance_id IS UNIQUE"
         ]
         
         for constraint in constraints:
@@ -33,6 +37,7 @@ class Neo4jDDL:
         indexes = [
             "CREATE INDEX IF NOT EXISTS FOR (n:AttackPattern) ON (n.name)",
             "CREATE INDEX IF NOT EXISTS FOR (n:AttackPattern) ON (n.x_mitre_is_subtechnique)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:AttackPattern) ON (n.external_id)",
             "CREATE INDEX IF NOT EXISTS FOR (n:IntrusionSet) ON (n.name)",
             "CREATE INDEX IF NOT EXISTS FOR (n:Software) ON (n.name)",
             "CREATE INDEX IF NOT EXISTS FOR (n:Mitigation) ON (n.name)",
@@ -44,7 +49,17 @@ class Neo4jDDL:
             "CREATE INDEX IF NOT EXISTS FOR (n:D3fendTechnique) ON (n.category)",
             "CREATE INDEX IF NOT EXISTS FOR (n:DigitalArtifact) ON (n.type)",
             "CREATE INDEX IF NOT EXISTS FOR (n:CandidateAttackPattern) ON (n.status)",
-            "CREATE INDEX IF NOT EXISTS FOR (n:CandidateAttackPattern) ON (n.confidence)"
+            "CREATE INDEX IF NOT EXISTS FOR (n:CandidateAttackPattern) ON (n.confidence)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:DetectionStrategy) ON (n.name)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:DetectionStrategy) ON (n.revoked)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:DetectionStrategy) ON (n.x_mitre_deprecated)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:Analytic) ON (n.name)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:Analytic) ON (n.platforms)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:LogSource) ON (n.name)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:ReviewProvenance) ON (n.timestamp)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:ReviewProvenance) ON (n.reviewer_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:ReviewProvenance) ON (n.object_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:ReviewProvenance) ON (n.review_type)"
         ]
         
         for index in indexes:

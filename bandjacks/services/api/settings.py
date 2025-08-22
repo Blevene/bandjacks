@@ -38,6 +38,20 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5"  # OpenAI model (backup)
     google_model: str = "gemini-2.5-flash"  # Primary Google model
     primary_llm: str = "gemini"  # Use Gemini as primary
+    
+    # Authentication settings
+    enable_auth: bool = False  # Feature flag for JWT/OIDC
+    oidc_issuer: str = ""  # OIDC issuer URL
+    oidc_audience: str = "bandjacks-api"  # Expected audience
+    jwt_algorithm: str = "RS256"  # JWT algorithm
+    jwt_secret: str = "development-secret"  # For HS256 in dev
+    require_auth_for_reads: bool = False  # Require auth for GET requests
+    
+    # Rate limiting settings
+    rate_limit_enabled: bool = True  # Enable rate limiting
+    default_rate_limit: int = 100  # Requests per minute
+    rate_limit_window: int = 60  # Window size in seconds
+    burst_allowance: float = 1.5  # Burst multiplier
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

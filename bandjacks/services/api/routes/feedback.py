@@ -8,7 +8,7 @@ import uuid
 import json
 from bandjacks.services.api.deps import get_neo4j_session
 from bandjacks.services.api.schemas import QualityScore, QualityFeedback, QualityFeedbackResponse
-from bandjacks.services.api.middleware import get_trace_id
+from bandjacks.services.api.middleware.tracing import get_trace_id
 
 
 router = APIRouter(prefix="/feedback", tags=["feedback"])
@@ -202,7 +202,9 @@ async def submit_relevance_feedback(
 ) -> FeedbackResponse:
     feedback_id = str(uuid.uuid4())
     
-    # Create feedback node
+    # Create feedback and provenance nodes
+    trace_id = get_trace_id()
+    
     query = """
         CREATE (f:Feedback {
             id: $id,
@@ -213,11 +215,25 @@ async def submit_relevance_feedback(
             analyst_id: $analyst_id,
             query_id: $query_id,
             timestamp: datetime(),
-            status: 'recorded'
+            status: 'recorded',
+            trace_id: $trace_id
         })
         WITH f
         MATCH (n {stix_id: $object_id})
         CREATE (f)-[:ON]->(n)
+        WITH f, n
+        CREATE (rp:ReviewProvenance {
+            provenance_id: $id + '-prov',
+            review_type: 'relevance_feedback',
+            reviewer_id: $analyst_id,
+            timestamp: datetime(),
+            decision: $relevance,
+            rationale: $comment,
+            object_id: $object_id,
+            object_type: labels(n)[0],
+            trace_id: $trace_id
+        })
+        CREATE (rp)-[:REVIEWED_BY]->(n)
         RETURN f.id as id
     """
     
@@ -228,7 +244,8 @@ async def submit_relevance_feedback(
         relevance=feedback.relevance,
         comment=feedback.comment,
         analyst_id=feedback.analyst_id or "anonymous",
-        query_id=feedback.query_id
+        query_id=feedback.query_id,
+        trace_id=trace_id
     )
     
     record = result.single()
@@ -277,8 +294,9 @@ async def submit_correction_feedback(
     data quality and audit trail.
     """
     feedback_id = str(uuid.uuid4())
+    trace_id = get_trace_id()
     
-    # Create correction feedback
+    # Create correction feedback with provenance
     query = """
         CREATE (f:Feedback {
             id: $id,
@@ -292,11 +310,29 @@ async def submit_correction_feedback(
             evidence: $evidence,
             analyst_id: $analyst_id,
             timestamp: datetime(),
-            status: 'pending_review'
+            status: 'pending_review',
+            trace_id: $trace_id
         })
         WITH f
         MATCH (n {stix_id: $object_id})
         CREATE (f)-[:ON]->(n)
+        WITH f, n
+        CREATE (rp:ReviewProvenance {
+            provenance_id: $id + '-prov',
+            review_type: 'correction_request',
+            reviewer_id: $analyst_id,
+            timestamp: datetime(),
+            decision: 'pending',
+            rationale: $rationale,
+            object_id: $object_id,
+            object_type: labels(n)[0],
+            field_changed: $field,
+            old_value: $old_value,
+            new_value: $new_value,
+            evidence: $evidence,
+            trace_id: $trace_id
+        })
+        CREATE (rp)-[:REVIEWED_BY]->(n)
         RETURN f.id as id, n.name as object_name
     """
     
