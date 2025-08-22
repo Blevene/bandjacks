@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from bandjacks.services.api.deps import get_neo4j_session
 from bandjacks.services.api.settings import settings
 from bandjacks.loaders.detection_loader import DetectionLoader
+from bandjacks.loaders.sigma_loader import SigmaLoader
 from bandjacks.llm.bundle_validator import validate_bundle_for_upsert
 from bandjacks.services.api.middleware.tracing import get_trace_id
 
@@ -66,9 +67,26 @@ class AnalyticDetail(BaseModel):
     description: Optional[str]
     platforms: List[str]
     x_mitre_detects: str
-    x_mitre_mutable_elements: List[str]
+    x_mitre_mutable_elements: List[Dict[str, Any]]  # Changed to Dict to include override info
     log_sources: List[Dict[str, Any]]
     parent_strategies: List[str]
+    environment: Optional[str] = Field(None, description="Environment ID if overrides applied")
+    has_overrides: bool = Field(False, description="Whether environment overrides are applied")
+    sigma_rules: List[Dict[str, str]] = Field(default_factory=list, description="Linked Sigma rules")
+
+
+class SigmaLinkRequest(BaseModel):
+    """Request to link Sigma rules to an Analytic."""
+    rule_ids: List[str] = Field(..., description="List of Sigma rule IDs to link")
+    confidence: int = Field(85, description="Confidence score (0-100)", ge=0, le=100)
+
+
+class SigmaLinkResponse(BaseModel):
+    """Response from Sigma linking operation."""
+    success: bool
+    linked: int
+    failed: List[str]
+    message: str
 
 
 @router.post("/ingest",
@@ -259,26 +277,66 @@ async def get_detection_strategies(
 )
 async def get_analytic_details(
     analytic_id: str,
+    env_id: Optional[str] = Query(None, description="Environment ID for overrides"),
     neo4j_session=Depends(get_neo4j_session)
 ) -> AnalyticDetail:
-    """Get detailed information about an analytic."""
+    """Get detailed information about an analytic with optional environment overrides."""
     
-    query = """
-        MATCH (a:Analytic {stix_id: $analytic_id})
-        OPTIONAL MATCH (ds:DetectionStrategy)-[:HAS_ANALYTIC]->(a)
-        OPTIONAL MATCH (a)-[uls:USES_LOG_SOURCE]->(ls:LogSource)
-        RETURN a {
-            .*,
-            parent_strategies: collect(DISTINCT ds.stix_id),
-            log_sources_detail: collect(DISTINCT {
-                log_source_id: ls.stix_id,
-                log_source_name: ls.name,
-                keys: uls.keys
-            })
-        } as analytic
-    """
-    
-    result = neo4j_session.run(query, analytic_id=analytic_id)
+    # Build query with optional environment overrides and Sigma rules
+    if env_id:
+        query = """
+            MATCH (a:Analytic {stix_id: $analytic_id})
+            OPTIONAL MATCH (ds:DetectionStrategy)-[:HAS_ANALYTIC]->(a)
+            OPTIONAL MATCH (a)-[uls:USES_LOG_SOURCE]->(ls:LogSource)
+            OPTIONAL MATCH (ao:AnalyticOverride {analytic_id: $analytic_id, env_id: $env_id})
+            OPTIONAL MATCH (a)-[ib:IMPLEMENTED_BY]->(sr:SigmaRule)
+            RETURN a {
+                .*,
+                parent_strategies: collect(DISTINCT ds.stix_id),
+                log_sources_detail: collect(DISTINCT {
+                    log_source_id: ls.stix_id,
+                    log_source_name: ls.name,
+                    keys: uls.keys
+                }),
+                overrides: collect(DISTINCT {
+                    field: ao.field,
+                    value: ao.value,
+                    applied_by: ao.applied_by,
+                    timestamp: ao.timestamp
+                }),
+                sigma_rules: collect(DISTINCT {
+                    rule_id: sr.rule_id,
+                    title: sr.title,
+                    status: sr.status,
+                    confidence: ib.confidence
+                })
+            } as analytic
+        """
+        result = neo4j_session.run(query, analytic_id=analytic_id, env_id=env_id)
+    else:
+        query = """
+            MATCH (a:Analytic {stix_id: $analytic_id})
+            OPTIONAL MATCH (ds:DetectionStrategy)-[:HAS_ANALYTIC]->(a)
+            OPTIONAL MATCH (a)-[uls:USES_LOG_SOURCE]->(ls:LogSource)
+            OPTIONAL MATCH (a)-[ib:IMPLEMENTED_BY]->(sr:SigmaRule)
+            RETURN a {
+                .*,
+                parent_strategies: collect(DISTINCT ds.stix_id),
+                log_sources_detail: collect(DISTINCT {
+                    log_source_id: ls.stix_id,
+                    log_source_name: ls.name,
+                    keys: uls.keys
+                }),
+                overrides: [],
+                sigma_rules: collect(DISTINCT {
+                    rule_id: sr.rule_id,
+                    title: sr.title,
+                    status: sr.status,
+                    confidence: ib.confidence
+                })
+            } as analytic
+        """
+        result = neo4j_session.run(query, analytic_id=analytic_id)
     record = result.single()
     
     if not record:
@@ -293,6 +351,28 @@ async def get_analytic_details(
     platforms = json.loads(analytic_data.get("platforms", "[]"))
     mutable_elements = json.loads(analytic_data.get("x_mitre_mutable_elements", "[]"))
     
+    # Apply overrides to mutable elements if present
+    overrides = analytic_data.get("overrides", [])
+    if overrides and env_id:
+        # Filter out empty overrides
+        valid_overrides = [o for o in overrides if o.get("field")]
+        
+        # Apply overrides to mutable elements
+        for override in valid_overrides:
+            field = override["field"]
+            value = override["value"]
+            
+            # Update the mutable element with the override value
+            for elem in mutable_elements:
+                if elem.get("field") == field:
+                    elem["current_value"] = value
+                    elem["overridden"] = True
+                    elem["override_info"] = {
+                        "applied_by": override.get("applied_by"),
+                        "timestamp": str(override.get("timestamp"))
+                    }
+                    break
+    
     # Process log sources
     log_sources = []
     for ls in analytic_data.get("log_sources_detail", []):
@@ -303,6 +383,17 @@ async def get_analytic_details(
                 "keys": json.loads(ls.get("keys", "[]")) if ls.get("keys") else []
             })
     
+    # Process Sigma rules
+    sigma_rules = []
+    for sr in analytic_data.get("sigma_rules", []):
+        if sr.get("rule_id"):
+            sigma_rules.append({
+                "rule_id": sr["rule_id"],
+                "title": sr.get("title", ""),
+                "status": sr.get("status", ""),
+                "confidence": sr.get("confidence", 85)
+            })
+    
     return AnalyticDetail(
         stix_id=analytic_data["stix_id"],
         name=analytic_data["name"],
@@ -311,5 +402,202 @@ async def get_analytic_details(
         x_mitre_detects=analytic_data.get("x_mitre_detects", ""),
         x_mitre_mutable_elements=mutable_elements,
         log_sources=log_sources,
-        parent_strategies=analytic_data.get("parent_strategies", [])
+        parent_strategies=analytic_data.get("parent_strategies", []),
+        environment=env_id,
+        has_overrides=bool(valid_overrides) if env_id else False,
+        sigma_rules=sigma_rules
     )
+
+
+@router.get("/strategies",
+    response_model=List[DetectionStrategy],
+    summary="Query Detection Strategies",
+    description="""
+    Query detection strategies by technique and/or platform.
+    
+    By default, excludes revoked and deprecated strategies.
+    Use include_revoked and include_deprecated to override.
+    """
+)
+async def get_detection_strategies(
+    technique_id: Optional[str] = Query(None, description="ATT&CK technique ID (e.g., T1003)"),
+    platform: Optional[str] = Query(None, description="Platform filter (e.g., windows, linux)"),
+    include_revoked: bool = Query(False, description="Include revoked strategies"),
+    include_deprecated: bool = Query(False, description="Include deprecated strategies"),
+    limit: int = Query(10, ge=1, le=100),
+    neo4j_session=Depends(get_neo4j_session)
+) -> List[DetectionStrategy]:
+    """Get detection strategies filtered by technique and platform."""
+    
+    # Build filters
+    filters = []
+    if not include_revoked:
+        filters.append("NOT ds.revoked")
+    if not include_deprecated:
+        filters.append("NOT ds.x_mitre_deprecated")
+    
+    filter_clause = " AND ".join(filters) if filters else "TRUE"
+    
+    # Build query
+    query = f"""
+        MATCH (ds:DetectionStrategy)
+        WHERE {filter_clause}
+    """
+    
+    # Add technique filter
+    if technique_id:
+        query += """
+        WITH ds
+        MATCH (ds)-[:DETECTS]->(ap:AttackPattern)
+        WHERE ap.external_id = $technique_id OR ap.external_id STARTS WITH ($technique_id + '.')
+        """
+    
+    # Add platform filter via analytics
+    if platform:
+        query += """
+        WITH ds
+        MATCH (ds)-[:HAS_ANALYTIC]->(a:Analytic)
+        WHERE $platform IN a.platforms
+        """
+    
+    # Complete query
+    query += """
+        WITH DISTINCT ds
+        OPTIONAL MATCH (ds)-[:HAS_ANALYTIC]->(a:Analytic)
+        OPTIONAL MATCH (ds)-[:DETECTS]->(ap:AttackPattern)
+        RETURN ds,
+               count(DISTINCT a) as analytics_count,
+               collect(DISTINCT ap.external_id) as detected_techniques
+        LIMIT $limit
+    """
+    
+    params = {
+        "technique_id": technique_id,
+        "platform": platform,
+        "limit": limit
+    }
+    
+    result = neo4j_session.run(query, **params)
+    
+    strategies = []
+    for record in result:
+        ds_data = dict(record["ds"])
+        
+        # Parse JSON fields
+        domains = json.loads(ds_data.get("x_mitre_domains", "[]"))
+        
+        strategies.append(DetectionStrategy(
+            stix_id=ds_data["stix_id"],
+            name=ds_data["name"],
+            description=ds_data.get("description"),
+            det_id=ds_data.get("det_id"),
+            x_mitre_version=ds_data.get("x_mitre_version"),
+            x_mitre_domains=domains,
+            analytics_count=record["analytics_count"],
+            detected_techniques=record["detected_techniques"] or []
+        ))
+    
+    return strategies
+
+
+@router.post("/analytics/{analytic_id}/sigma",
+    response_model=SigmaLinkResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Link Sigma Rules to Analytic",
+    description="""
+    Link one or more Sigma rules to an Analytic.
+    
+    Creates IMPLEMENTED_BY relationships and updates the Analytic's
+    external_references with Sigma rule URLs.
+    
+    Confidence score indicates how well the Sigma rule implements
+    the analytic (0-100, default 85).
+    """
+)
+async def link_sigma_to_analytic(
+    analytic_id: str,
+    request: SigmaLinkRequest,
+    neo4j_session=Depends(get_neo4j_session)
+) -> SigmaLinkResponse:
+    """Link Sigma rules to an Analytic."""
+    
+    loader = SigmaLoader(
+        neo4j_uri=settings.neo4j_uri,
+        neo4j_user=settings.neo4j_user,
+        neo4j_password=settings.neo4j_password
+    )
+    
+    try:
+        result = loader.link_sigma_to_analytic(
+            analytic_id=analytic_id,
+            rule_ids=request.rule_ids,
+            confidence=request.confidence
+        )
+        
+        message = f"Successfully linked {result['linked']} Sigma rules to analytic {analytic_id}"
+        if result["failed"]:
+            message += f". Failed to link: {', '.join(result['failed'])}"
+        
+        return SigmaLinkResponse(
+            success=result["success"],
+            linked=result["linked"],
+            failed=result["failed"],
+            message=message
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to link Sigma rules: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to link Sigma rules: {str(e)}"
+        )
+    finally:
+        loader.close()
+
+
+@router.delete("/analytics/{analytic_id}/sigma/{rule_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Unlink Sigma Rule from Analytic",
+    description="""
+    Remove the link between a Sigma rule and an Analytic.
+    
+    Deletes the IMPLEMENTED_BY relationship.
+    """
+)
+async def unlink_sigma_from_analytic(
+    analytic_id: str,
+    rule_id: str,
+    neo4j_session=Depends(get_neo4j_session)
+):
+    """Unlink a Sigma rule from an Analytic."""
+    
+    loader = SigmaLoader(
+        neo4j_uri=settings.neo4j_uri,
+        neo4j_user=settings.neo4j_user,
+        neo4j_password=settings.neo4j_password
+    )
+    
+    try:
+        result = loader.unlink_sigma_from_analytic(
+            analytic_id=analytic_id,
+            rule_id=rule_id
+        )
+        
+        if not result["success"]:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Link not found between analytic {analytic_id} and rule {rule_id}"
+            )
+        
+        return  # 204 No Content
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to unlink Sigma rule: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to unlink Sigma rule: {str(e)}"
+        )
+    finally:
+        loader.close()

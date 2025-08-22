@@ -35,6 +35,8 @@ dependencies = [
     "google-adk==1.11.0",
     "pdfplumber>=0.11.7",
     "pyjwt>=2.8.0",
+    "pysigma>=0.11.23",
+    "ruamel-yaml>=0.18.15",
 ]
 
 [project.optional-dependencies]
