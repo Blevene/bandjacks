@@ -2,6 +2,7 @@
 
 import logging
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from bandjacks.services.api.settings import settings
 from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma
@@ -58,6 +59,15 @@ app = FastAPI(
         {"url": "http://localhost:8000", "description": "Development server"},
         {"url": "https://api.bandjacks.io", "description": "Production server (future)"}
     ]
+)
+
+# Add CORS middleware for frontend development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],  # Frontend dev servers
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Add middleware (order matters - error handler should be first to catch all errors)
