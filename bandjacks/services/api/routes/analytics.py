@@ -353,7 +353,7 @@ def _get_coverage_summary(session) -> Dict[str, Any]:
     result = session.run("""
         MATCH (t:AttackPattern)
         WITH count(t) as total_techniques
-        MATCH (t:AttackPattern)<-[:MITIGATES]-(m:Mitigation)
+        MATCH (t:AttackPattern)<-[:DETECTS]-(d:DetectionStrategy)
         WITH total_techniques, count(DISTINCT t) as covered_techniques
         MATCH (g:IntrusionSet)
         WITH total_techniques, covered_techniques, count(g) as total_groups
@@ -378,7 +378,7 @@ def _analyze_tactics_coverage(session, tactics: Optional[List[str]], include_sub
         WITH tac.name as tactic, collect(DISTINCT t) as techniques
         WITH tactic, techniques,
              size(techniques) as technique_count,
-             size([tech IN techniques WHERE EXISTS((tech)<-[:MITIGATES]-())]) as covered_count
+             size([tech IN techniques WHERE EXISTS((tech)<-[:DETECTS]-())]) as covered_count
         RETURN tactic,
                technique_count,
                covered_count,
@@ -396,7 +396,7 @@ def _analyze_tactics_coverage(session, tactics: Optional[List[str]], include_sub
         gaps_result = session.run("""
             MATCH (t:AttackPattern)-[:HAS_TACTIC]->(tac:Tactic)
             WHERE tac.name = $tactic
-            AND NOT EXISTS((t)<-[:MITIGATES]-())
+            AND NOT EXISTS((t)<-[:DETECTS]-())
             RETURN t.stix_id as technique_id, t.name as name
             LIMIT 5
         """, tactic=record["tactic"])
@@ -443,7 +443,7 @@ def _analyze_groups_coverage(session, groups: Optional[List[str]]) -> List[Group
         MATCH (g)-[:USES]->(t:AttackPattern)
         WITH g, collect(DISTINCT t) as techniques
         WITH g, techniques,
-             size([t IN techniques WHERE EXISTS((t)<-[:MITIGATES]-())]) as covered_count
+             size([t IN techniques WHERE EXISTS((t)<-[:DETECTS]-())]) as covered_count
         RETURN g.stix_id as group_id, g.name as group_name,
                size(techniques) as techniques_used,
                covered_count as techniques_covered,
@@ -459,7 +459,7 @@ def _analyze_groups_coverage(session, groups: Optional[List[str]]) -> List[Group
         # Get uncovered techniques
         uncovered_result = session.run("""
             MATCH (g:IntrusionSet {stix_id: $group_id})-[:USES]->(t:AttackPattern)
-            WHERE NOT EXISTS((t)<-[:MITIGATES]-())
+            WHERE NOT EXISTS((t)<-[:DETECTS]-())
             RETURN t.stix_id as id, t.name as name
             LIMIT 5
         """, group_id=record["group_id"])
