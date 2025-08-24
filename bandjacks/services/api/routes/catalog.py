@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException, status
 from bandjacks.services.api.settings import settings
 from bandjacks.loaders.attack_catalog import fetch_catalog
 from bandjacks.services.api.schemas import CatalogItem, VersionRef, CatalogTacticsResponse
+from typing import Optional
 from neo4j import GraphDatabase
 from functools import lru_cache
 import uuid
@@ -156,3 +157,144 @@ async def get_tactics() -> CatalogTacticsResponse:
                 "trace_id": trace_id
             }
         )
+
+
+@router.get(
+    "/catalog/techniques",
+    status_code=status.HTTP_200_OK,
+    summary="List All Techniques by Tactic",
+    description="""
+    Get all ATT&CK techniques organized by tactic.
+    
+    Returns all techniques from the loaded ATT&CK framework, optionally filtered
+    by a specific tactic. Includes full technique metadata and relationships.
+    
+    **Use cases:**
+    - Display all techniques in a tactic
+    - Build technique selection UI
+    - Generate coverage matrices
+    """,
+    response_description="List of techniques with metadata",
+    operation_id="getTechniquesByTactic"
+)
+async def get_techniques_by_tactic(
+    tactic: Optional[str] = None,
+    include_subtechniques: bool = True,
+    include_revoked: bool = False,
+    include_deprecated: bool = False
+) -> Dict:
+    """
+    Get all techniques, optionally filtered by tactic.
+    
+    Args:
+        tactic: Optional tactic name or shortname to filter by
+        include_subtechniques: Include sub-techniques in results
+        include_revoked: Include revoked techniques
+        include_deprecated: Include deprecated techniques
+        
+    Returns:
+        Dictionary with techniques organized by tactic
+    """
+    trace_id = str(uuid.uuid4())
+    
+    driver = GraphDatabase.driver(
+        settings.neo4j_uri,
+        auth=(settings.neo4j_user, settings.neo4j_password)
+    )
+    
+    try:
+        with driver.session() as session:
+            # Build the query based on filters
+            filters = []
+            if not include_revoked:
+                filters.append("(ap.revoked IS NULL OR ap.revoked = false)")
+            if not include_deprecated:
+                filters.append("(ap.x_mitre_deprecated IS NULL OR ap.x_mitre_deprecated = false)")
+            
+            where_clause = " AND ".join(filters) if filters else "1=1"
+            
+            # Query for techniques with their tactics
+            if tactic:
+                # Filter by specific tactic
+                query = f"""
+                    MATCH (ap:AttackPattern)-[:HAS_TACTIC]->(t:Tactic)
+                    WHERE ({where_clause})
+                    AND (t.name = $tactic OR t.shortname = $tactic)
+                    {'AND (ap.x_mitre_is_subtechnique IS NULL OR ap.x_mitre_is_subtechnique = false)' if not include_subtechniques else ''}
+                    RETURN t.name as tactic_name, 
+                           t.shortname as tactic_shortname,
+                           t.stix_id as tactic_id,
+                           collect(DISTINCT {{
+                               stix_id: ap.stix_id,
+                               name: ap.name,
+                               description: ap.description,
+                               external_id: ap.external_id,
+                               is_subtechnique: ap.x_mitre_is_subtechnique,
+                               platforms: ap.x_mitre_platforms,
+                               revoked: ap.revoked,
+                               deprecated: ap.x_mitre_deprecated
+                           }}) as techniques
+                    ORDER BY tactic_name
+                """
+                result = session.run(query, tactic=tactic)
+            else:
+                # Get all techniques grouped by tactic
+                query = f"""
+                    MATCH (ap:AttackPattern)-[:HAS_TACTIC]->(t:Tactic)
+                    WHERE {where_clause}
+                    {'AND (ap.x_mitre_is_subtechnique IS NULL OR ap.x_mitre_is_subtechnique = false)' if not include_subtechniques else ''}
+                    RETURN t.name as tactic_name,
+                           t.shortname as tactic_shortname,
+                           t.stix_id as tactic_id,
+                           collect(DISTINCT {{
+                               stix_id: ap.stix_id,
+                               name: ap.name,
+                               description: ap.description,
+                               external_id: ap.external_id,
+                               is_subtechnique: ap.x_mitre_is_subtechnique,
+                               platforms: ap.x_mitre_platforms,
+                               revoked: ap.revoked,
+                               deprecated: ap.x_mitre_deprecated
+                           }}) as techniques
+                    ORDER BY tactic_name
+                """
+                result = session.run(query)
+            
+            tactics_data = []
+            total_techniques = 0
+            
+            for record in result:
+                tactic_techniques = record["techniques"]
+                tactics_data.append({
+                    "tactic_name": record["tactic_name"],
+                    "tactic_shortname": record["tactic_shortname"],
+                    "tactic_id": record["tactic_id"],
+                    "technique_count": len(tactic_techniques),
+                    "techniques": tactic_techniques
+                })
+                total_techniques += len(tactic_techniques)
+            
+            return {
+                "tactics": tactics_data,
+                "total_tactics": len(tactics_data),
+                "total_techniques": total_techniques,
+                "filters": {
+                    "tactic": tactic,
+                    "include_subtechniques": include_subtechniques,
+                    "include_revoked": include_revoked,
+                    "include_deprecated": include_deprecated
+                },
+                "trace_id": trace_id
+            }
+            
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "TechniquesFetchError",
+                "message": f"Failed to fetch techniques: {str(e)}",
+                "trace_id": trace_id
+            }
+        )
+    finally:
+        driver.close()
