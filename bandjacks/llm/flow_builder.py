@@ -151,6 +151,17 @@ class FlowBuilder:
             Flow data with episode and actions
         """
         with self.driver.session() as session:
+            # Fetch group name
+            group_result = session.run(
+                """
+                MATCH (g:IntrusionSet {stix_id: $group_id})
+                RETURN g.name as name
+                """,
+                group_id=intrusion_set_id
+            )
+            group_record = group_result.single()
+            group_name = group_record["name"] if group_record else None
+
             # Fetch techniques used by the group
             techniques_query = (
                 """
@@ -173,13 +184,18 @@ class FlowBuilder:
 
         ordered_steps = self._order_steps(steps)
         edges = self._compute_next_edges(ordered_steps)
-        return self._create_episode(
-            name=f"Flow for {intrusion_set_id}",
+        episode = self._create_episode(
+            name=(f"Flow attributed to {group_name}" if group_name else f"Flow for {intrusion_set_id}"),
             steps=ordered_steps,
             edges=edges,
             source_id=intrusion_set_id,
             llm_synthesized=False
         )
+        # Stamp attribution metadata
+        episode["attributed_group_id"] = intrusion_set_id
+        if group_name:
+            episode["attributed_group_name"] = group_name
+        return episode
 
     def build_from_techniques(self, techniques: List[str], name: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -703,7 +719,9 @@ class FlowBuilder:
                         created: datetime(),
                         strategy: $strategy,
                         llm_synthesized: $llm_synthesized,
-                        created_with_release: $attack_version
+                        created_with_release: $attack_version,
+                        attributed_group_id: $attributed_group_id,
+                        attributed_group_name: $attributed_group_name
                     })
                     """,
                     episode_id=flow_data["episode_id"],
@@ -712,7 +730,9 @@ class FlowBuilder:
                     source_id=flow_data.get("source_id"),
                     strategy=flow_data.get("strategy", "sequential"),
                     llm_synthesized=flow_data.get("llm_synthesized", False),
-                    attack_version=attack_version
+                    attack_version=attack_version,
+                    attributed_group_id=flow_data.get("attributed_group_id"),
+                    attributed_group_name=flow_data.get("attributed_group_name")
                 )
                 
                 # Create AttackActions and CONTAINS edges
@@ -769,6 +789,18 @@ class FlowBuilder:
                         """,
                         episode_id=flow_data["episode_id"],
                         source_id=flow_data["source_id"]
+                    )
+
+                # Add explicit actor attribution if provided
+                if flow_data.get("attributed_group_id"):
+                    session.run(
+                        """
+                        MATCH (e:AttackEpisode {episode_id: $episode_id})
+                        MATCH (g:IntrusionSet {stix_id: $group_id})
+                        CREATE (e)-[:ATTRIBUTED_TO]->(g)
+                        """,
+                        episode_id=flow_data["episode_id"],
+                        group_id=flow_data["attributed_group_id"]
                     )
                 
                 return True
