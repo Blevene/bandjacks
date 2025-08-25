@@ -61,7 +61,7 @@ export default function TechniquePage() {
   const fetchTechniqueDetails = async () => {
     try {
       let stixId = techniqueId;
-      let techniqueData = null;
+      let techniqueData: any = null;
       let externalId = null;
       
       // Check if it's a STIX ID or external ID
@@ -137,13 +137,13 @@ export default function TechniquePage() {
         if (searchResult.results && searchResult.results.length > 0) {
           const result = searchResult.results[0];
           techniqueData = result;
-          stixId = result.stix_id;
+          stixId = result.stix_id as string;
           externalId = result.external_id || techniqueId;
           
           // Get coverage details
           if (externalId) {
             try {
-              const coverage = await typedApi.coverage.getTechnique(externalId);
+              const coverage = await typedApi.coverage.getTechnique(externalId as string);
               techniqueData = { ...techniqueData, ...coverage };
             } catch (e) {
               console.error('Coverage fetch failed:', e);
@@ -302,7 +302,7 @@ export default function TechniquePage() {
         technique_id: searchId,
         limit: 20,
       });
-      setStrategies(result.strategies || []);
+      setStrategies(result || []);
     } catch (error: any) {
       // Strategies might not exist, which is okay
       setStrategies([]);

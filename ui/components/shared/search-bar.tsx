@@ -30,7 +30,7 @@ export function SearchBar({
   className = "",
 }: SearchBarProps) {
   const [internalValue, setInternalValue] = useState(value);
-  const debounceTimer = useRef<NodeJS.Timeout>();
+  const debounceTimer = useRef<NodeJS.Timeout | undefined>(undefined);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {

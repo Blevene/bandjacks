@@ -21,6 +21,7 @@ import {
   GitBranch,
 } from "lucide-react";
 import { typedApi } from "@/lib/api-client";
+import { JobStatus } from "@/components/reports/job-status";
 
 interface IngestConfig {
   use_batch_mapper: boolean;
@@ -70,6 +71,7 @@ export default function NewReportPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [ingestResult, setIngestResult] = useState<IngestResult | null>(null);
+  const [asyncJobId, setAsyncJobId] = useState<string | null>(null);
   const [config, setConfig] = useState<IngestConfig>({
     use_batch_mapper: true,
     skip_verification: false,
@@ -115,50 +117,95 @@ export default function NewReportPage() {
 
     setLoading(true);
     setIngestResult(null);
+    setAsyncJobId(null);
 
     try {
-      let result: IngestResult;
+      // Determine content size
+      const contentSize = selectedFile ? selectedFile.size : textContent.length;
+      const useAsync = contentSize > 5000; // Use async for content > 5KB
 
-      if (selectedFile) {
-        // Use file upload endpoint
-        result = await typedApi.reports.ingestUpload(selectedFile, {
-          use_batch_mapper: config.use_batch_mapper,
-          skip_verification: config.skip_verification,
-          force_provisional_campaign: config.force_provisional_campaign,
+      if (useAsync) {
+        // Use async endpoints for large content
+        let jobResponse: any;
+
+        if (selectedFile) {
+          // Use async file upload endpoint
+          jobResponse = await typedApi.reports.ingestFileAsync(selectedFile, {
+            use_batch_mapper: config.use_batch_mapper,
+            skip_verification: config.skip_verification,
+            force_provisional_campaign: config.force_provisional_campaign,
+            disable_targeted_extraction: config.disable_targeted_extraction,
+            max_spans: config.max_spans,
+            confidence_threshold: config.confidence_threshold,
+          });
+        } else {
+          // Use async text ingestion endpoint
+          jobResponse = await typedApi.reports.ingestAsync({
+            report_sdo: {
+              type: "report",
+              spec_version: "2.1",
+              name: "Manual Report Entry",
+              description: "Report created from pasted text",
+              published: new Date().toISOString(),
+            },
+            inline_text: textContent,
+            config: config,
+          });
+        }
+
+        // Set job ID to show progress tracking
+        setAsyncJobId(jobResponse.job_id);
+        
+        toast({
+          title: "Processing Started",
+          description: "Large document detected. Processing asynchronously...",
         });
+
       } else {
-        // Use text ingestion endpoint
-        result = await typedApi.reports.ingest({
-          report_sdo: {
-            type: "report",
-            spec_version: "2.1",
-            name: "Manual Report Entry",
-            description: "Report created from pasted text",
-            published: new Date().toISOString(),
-          },
-          inline_text: textContent,
-          config: config,
+        // Use synchronous endpoints for small content
+        let result: IngestResult;
+
+        if (selectedFile) {
+          // Use file upload endpoint
+          result = await typedApi.reports.ingestUpload(selectedFile, {
+            use_batch_mapper: config.use_batch_mapper,
+            skip_verification: config.skip_verification,
+            force_provisional_campaign: config.force_provisional_campaign,
+          });
+        } else {
+          // Use text ingestion endpoint
+          result = await typedApi.reports.ingest({
+            report_sdo: {
+              type: "report",
+              spec_version: "2.1",
+              name: "Manual Report Entry",
+              description: "Report created from pasted text",
+              published: new Date().toISOString(),
+            },
+            inline_text: textContent,
+            config: config,
+          });
+        }
+
+        setIngestResult(result);
+
+        toast({
+          title: "Ingestion Complete",
+          description: (
+            <div className="space-y-1">
+              <p>Report processed successfully</p>
+              <p className="text-xs">
+                {result.extraction_metrics.techniques_extracted} techniques extracted
+              </p>
+            </div>
+          ),
         });
+
+        // Navigate to report detail after short delay
+        setTimeout(() => {
+          router.push(`/reports/${result.report_id}`);
+        }, 2000);
       }
-
-      setIngestResult(result);
-
-      toast({
-        title: "Ingestion Complete",
-        description: (
-          <div className="space-y-1">
-            <p>Report processed successfully</p>
-            <p className="text-xs">
-              {result.extraction_metrics.techniques_extracted} techniques extracted
-            </p>
-          </div>
-        ),
-      });
-
-      // Navigate to report detail after short delay
-      setTimeout(() => {
-        router.push(`/reports/${result.report_id}`);
-      }, 2000);
 
     } catch (error: any) {
       console.error("Ingestion error:", error);
@@ -175,7 +222,9 @@ export default function NewReportPage() {
         variant: "destructive",
       });
     } finally {
-      setLoading(false);
+      if (!asyncJobId) {
+        setLoading(false);
+      }
     }
   };
 
@@ -435,6 +484,25 @@ export default function NewReportPage() {
           </Card>
         </div>
       </div>
+
+      {/* Async Job Status */}
+      {asyncJobId && !ingestResult && (
+        <JobStatus
+          jobId={asyncJobId}
+          onComplete={(result) => {
+            setLoading(false);
+            // Navigate to report after completion
+            if (result?.report_id) {
+              router.push(`/reports/${result.report_id}`);
+            }
+          }}
+          onError={() => {
+            setLoading(false);
+            setAsyncJobId(null);
+          }}
+          autoRedirect={true}
+        />
+      )}
 
       {ingestResult && (
         <Card className="border-green-500/50">

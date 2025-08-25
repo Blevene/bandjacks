@@ -106,6 +106,9 @@ class FlowBuildRequest(BaseModel):
     use_llm_synthesis: bool = Field(True, description="Use AttackFlowSynthesizer for LLM-based flow generation")
     intrusion_set_id: Optional[str] = Field(None, description="Build from an Intrusion Set (group) by stix_id")
     techniques: Optional[List[str]] = Field(None, description="List of technique identifiers (STIX IDs like 'attack-pattern--...' or ATT&CK IDs like 'T1059.001')")
+    campaign_id: Optional[str] = Field(None, description="Build from a Campaign by stix_id")
+    report_id: Optional[str] = Field(None, description="Build from a Report by stix_id")
+    flow_mode: Optional[Literal["sequential","cooccurrence"]] = Field("sequential", description="Sequence steps by inferred order or as co-occurrence (unordered with low p)")
 
 
 class FlowStep(BaseModel):

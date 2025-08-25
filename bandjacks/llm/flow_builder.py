@@ -144,57 +144,77 @@ class FlowBuilder:
         """
         Build a flow from an Intrusion Set's known technique usages.
         
+        Note: Intrusion sets don't have sequence information, so we model techniques
+        as co-occurring rather than sequential. A future sequence inference module
+        could attempt to infer likely orderings based on tactic alignment, 
+        historical patterns, or ML models.
+        
         Args:
             intrusion_set_id: STIX ID of the IntrusionSet (e.g., intrusion-set--...)
         
         Returns:
-            Flow data with episode and actions
+            Flow data with episode and actions (co-occurrence model)
         """
         with self.driver.session() as session:
-            # Fetch group name
-            group_result = session.run(
-                """
+            # Fetch group name and techniques with tactics
+            combined_query = """
                 MATCH (g:IntrusionSet {stix_id: $group_id})
-                RETURN g.name as name
-                """,
-                group_id=intrusion_set_id
-            )
-            group_record = group_result.single()
-            group_name = group_record["name"] if group_record else None
-
-            # Fetch techniques used by the group
-            techniques_query = (
-                """
-                MATCH (g:IntrusionSet {stix_id: $group_id})-[:USES]->(t:AttackPattern)
-                RETURN t.stix_id as technique_id, t.name as name,
-                       coalesce(t.description, "") as description
-                """
-            )
-            result = session.run(techniques_query, group_id=intrusion_set_id)
-            steps: List[Dict[str, Any]] = []
-            for rec in result:
-                steps.append({
-                    "technique_id": rec["technique_id"],
-                    "name": rec["name"] or "Unknown",
-                    "description": rec["description"][:200],
-                    "confidence": 60.0
-                })
-        if not steps:
+                OPTIONAL MATCH (g)-[:USES]->(t:AttackPattern)
+                OPTIONAL MATCH (t)-[:HAS_TACTIC]->(tac:Tactic)
+                WITH g, t, collect(DISTINCT tac.shortname) as tactics
+                RETURN g.name as group_name,
+                       collect(DISTINCT {
+                           technique_id: t.stix_id,
+                           name: t.name,
+                           description: coalesce(t.description, ""),
+                           tactics: tactics
+                       }) as techniques
+            """
+            result = session.run(combined_query, group_id=intrusion_set_id)
+            record = result.single()
+            
+            if not record:
+                raise ValueError(f"Intrusion set {intrusion_set_id} not found")
+            
+            group_name = record["group_name"]
+            techniques = [t for t in record["techniques"] if t["technique_id"] is not None]
+            
+        if not techniques:
             raise ValueError(f"No techniques found for intrusion set {intrusion_set_id}")
 
-        ordered_steps = self._order_steps(steps)
-        edges = self._compute_next_edges(ordered_steps)
+        # Create actions without sequential ordering
+        actions = []
+        for i, tech in enumerate(techniques):
+            actions.append({
+                "action_id": f"action--{uuid.uuid4()}",
+                "order": i + 1,  # Arbitrary order for display purposes
+                "technique_id": tech["technique_id"],
+                "name": tech["name"] or "Unknown",
+                "description": tech["description"][:200] if tech["description"] else "",
+                "confidence": 60.0,
+                "tactics": tech["tactics"]
+            })
+        
+        # Create co-occurrence edges (sparse connectivity to avoid explosion)
+        # For now, we'll create a hub-and-spoke pattern with techniques grouped by tactic
+        edges = self._create_cooccurrence_edges(actions)
+        
         episode = self._create_episode(
-            name=(f"Flow attributed to {group_name}" if group_name else f"Flow for {intrusion_set_id}"),
-            steps=ordered_steps,
+            name=(f"Techniques used by {group_name}" if group_name else f"Techniques for {intrusion_set_id}"),
+            steps=actions,
             edges=edges,
             source_id=intrusion_set_id,
-            llm_synthesized=False
+            llm_synthesized=False,
+            flow_type="co-occurrence"  # Mark as co-occurrence flow
         )
+        
         # Stamp attribution metadata
         episode["attributed_group_id"] = intrusion_set_id
         if group_name:
             episode["attributed_group_name"] = group_name
+        episode["flow_type"] = "co-occurrence"
+        episode["sequence_inferred"] = False
+        
         return episode
 
     def build_from_techniques(self, techniques: List[str], name: Optional[str] = None) -> Dict[str, Any]:
@@ -234,6 +254,134 @@ class FlowBuilder:
             source_id=None,
             llm_synthesized=False
         )
+
+    def build_from_campaign(self, campaign_id: str, mode: str = "sequential") -> Dict[str, Any]:
+        """
+        Build a flow from a Campaign's observed behaviors.
+        
+        mode:
+          - "sequential": order by temporal hints and tactic order
+          - "cooccurrence": treat as unordered; create weak NEXT edges
+        """
+        with self.driver.session() as session:
+            # Fetch techniques used by the campaign
+            result = session.run(
+                """
+                MATCH (c:Campaign {stix_id: $cid})
+                OPTIONAL MATCH (c)-[:USES]->(ap:AttackPattern)
+                RETURN collect(DISTINCT ap) as techniques, c.name as cname
+                """,
+                cid=campaign_id
+            )
+            rec = result.single()
+            ap_nodes = rec["techniques"] if rec else []
+            campaign_name = rec["cname"] if rec else None
+
+        steps: List[Dict[str, Any]] = []
+        for ap in ap_nodes or []:
+            if not ap:
+                continue
+            apd = dict(ap)
+            steps.append({
+                "technique_id": apd.get("stix_id"),
+                "name": apd.get("name", "Unknown"),
+                "description": (apd.get("description", "") or "")[:200],
+                "confidence": 55.0
+            })
+
+        if not steps:
+            raise ValueError(f"No techniques found for campaign {campaign_id}")
+
+        if mode == "sequential":
+            ordered_steps = self._order_steps(steps)
+            edges = self._compute_next_edges(ordered_steps)
+        else:
+            # co-occurrence: keep insertion order and create light edges between all pairs
+            ordered_steps = []
+            for i, s in enumerate(steps):
+                s_copy = dict(s)
+                s_copy["order"] = i + 1
+                s_copy["action_id"] = f"action--{uuid.uuid4()}"
+                ordered_steps.append(s_copy)
+            edges: List[Dict[str, Any]] = []
+            for i in range(len(ordered_steps)):
+                for j in range(i + 1, len(ordered_steps)):
+                    edges.append({
+                        "source": ordered_steps[i]["action_id"],
+                        "target": ordered_steps[j]["action_id"],
+                        "probability": 0.3,
+                        "rationale": "co-occurrence"
+                    })
+
+        episode = self._create_episode(
+            name=(campaign_name or f"Flow from {campaign_id}"),
+            steps=ordered_steps,
+            edges=edges,
+            source_id=campaign_id,
+            llm_synthesized=False
+        )
+        return episode
+
+    def build_from_report(self, report_id: str, mode: str = "sequential") -> Dict[str, Any]:
+        """
+        Stub: Build a flow from a Report's described techniques (sequential or cooccurrence).
+        Uses any described AttackPatterns linked via DESCRIBES.
+        """
+        with self.driver.session() as session:
+            result = session.run(
+                """
+                MATCH (r:Report {stix_id: $rid})-[:DESCRIBES]->(ap:AttackPattern)
+                RETURN collect(DISTINCT ap) as techniques, r.name as rname
+                """,
+                rid=report_id
+            )
+            rec = result.single()
+            ap_nodes = rec["techniques"] if rec else []
+            report_name = rec["rname"] if rec else None
+
+        steps: List[Dict[str, Any]] = []
+        for ap in ap_nodes or []:
+            if not ap:
+                continue
+            apd = dict(ap)
+            steps.append({
+                "technique_id": apd.get("stix_id"),
+                "name": apd.get("name", "Unknown"),
+                "description": (apd.get("description", "") or "")[:200],
+                "confidence": 50.0
+            })
+
+        if not steps:
+            raise ValueError(f"No techniques found for report {report_id}")
+
+        if mode == "sequential":
+            ordered_steps = self._order_steps(steps)
+            edges = self._compute_next_edges(ordered_steps)
+        else:
+            ordered_steps = []
+            for i, s in enumerate(steps):
+                s_copy = dict(s)
+                s_copy["order"] = i + 1
+                s_copy["action_id"] = f"action--{uuid.uuid4()}"
+                ordered_steps.append(s_copy)
+            edges: List[Dict[str, Any]] = []
+            for i in range(len(ordered_steps)):
+                for j in range(i + 1, len(ordered_steps)):
+                    edges.append({
+                        "source": ordered_steps[i]["action_id"],
+                        "target": ordered_steps[j]["action_id"],
+                        "probability": 0.25,
+                        "rationale": "co-occurrence"
+                    })
+
+        episode = self._create_episode(
+            name=(report_name or f"Flow from {report_id}"),
+            steps=ordered_steps,
+            edges=edges,
+            source_id=report_id,
+            llm_synthesized=False
+        )
+        return episode
 
     def _resolve_technique_identifier(self, session, identifier: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
@@ -487,6 +635,81 @@ class FlowBuilder:
         
         return steps
     
+    def _create_cooccurrence_edges(self, actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Create co-occurrence edges for techniques without sequential ordering.
+        
+        Uses a sparse connectivity pattern to avoid edge explosion:
+        - Groups techniques by tactic
+        - Creates edges within tactic groups
+        - Adds cross-tactic edges for common patterns
+        
+        Args:
+            actions: List of action dictionaries with tactics
+            
+        Returns:
+            List of co-occurrence edges
+        """
+        edges = []
+        
+        # Group actions by their primary tactic
+        tactic_groups = {}
+        for action in actions:
+            tactics = action.get("tactics", [])
+            primary_tactic = tactics[0] if tactics else "unknown"
+            if primary_tactic not in tactic_groups:
+                tactic_groups[primary_tactic] = []
+            tactic_groups[primary_tactic].append(action)
+        
+        # Create edges within each tactic group (clique within small groups, hub-spoke for large)
+        for tactic, group_actions in tactic_groups.items():
+            if len(group_actions) <= 5:
+                # Small group: create full mesh (clique)
+                for i, action1 in enumerate(group_actions):
+                    for action2 in group_actions[i+1:]:
+                        edges.append({
+                            "source": action1["action_id"],
+                            "target": action2["action_id"],
+                            "probability": 0.3,
+                            "rationale": f"co-occurrence within {tactic}",
+                            "edge_type": "co-occurrence"
+                        })
+            else:
+                # Large group: hub-and-spoke with most common technique as hub
+                # For now, just use first as hub
+                hub = group_actions[0]
+                for action in group_actions[1:]:
+                    edges.append({
+                        "source": hub["action_id"],
+                        "target": action["action_id"],
+                        "probability": 0.25,
+                        "rationale": f"co-occurrence within {tactic}",
+                        "edge_type": "co-occurrence"
+                    })
+        
+        # Add some cross-tactic edges for common patterns
+        tactic_sequence = [
+            "initial-access", "execution", "persistence", "privilege-escalation",
+            "defense-evasion", "credential-access", "discovery", "lateral-movement",
+            "collection", "command-and-control", "exfiltration", "impact"
+        ]
+        
+        for i, tactic1 in enumerate(tactic_sequence[:-1]):
+            tactic2 = tactic_sequence[i + 1]
+            if tactic1 in tactic_groups and tactic2 in tactic_groups:
+                # Connect one technique from each adjacent tactic
+                source = tactic_groups[tactic1][0]
+                target = tactic_groups[tactic2][0]
+                edges.append({
+                    "source": source["action_id"],
+                    "target": target["action_id"],
+                    "probability": 0.4,
+                    "rationale": f"cross-tactic pattern: {tactic1} → {tactic2}",
+                    "edge_type": "co-occurrence"
+                })
+        
+        return edges
+    
     def _compute_next_edges(self, ordered_steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Compute NEXT edges with probabilities.
@@ -624,7 +847,8 @@ class FlowBuilder:
         steps: List[Dict[str, Any]],
         edges: List[Dict[str, Any]],
         source_id: Optional[str] = None,
-        llm_synthesized: bool = False
+        llm_synthesized: bool = False,
+        flow_type: str = "sequential"
     ) -> Dict[str, Any]:
         """Create episode structure from steps and edges."""
         flow_id = f"flow--{uuid.uuid4()}"
@@ -652,6 +876,7 @@ class FlowBuilder:
             "actions": actions,
             "edges": edges,
             "llm_synthesized": llm_synthesized,
+            "flow_type": flow_type,
             "created_at": datetime.utcnow().isoformat() + "Z",
             "stats": {
                 "steps_count": len(actions),
@@ -683,7 +908,7 @@ class FlowBuilder:
             """
             MATCH (n:AttackPattern)
             WHERE n.source_version IS NOT NULL
-            RETURN DISTINCT n.source_version as version, n.source_collection as collection
+            RETURN n.source_version as version, n.source_collection as collection
             ORDER BY n.modified DESC
             LIMIT 1
             """
@@ -705,34 +930,57 @@ class FlowBuilder:
         """
         with self.driver.session() as session:
             try:
-                # Create AttackEpisode
                 # Get current ATT&CK version for version freeze
                 attack_version = self._get_current_attack_version(session)
                 
+                # Create AttackFlow node (main flow container)
                 session.run(
                     """
-                    CREATE (e:AttackEpisode {
-                        episode_id: $episode_id,
+                    CREATE (f:AttackFlow {
                         flow_id: $flow_id,
                         name: $name,
+                        description: $description,
+                        flow_type: $flow_type,
                         source_id: $source_id,
                         created: datetime(),
-                        strategy: $strategy,
+                        modified: datetime(),
                         llm_synthesized: $llm_synthesized,
                         created_with_release: $attack_version,
                         attributed_group_id: $attributed_group_id,
-                        attributed_group_name: $attributed_group_name
+                        attributed_group_name: $attributed_group_name,
+                        sequence_inferred: $sequence_inferred
                     })
                     """,
-                    episode_id=flow_data["episode_id"],
                     flow_id=flow_data["flow_id"],
                     name=flow_data["name"],
+                    description=flow_data.get("description", f"Attack flow with {len(flow_data['actions'])} steps"),
+                    flow_type=flow_data.get("flow_type", "sequential"),
                     source_id=flow_data.get("source_id"),
-                    strategy=flow_data.get("strategy", "sequential"),
                     llm_synthesized=flow_data.get("llm_synthesized", False),
                     attack_version=attack_version,
                     attributed_group_id=flow_data.get("attributed_group_id"),
-                    attributed_group_name=flow_data.get("attributed_group_name")
+                    attributed_group_name=flow_data.get("attributed_group_name"),
+                    sequence_inferred=flow_data.get("sequence_inferred", False)
+                )
+                
+                # Create AttackEpisode linked to the flow
+                session.run(
+                    """
+                    MATCH (f:AttackFlow {flow_id: $flow_id})
+                    CREATE (e:AttackEpisode {
+                        episode_id: $episode_id,
+                        name: $name,
+                        source_id: $source_id,
+                        created: datetime(),
+                        strategy: $strategy
+                    })
+                    CREATE (f)-[:CONTAINS_EPISODE]->(e)
+                    """,
+                    flow_id=flow_data["flow_id"],
+                    episode_id=flow_data["episode_id"],
+                    name=flow_data["name"],
+                    source_id=flow_data.get("source_id"),
+                    strategy=flow_data.get("flow_type", "sequential")
                 )
                 
                 # Create AttackActions and CONTAINS edges

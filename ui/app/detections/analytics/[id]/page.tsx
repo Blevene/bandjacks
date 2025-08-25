@@ -69,9 +69,12 @@ export default function AnalyticDetailPage() {
     setFeedbackLoading(true);
     try {
       await typedApi.feedback.submitAnalytic(analyticId, {
-        rating,
-        feedback: feedbackText,
-        suggested_changes: {},
+        score: rating === "positive" ? 5 : rating === "negative" ? 1 : 3,
+        labels: [],
+        overrides: {},
+        env_id: "default",
+        comment: feedbackText,
+        analyst_id: "current_user",
       });
       
       toast({

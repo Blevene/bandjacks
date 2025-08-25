@@ -189,6 +189,42 @@ response = httpx.get(
 )
 ```
 
+### 6. Generating AttackFlow Models
+
+Create co-occurrence models that show how threat actors use techniques together:
+
+```python
+# Generate flow for a specific intrusion set (e.g., APT29)
+response = httpx.post(
+    "http://localhost:8000/v1/flows/build",
+    json={
+        "intrusion_set_id": "intrusion-set--899ce53f-13a0-479b-a0e4-67d46e241542"
+    }
+)
+
+flow = response.json()
+print(f"Generated flow '{flow['name']}' with {len(flow['steps'])} techniques")
+print(f"Co-occurrence edges: {len(flow['edges'])}")
+```
+
+**Bulk Generation**: Generate flows for all threat actors with techniques:
+
+```bash
+# Run the bulk generation script
+uv run python scripts/build_intrusion_flows_simple.py
+
+# Monitor progress - creates flows for 165+ intrusion sets
+# Handles rate limiting automatically
+# Skips existing flows to avoid duplicates
+```
+
+AttackFlow models use **co-occurrence** rather than sequential ordering since intrusion sets don't have inherent sequence information. Techniques are connected by:
+- **Intra-tactic edges**: Between techniques in the same kill chain tactic
+- **Cross-tactic edges**: Between techniques across adjacent tactics
+- **Hub-spoke patterns**: For large technique sets to avoid edge explosion
+
+See the [AttackFlow Generation Guide](docs/ATTACKFLOW_GENERATION.md) for detailed usage.
+
 ## Supported Input Formats
 
 The extraction pipeline supports multiple input formats:
@@ -334,7 +370,9 @@ python tests/test_bundle_validation.py
 - `GET /v1/extract/runs/{id}/result` - Get extraction results
 - `POST /v1/search/ttx` - Search for techniques
 - `GET /v1/graph/technique/{id}` - Get technique details
-- `POST /v1/flows/build` - Generate attack flows
+- `POST /v1/flows/build` - Generate AttackFlow co-occurrence models
+- `GET /v1/flows/{flow_id}` - Retrieve specific AttackFlow details
+- `POST /v1/flows/search` - Search for similar attack flows
 - `GET /v1/defense/technique/{id}` - Get defensive recommendations
 - `GET /v1/cache/stats` - Get LLM cache statistics
 - `POST /v1/cache/clear` - Clear LLM cache

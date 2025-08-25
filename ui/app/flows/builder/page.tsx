@@ -373,7 +373,7 @@ export default function FlowBuilderPage() {
                     </p>
                   </div>
                 </Panel>
-                <Background variant="dots" gap={12} size={1} />
+                <Background gap={12} size={1} />
                 <Controls />
                 <MiniMap />
               </ReactFlow>

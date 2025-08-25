@@ -15,6 +15,7 @@ import pdfplumber
 from neo4j import GraphDatabase
 
 from bandjacks.llm.agentic_v2_optimized import run_agentic_v2_optimized
+from bandjacks.llm.chunked_extractor import extract_chunked
 from bandjacks.llm.tracker import ExtractionTracker
 from bandjacks.llm.bundle_validator import validate_bundle_for_upsert
 from bandjacks.store.report_store import ReportStore
@@ -262,7 +263,8 @@ def create_stix_bundle(
                 "modified": now_iso,
                 "external_references": [{
                     "source_name": "mitre-attack",
-                    "external_id": claim["technique_id"]
+                    "external_id": claim["technique_id"],
+                    "url": f"https://attack.mitre.org/techniques/{claim['technique_id'].replace('.', '/')}/"
                 }],
                 "x_bj_provenance": {
                     "evidence": claim.get("evidence", {}),
@@ -392,16 +394,31 @@ async def ingest_report(request: IngestRequest):
                 published=datetime.utcnow().isoformat()
             )
         
-        # Run extraction with agentic_v2_optimized
+        # Run extraction with chunked extractor for large documents
         tracker = ExtractionTracker()
         config = request.config.dict()
         
         logger.info(f"Running extraction on text ({len(text_content)} chars)")
-        extraction_results = run_agentic_v2_optimized(
-            report_text=text_content,
-            config=config,
-            tracker=tracker
-        )
+        
+        # Use chunked extraction for large documents
+        if len(text_content) > 5000:  # Threshold for chunked processing
+            logger.info("Using chunked extraction for large document")
+            extraction_results = extract_chunked(
+                text=text_content,
+                config=config,
+                chunk_size=3000,
+                overlap=200,
+                max_chunks=10,
+                parallel=True
+            )
+        else:
+            # Use regular extraction for small documents
+            extraction_results = run_agentic_v2_optimized(
+                report_text=text_content,
+                config=config,
+                tracker=tracker
+            )
+        
         logger.info(f"Extraction complete: {len(extraction_results.get('claims', []))} claims found")
         
         # Evaluate campaign rubric

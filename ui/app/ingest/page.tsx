@@ -89,7 +89,7 @@ export default function IngestPage() {
       
       toast({
         title: "Ingestion Complete",
-        description: `Processed ${result.total_objects || 0} objects`,
+        description: `Inserted: ${result.inserted}, Updated: ${result.updated}`,
       });
     } catch (error: any) {
       const traceId = error.response?.data?.trace_id;

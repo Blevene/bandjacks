@@ -476,9 +476,9 @@ export default function ReportDetailPage() {
                       ? `Activity spans from ${rubric.first_seen ? format(new Date(rubric.first_seen), "MMM yyyy") : "unknown"} to ${rubric.last_seen ? format(new Date(rubric.last_seen), "MMM yyyy") : "unknown"}`
                       : "No time bounds identified"}
                   </p>
-                  {report.x_bj_provenance?.rubric_evidence?.time_bounds_detected?.length > 0 && (
+                  {report.x_bj_provenance?.rubric_evidence?.time_bounds_detected && report.x_bj_provenance.rubric_evidence.time_bounds_detected.length > 0 && (
                     <div className="mt-2 space-y-1">
-                      {report.x_bj_provenance.rubric_evidence.time_bounds_detected.slice(0, 2).map((tb, idx) => (
+                      {report.x_bj_provenance.rubric_evidence.time_bounds_detected.slice(0, 2).map((tb: any, idx: number) => (
                         <p key={idx} className="text-xs text-muted-foreground/70 italic">
                           "{tb.text.substring(0, 50)}..."
                         </p>
@@ -497,9 +497,9 @@ export default function ReportDetailPage() {
                       ? `${techniques.length} techniques detected across operation`
                       : "Single or no techniques detected"}
                   </p>
-                  {report.x_bj_provenance?.rubric_evidence?.distinct_techniques?.length > 0 && (
+                  {report.x_bj_provenance?.rubric_evidence?.distinct_techniques && report.x_bj_provenance.rubric_evidence.distinct_techniques.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1">
-                      {report.x_bj_provenance.rubric_evidence.distinct_techniques.slice(0, 3).map((tech, idx) => (
+                      {report.x_bj_provenance.rubric_evidence.distinct_techniques.slice(0, 3).map((tech: any, idx: number) => (
                         <Badge key={idx} variant="outline" className="text-xs">
                           {tech}
                         </Badge>
@@ -523,9 +523,9 @@ export default function ReportDetailPage() {
                       ? `${actors.length} threat actor(s) identified`
                       : "No threat actors identified"}
                   </p>
-                  {report.x_bj_provenance?.rubric_evidence?.intrusion_sets?.length > 0 && (
+                  {report.x_bj_provenance?.rubric_evidence?.intrusion_sets && report.x_bj_provenance.rubric_evidence.intrusion_sets.length > 0 && (
                     <div className="mt-2 space-y-1">
-                      {report.x_bj_provenance.rubric_evidence.intrusion_sets.map((is, idx) => (
+                      {report.x_bj_provenance.rubric_evidence.intrusion_sets.map((is: any, idx: number) => (
                         <div key={idx} className="flex items-center gap-2">
                           <Badge variant="outline" className="text-xs">
                             {is.name}
@@ -549,9 +549,9 @@ export default function ReportDetailPage() {
                       ? "Sequenced activity detected"
                       : "No sequential patterns found"}
                   </p>
-                  {report.x_bj_provenance?.rubric_evidence?.sequence_cues?.length > 0 && (
+                  {report.x_bj_provenance?.rubric_evidence?.sequence_cues && report.x_bj_provenance.rubric_evidence.sequence_cues.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1">
-                      {report.x_bj_provenance.rubric_evidence.sequence_cues.map((cue, idx) => (
+                      {report.x_bj_provenance.rubric_evidence.sequence_cues.map((cue: any, idx: number) => (
                         <Badge key={idx} variant="secondary" className="text-xs">
                           {cue}
                         </Badge>
