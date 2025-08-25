@@ -184,8 +184,18 @@ def validate_report(obj: Dict[str, Any]) -> List[str]:
     if not obj.get("name"):
         errors.append("Report missing 'name'")
     
-    if "object_refs" in obj and not isinstance(obj["object_refs"], list):
+    # Require object_refs as non-empty array for Reports
+    if "object_refs" not in obj:
+        errors.append("Report missing 'object_refs' array (required for referenced objects)")
+    elif not isinstance(obj["object_refs"], list):
         errors.append("Report 'object_refs' must be an array")
+    elif len(obj["object_refs"]) == 0:
+        errors.append("Report 'object_refs' must be non-empty (at least one referenced object required)")
+    else:
+        # Validate each ref is a valid STIX ID
+        for ref in obj["object_refs"]:
+            if not validate_stix_id(ref):
+                errors.append(f"Invalid STIX ID in object_refs: {ref}")
     
     return errors
 
@@ -269,11 +279,13 @@ def validate_relationship(obj: Dict[str, Any]) -> List[str]:
         "detects",          # DataComponent/DetectionStrategy detects Technique
         "subtechnique-of",  # Subtechnique relationship
         "revoked-by",       # Version control
-        "related-to"        # General relationship (use sparingly)
+        "related-to",       # General relationship (use sparingly)
+        "attributed-to",    # Campaign/Incident attributed to IntrusionSet
     ]
     
     # Additional disallowed types that are common mistakes
-    DISALLOWED_TYPES = ["targets", "attributed-to", "indicates", "derived-from", "duplicate-of"]
+    # Note: "describes" is explicitly disallowed - use Report.object_refs[] instead
+    DISALLOWED_TYPES = ["targets", "indicates", "derived-from", "duplicate-of", "describes"]
     
     if not obj.get("relationship_type"):
         errors.append("Relationship missing 'relationship_type'")
@@ -293,6 +305,16 @@ def validate_relationship(obj: Dict[str, Any]) -> List[str]:
         errors.append("Relationship missing 'target_ref'")
     elif not validate_stix_id(obj["target_ref"]):
         errors.append(f"Invalid target_ref: {obj['target_ref']}")
+    
+    # Validate time-bounded relationships (optional fields)
+    if "start_time" in obj:
+        # Just check it's a string - could add ISO format validation
+        if not isinstance(obj["start_time"], str):
+            errors.append("Relationship 'start_time' must be a string (ISO 8601)")
+    
+    if "stop_time" in obj:
+        if not isinstance(obj["stop_time"], str):
+            errors.append("Relationship 'stop_time' must be a string (ISO 8601)")
     
     return errors
 

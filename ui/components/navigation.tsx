@@ -14,12 +14,16 @@ import {
   Settings,
   Layers,
   AlertCircle,
+  FileText,
+  Target,
 } from "lucide-react";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: Home },
   { name: "Catalog", href: "/catalog", icon: Database },
   { name: "Ingest", href: "/ingest", icon: Upload },
+  { name: "Reports", href: "/reports", icon: FileText },
+  { name: "Campaigns", href: "/campaigns", icon: Target },
   { name: "Search", href: "/search", icon: Search },
   { name: "Techniques", href: "/techniques", icon: Layers },
   { name: "Detections", href: "/detections/strategies", icon: Shield },
