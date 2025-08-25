@@ -29,7 +29,34 @@ def run_agentic_v2_optimized(report_text: str, config: Dict[str, Any], tracker: 
     - max_tool_iterations: Maximum iterations for tool loops (default: 2)
     - skip_verification: Skip evidence verification for speed (default: False)
     """
-    mem = WorkingMemory(document_text=report_text, line_index=report_text.splitlines())
+    # Preprocess text to ensure better span detection
+    import re
+    processed_text = report_text
+    
+    # If text is mostly on one line, split on sentence boundaries
+    lines = report_text.splitlines()
+    if len(lines) <= 2 and len(report_text) > 100:
+        # Split on sentence endings followed by capital letter or end
+        sentences = re.split(r'(?<=[.!?])\s+(?=[A-Z])', report_text)
+        # Also split on explicit technique mentions for better span isolation
+        expanded = []
+        for sent in sentences:
+            # Split further on technique IDs to isolate them
+            parts = re.split(r'(T\d{4}(?:\.\d{3})?)', sent)
+            for i, part in enumerate(parts):
+                if part and part.strip():
+                    # Recombine technique ID with surrounding context
+                    if re.match(r'^T\d{4}', part):
+                        if i > 0 and parts[i-1]:
+                            expanded[-1] = expanded[-1] + ' ' + part
+                            if i < len(parts) - 1 and parts[i+1]:
+                                expanded[-1] = expanded[-1] + ' ' + parts[i+1].strip()
+                                parts[i+1] = ''  # Clear to avoid duplication
+                    elif part.strip():
+                        expanded.append(part.strip())
+        lines = expanded if expanded else sentences
+    
+    mem = WorkingMemory(document_text=report_text, line_index=lines)
     tracker = tracker or ExtractionTracker()
     
     # Apply optimization defaults
@@ -160,6 +187,25 @@ def run_agentic_v2_optimized(report_text: str, config: Dict[str, Any], tracker: 
                     "line_refs": claim.get("line_refs", [])
                 }
             })
+    
+    # Fallback: Convert top discovery candidates to claims if nothing else worked
+    if not claims and mem.candidates:
+        print(f"[DEBUG] No claims found, converting {len(mem.candidates)} candidate sets to claims")
+        seen_techniques = set()
+        for span_idx, candidates in mem.candidates.items():
+            for cand in candidates[:5]:  # Take top 5 per span
+                tid = cand.get("external_id", "")
+                if tid and tid not in seen_techniques:
+                    seen_techniques.add(tid)
+                    claims.append({
+                        "technique_id": tid,
+                        "technique_name": cand.get("name", tid),
+                        "confidence": cand.get("confidence", 50),
+                        "evidence": {
+                            "quotes": [mem.spans[span_idx]["text"][:200]] if span_idx < len(mem.spans) else [],
+                            "line_refs": mem.spans[span_idx].get("line_refs", []) if span_idx < len(mem.spans) else []
+                        }
+                    })
     
     result["claims"] = claims
     return result

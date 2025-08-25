@@ -1,0 +1,1 @@
+{"style":"default","tailwind":{"config":"tailwind.config.ts","css":"app/globals.css","baseColor":"neutral","cssVariables":true,"prefix":""},"rsc":true,"tsx":true,"aliases":{"components":"@/components","utils":"@/lib/utils","ui":"@/components/ui","lib":"@/lib","hooks":"@/hooks"}}

@@ -211,7 +211,7 @@ export function GroupedEntityList({
           <EntityList
             entities={group.entities}
             showConfidence={showConfidence}
-            linkPattern={group.linkPattern}
+            linkPattern={group.linkPattern || undefined}
             compact={compact}
             showType={false}
           />

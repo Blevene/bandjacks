@@ -49,14 +49,14 @@ class BatchMapperAgent:
             {
                 "role": "system",
                 "content": (
-                    "Analyze multiple text spans and map each to ATT&CK techniques.\n\n"
-                    "For EACH span, provide:\n"
-                    "1. The best matching technique (from candidates or propose new)\n"
-                    "2. Direct quotes as evidence (1-2 quotes)\n"
-                    "3. Confidence score (0-100)\n\n"
-                    "Return a JSON array with one object per span:\n"
-                    "[{span_id:int, technique:{external_id,name}, evidence:{quotes,line_refs}, confidence:int}]\n\n"
-                    "Be concise. Skip spans with no clear techniques."
+                    "Analyze multiple text spans and extract ALL ATT&CK techniques mentioned or implied.\n\n"
+                    "For EACH span, extract ALL techniques that are:\n"
+                    "1. Explicitly mentioned by ID (e.g., T1055, T1566.001)\n"
+                    "2. Described by behavior matching a technique\n"
+                    "3. Present in the candidate list and relevant\n\n"
+                    "Return a JSON array with MULTIPLE techniques per span if applicable:\n"
+                    "[{span_id:int, techniques:[{external_id,name,evidence:{quotes,line_refs},confidence}]}]\n\n"
+                    "Extract every valid technique. Include explicit IDs even if not in candidates."
                 )
             },
             {
@@ -87,30 +87,44 @@ class BatchMapperAgent:
                     span_id = result.get("span_id")
                     if span_id is None or span_id >= len(mem.spans):
                         continue
-                        
-                    technique = result.get("technique", {})
-                    evidence = result.get("evidence", {})
                     
-                    if technique.get("external_id") and evidence.get("quotes"):
+                    # Handle new format with multiple techniques per span
+                    techniques = result.get("techniques", [])
+                    
+                    # Fallback to old format if needed
+                    if not techniques and result.get("technique"):
+                        techniques = [{
+                            "external_id": result["technique"].get("external_id"),
+                            "name": result["technique"].get("name"),
+                            "evidence": result.get("evidence", {}),
+                            "confidence": result.get("confidence", 60)
+                        }]
+                    
+                    for tech in techniques:
+                        if not tech.get("external_id"):
+                            continue
+                            
+                        evidence = tech.get("evidence", {})
+                        
                         # Check for sub-technique preference
-                        choice_id = technique.get("external_id", "")
+                        choice_id = tech.get("external_id", "")
                         if choice_id and "." not in choice_id:
                             subs = list_subtechniques(choice_id)
                             if isinstance(subs, list) and subs:
                                 for s in subs:
                                     nm = (s.get("name", "") or "").lower()
                                     if nm and any(nm in (q or "").lower() for q in evidence.get("quotes", [])):
-                                        technique["external_id"] = s.get("external_id", choice_id)
-                                        technique["name"] = s.get("name", technique.get("name", ""))
+                                        tech["external_id"] = s.get("external_id", choice_id)
+                                        tech["name"] = s.get("name", tech.get("name", ""))
                                         break
                         
                         mem.claims.append({
                             "span_idx": span_id,
-                            "external_id": technique["external_id"],
-                            "name": technique.get("name", ""),
+                            "external_id": tech["external_id"],
+                            "name": tech.get("name", ""),
                             "quotes": evidence.get("quotes", []),
                             "line_refs": evidence.get("line_refs", []),
-                            "confidence": int(result.get("confidence", 60)),
+                            "confidence": int(tech.get("confidence", 60)),
                             "source": "batch_mapper"
                         })
                         

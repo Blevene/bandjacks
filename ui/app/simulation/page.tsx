@@ -1,24 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import { Card } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/shared/page-header";
-import { TabsNavigation } from "@/components/shared/tabs-navigation";
-import { PathSimulator } from "@/components/simulation/path-simulator";
+import { PathSimulator } from "@/components/features/simulation/path-simulator";
 import { PredictionPanel } from "@/components/simulation/prediction-panel";
 import { WhatIfAnalyzer } from "@/components/simulation/whatif-analyzer";
 import { ScenarioBuilder } from "@/components/simulation/scenario-builder";
-
-const tabs = [
-  { id: "paths", label: "Path Simulation" },
-  { id: "predict", label: "Prediction" },
-  { id: "whatif", label: "What-If Analysis" },
-  { id: "scenario", label: "Scenario Builder" },
-];
+import { GitBranch, Brain, Shield, Layers } from "lucide-react";
 
 export default function SimulationPage() {
-  const [activeTab, setActiveTab] = useState("paths");
-
   return (
     <div className="container mx-auto p-6">
       <PageHeader
@@ -26,20 +16,42 @@ export default function SimulationPage() {
         description="Simulate attack paths, predict next steps, and analyze defensive scenarios"
       />
 
-      <Card className="mt-6">
-        <TabsNavigation
-          tabs={tabs}
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-        />
-
-        <div className="p-6">
-          {activeTab === "paths" && <PathSimulator />}
-          {activeTab === "predict" && <PredictionPanel />}
-          {activeTab === "whatif" && <WhatIfAnalyzer />}
-          {activeTab === "scenario" && <ScenarioBuilder />}
-        </div>
-      </Card>
+      <Tabs defaultValue="paths" className="mt-6">
+        <TabsList className="grid w-full grid-cols-4">
+          <TabsTrigger value="paths">
+            <GitBranch className="h-4 w-4 mr-2" />
+            Path Simulation
+          </TabsTrigger>
+          <TabsTrigger value="predict">
+            <Brain className="h-4 w-4 mr-2" />
+            Prediction
+          </TabsTrigger>
+          <TabsTrigger value="whatif">
+            <Shield className="h-4 w-4 mr-2" />
+            What-If Analysis
+          </TabsTrigger>
+          <TabsTrigger value="scenario">
+            <Layers className="h-4 w-4 mr-2" />
+            Scenario Builder
+          </TabsTrigger>
+        </TabsList>
+        
+        <TabsContent value="paths">
+          <PathSimulator />
+        </TabsContent>
+        
+        <TabsContent value="predict">
+          <PredictionPanel />
+        </TabsContent>
+        
+        <TabsContent value="whatif">
+          <WhatIfAnalyzer />
+        </TabsContent>
+        
+        <TabsContent value="scenario">
+          <ScenarioBuilder />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

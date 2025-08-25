@@ -42,7 +42,7 @@ export default function DetectionStrategiesPage() {
         include_deprecated: false,
         limit: 100,
       });
-      setStrategies(result.strategies || []);
+      setStrategies(result || []);
     } catch (error: any) {
       toast({
         title: "Error loading strategies",

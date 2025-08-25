@@ -80,6 +80,20 @@ async def build_flow(
                 intrusion_set_id=request.intrusion_set_id
             )
 
+        elif request and request.campaign_id:
+            # From a Campaign's behaviors
+            flow_data = builder.build_from_campaign(
+                campaign_id=request.campaign_id,
+                mode=(request.flow_mode or "sequential")
+            )
+
+        elif request and request.report_id:
+            # From a Report's described techniques (stub logic)
+            flow_data = builder.build_from_report(
+                report_id=request.report_id,
+                mode=(request.flow_mode or "sequential")
+            )
+
         elif request and request.techniques:
             # From an explicit list of techniques (STIX or ATT&CK IDs)
             flow_data = builder.build_from_techniques(
@@ -186,23 +200,26 @@ async def get_flow(
     """Get a specific flow by ID."""
     
     try:
-        # Query Neo4j for the episode
-        episode_query = """
-            MATCH (e:AttackEpisode {flow_id: $flow_id})
-            RETURN e.episode_id as episode_id, e.name as name, 
-                   e.source_id as source_id, e.created as created_at,
-                   e.strategy as strategy, e.llm_synthesized as llm_synthesized
+        # Query Neo4j for the flow and its episode
+        flow_query = """
+            MATCH (f:AttackFlow {flow_id: $flow_id})
+            OPTIONAL MATCH (f)-[:CONTAINS_EPISODE]->(e:AttackEpisode)
+            RETURN f.flow_id as flow_id, f.name as name, 
+                   f.source_id as source_id, f.created as created_at,
+                   f.flow_type as flow_type, f.llm_synthesized as llm_synthesized,
+                   f.description as description, f.sequence_inferred as sequence_inferred,
+                   e.episode_id as episode_id, e.strategy as strategy
         """
         
-        episode_result = neo4j_session.run(episode_query, flow_id=flow_id)
-        episode_record = episode_result.single()
+        flow_result = neo4j_session.run(flow_query, flow_id=flow_id)
+        flow_record = flow_result.single()
         
-        if not episode_record:
+        if not flow_record:
             raise HTTPException(status_code=404, detail=f"Flow {flow_id} not found")
         
-        # Get all actions for this episode
+        # Get all actions for this flow's episode
         actions_query = """
-            MATCH (e:AttackEpisode {flow_id: $flow_id})-[:CONTAINS]->(a:AttackAction)
+            MATCH (f:AttackFlow {flow_id: $flow_id})-[:CONTAINS_EPISODE]->(e:AttackEpisode)-[:CONTAINS]->(a:AttackAction)
             RETURN a.action_id as action_id, a.order as order,
                    a.attack_pattern_ref as attack_pattern_ref,
                    a.confidence as confidence, a.description as description,
@@ -276,18 +293,20 @@ async def get_flow(
         
         return FlowGetResponse(
             flow_id=flow_id,
-            episode_id=episode_record["episode_id"],
-            name=episode_record["name"] or "Unknown Flow",
-            source_id=episode_record["source_id"],
-            created_at=episode_record["created_at"].isoformat() if episode_record["created_at"] else "",
-            strategy=episode_record["strategy"],
-            llm_synthesized=episode_record["llm_synthesized"] or False,
+            episode_id=flow_record["episode_id"],
+            name=flow_record["name"] or "Unknown Flow",
+            source_id=flow_record["source_id"],
+            created_at=flow_record["created_at"].isoformat() if flow_record["created_at"] else "",
+            strategy=flow_record["flow_type"] or flow_record["strategy"],
+            llm_synthesized=flow_record["llm_synthesized"] or False,
             steps=steps,
             edges=edges,
             metadata={
                 "steps_count": len(steps),
                 "edges_count": len(edges),
-                "avg_confidence": sum(s.confidence for s in steps) / len(steps) if steps else 0
+                "avg_confidence": sum(s.confidence for s in steps) / len(steps) if steps else 0,
+                "flow_type": flow_record["flow_type"],
+                "sequence_inferred": flow_record["sequence_inferred"]
             }
         )
         

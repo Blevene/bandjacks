@@ -84,7 +84,7 @@ export default function CatalogPage() {
           <div className="space-y-1">
             <p>Inserted: {result.inserted}</p>
             <p>Updated: {result.updated}</p>
-            {result.rejected > 0 && <p className="text-yellow-500">Rejected: {result.rejected}</p>}
+            {result.rejected && result.rejected.length > 0 && <p className="text-yellow-500">Rejected: {result.rejected.length}</p>}
           </div>
         ),
       });

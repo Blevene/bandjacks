@@ -32,6 +32,9 @@ class SpanFinderAgent:
     """Find spans likely to contain TTPs using comprehensive behavioral patterns."""
     
     def __init__(self):
+        # Explicit technique ID pattern
+        self.technique_pattern = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
+        
         # Reconnaissance patterns
         self.recon_patterns = re.compile(
             r"\b(scan|enumerat|discover|reconnaissan|fingerprint|probe|collect\s+information|" +
@@ -138,6 +141,11 @@ class SpanFinderAgent:
             # Score line for TTP likelihood
             score = 0.0
             tactics = []
+            
+            # Check for explicit technique IDs first (highest priority)
+            if self.technique_pattern.search(line):
+                score = 2.0  # Guaranteed inclusion
+                tactics.append("explicit-technique")
             
             for pattern, tactic, weight in self.all_patterns:
                 if pattern.search(line):
