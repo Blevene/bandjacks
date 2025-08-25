@@ -34,6 +34,8 @@ class ReportSDO(BaseModel):
     name: str = Field(..., description="Report name/title")
     description: Optional[str] = Field(None, description="Report description")
     published: Optional[str] = Field(None, description="Publication date (ISO 8601)")
+    created: Optional[str] = Field(None, description="Creation timestamp (ISO 8601)")
+    modified: Optional[str] = Field(None, description="Last modified timestamp (ISO 8601)")
     object_refs: List[str] = Field(default_factory=list, description="Referenced STIX objects")
     external_references: List[Dict[str, Any]] = Field(default_factory=list)
     object_marking_refs: List[str] = Field(default_factory=list)
@@ -225,6 +227,13 @@ def create_stix_bundle(
     if not report_dict.get("id"):
         report_dict["id"] = f"report--{uuid4()}"
     
+    # Ensure required STIX timestamps are present
+    now_iso = datetime.utcnow().isoformat() + "Z"
+    if not report_dict.get("created"):
+        report_dict["created"] = now_iso
+    if not report_dict.get("modified"):
+        report_dict["modified"] = now_iso
+    
     # Add provenance
     report_dict["x_bj_provenance"] = {
         "extraction_method": "agentic_v2_optimized",
@@ -249,6 +258,8 @@ def create_stix_bundle(
                 "spec_version": "2.1",
                 "id": f"attack-pattern--{uuid4()}",
                 "name": claim.get("technique_name", claim["technique_id"]),
+                "created": now_iso,
+                "modified": now_iso,
                 "external_references": [{
                     "source_name": "mitre-attack",
                     "external_id": claim["technique_id"]
@@ -286,8 +297,8 @@ def create_stix_bundle(
             "id": campaign_id or f"campaign--{uuid4()}",
             "name": f"Campaign from {report.name}",
             "description": f"Campaign extracted from report: {report.name}",
-            "created": datetime.utcnow().isoformat(),
-            "modified": datetime.utcnow().isoformat()
+            "created": now_iso,
+            "modified": now_iso
         }
         
         if rubric.first_seen:
@@ -311,8 +322,8 @@ def create_stix_bundle(
                 "relationship_type": "attributed-to",
                 "source_ref": campaign["id"],
                 "target_ref": intrusion_set["id"],
-                "created": datetime.utcnow().isoformat(),
-                "modified": datetime.utcnow().isoformat()
+                "created": now_iso,
+                "modified": now_iso
             })
         
         # Create USES relationships for techniques
@@ -324,8 +335,8 @@ def create_stix_bundle(
                 "relationship_type": "uses",
                 "source_ref": campaign["id"],
                 "target_ref": technique["id"],
-                "created": datetime.utcnow().isoformat(),
-                "modified": datetime.utcnow().isoformat()
+                "created": now_iso,
+                "modified": now_iso
             })
     
     # Add all relationships to bundle
@@ -385,14 +396,17 @@ async def ingest_report(request: IngestRequest):
         tracker = ExtractionTracker()
         config = request.config.dict()
         
+        logger.info(f"Running extraction on text ({len(text_content)} chars)")
         extraction_results = run_agentic_v2_optimized(
             report_text=text_content,
             config=config,
             tracker=tracker
         )
+        logger.info(f"Extraction complete: {len(extraction_results.get('claims', []))} claims found")
         
         # Evaluate campaign rubric
         claims = extraction_results.get("claims", [])
+        logger.info(f"Extraction returned: {json.dumps(extraction_results, default=str)[:500]}")
         rubric, rubric_evidence = evaluate_campaign_rubric(claims, request.config.force_provisional_campaign)
         
         # Create STIX bundle
@@ -402,6 +416,11 @@ async def ingest_report(request: IngestRequest):
             rubric,
             rubric_evidence
         )
+        
+        logger.info(f"Bundle created with {len(bundle.get('objects', []))} objects")
+        if bundle.get('objects'):
+            report_obj = bundle['objects'][0]
+            logger.info(f"Report object_refs: {len(report_obj.get('object_refs', []))} items")
         
         # Validate bundle
         is_valid, validation_errors = validate_bundle_for_upsert(bundle)

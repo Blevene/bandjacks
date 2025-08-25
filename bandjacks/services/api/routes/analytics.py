@@ -753,3 +753,171 @@ def _generate_report_data(session, report_type: str) -> Dict[str, Any]:
         })
     
     return base_data
+
+
+# =====================
+# Co-occurrence analytics
+# =====================
+
+class CooccurrencePair(BaseModel):
+    """A co-occurring pair of techniques with frequency."""
+    technique_a: str
+    technique_b: str
+    technique_a_name: Optional[str] = None
+    technique_b_name: Optional[str] = None
+    count: int
+
+
+class CooccurrenceTopResponse(BaseModel):
+    """Response for top co-occurring technique pairs."""
+    pairs: List[CooccurrencePair]
+    total_pairs: int
+    generated_at: str
+
+
+@router.get("/cooccurrence/top", response_model=CooccurrenceTopResponse)
+async def get_top_cooccurring_pairs(
+    limit: int = Query(25, ge=1, le=200, description="Max pairs to return"),
+    min_episode_size: int = Query(2, ge=2, le=100, description="Min actions per episode to count"),
+    tactic: Optional[str] = Query(None, description="Filter by tactic shortname (e.g., discovery)")
+) -> CooccurrenceTopResponse:
+    """
+    Return the most common co-occurring ATT&CK techniques seen within the same attack episodes.
+
+    Co-occurrence is computed by counting pairs of `AttackAction` technique refs within each
+    `AttackEpisode` and aggregating globally. Direction is ignored (unordered pairs).
+    """
+    driver = get_neo4j_driver()
+    try:
+        with driver.session() as session:
+            query = """
+                MATCH (e:AttackEpisode)
+                WITH e
+                MATCH (e)-[:CONTAINS]->(a1:AttackAction)
+                MATCH (e)-[:CONTAINS]->(a2:AttackAction)
+                WHERE a1.attack_pattern_ref < a2.attack_pattern_ref
+                WITH e, a1, a2
+                // optional tactic filter
+                OPTIONAL MATCH (t1:AttackPattern {stix_id: a1.attack_pattern_ref})-[:HAS_TACTIC]->(ta1:Tactic)
+                OPTIONAL MATCH (t2:AttackPattern {stix_id: a2.attack_pattern_ref})-[:HAS_TACTIC]->(ta2:Tactic)
+                WITH e, a1, a2,
+                     coalesce(ta1.shortname, "") as tact1,
+                     coalesce(ta2.shortname, "") as tact2
+                WHERE $tactic IS NULL OR tact1 = $tactic OR tact2 = $tactic
+                WITH e, collect(DISTINCT a1.attack_pattern_ref) as tset1,
+                       collect(DISTINCT a2.attack_pattern_ref) as tset2
+                WITH apoc.coll.toSet(tset1 + tset2) as techniques, e
+                WHERE size(techniques) >= $min_episode_size
+                UNWIND techniques as tA
+                UNWIND techniques as tB
+                WITH tA, tB
+                WHERE tA < tB
+                WITH tA as technique_a, tB as technique_b, count(*) as cnt
+                ORDER BY cnt DESC
+                LIMIT $limit
+                WITH technique_a, technique_b, cnt
+                OPTIONAL MATCH (pa:AttackPattern {stix_id: technique_a})
+                OPTIONAL MATCH (pb:AttackPattern {stix_id: technique_b})
+                RETURN technique_a, coalesce(pa.name, technique_a) as name_a,
+                       technique_b, coalesce(pb.name, technique_b) as name_b, cnt
+            """
+
+            result = session.run(
+                query,
+                limit=limit,
+                min_episode_size=min_episode_size,
+                tactic=tactic
+            )
+
+            pairs: List[CooccurrencePair] = []
+            total = 0
+            for rec in result:
+                total += 1
+                pairs.append(CooccurrencePair(
+                    technique_a=rec["technique_a"],
+                    technique_b=rec["technique_b"],
+                    technique_a_name=rec["name_a"],
+                    technique_b_name=rec["name_b"],
+                    count=rec["cnt"],
+                ))
+
+            return CooccurrenceTopResponse(
+                pairs=pairs,
+                total_pairs=total,
+                generated_at=datetime.utcnow().isoformat()
+            )
+    except Exception as e:
+        logger.error(f"Failed to compute co-occurrence pairs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        driver.close()
+
+
+class ConditionalCooccurrence(BaseModel):
+    """Conditional co-occurrence probability P(B|A)."""
+    given_technique: str
+    co_technique: str
+    co_technique_name: Optional[str] = None
+    episodes_with_given: int
+    co_occurrence_count: int
+    probability: float
+
+
+class ConditionalCooccurrenceResponse(BaseModel):
+    """Response for conditional co-occurrence query."""
+    given_technique: str
+    results: List[ConditionalCooccurrence]
+    generated_at: str
+
+
+@router.get("/cooccurrence/conditional", response_model=ConditionalCooccurrenceResponse)
+async def get_conditional_cooccurrence(
+    technique_id: str = Query(..., description="Technique A (stix_id) to condition on"),
+    limit: int = Query(25, ge=1, le=200, description="Max related techniques to return")
+) -> ConditionalCooccurrenceResponse:
+    """
+    Return P(B|A) for techniques B co-occurring with technique A in the same episodes.
+    """
+    driver = get_neo4j_driver()
+    try:
+        with driver.session() as session:
+            query = """
+                MATCH (e:AttackEpisode)-[:CONTAINS]->(aA:AttackAction {attack_pattern_ref: $tech})
+                WITH collect(DISTINCT e) as episodesA
+                WITH episodesA, size(episodesA) as totalA
+                UNWIND episodesA as e
+                MATCH (e)-[:CONTAINS]->(aB:AttackAction)
+                WHERE aB.attack_pattern_ref <> $tech
+                WITH aB.attack_pattern_ref as b, totalA, count(DISTINCT e) as co_count
+                OPTIONAL MATCH (pb:AttackPattern {stix_id: b})
+                RETURN b as technique_id,
+                       coalesce(pb.name, b) as name,
+                       co_count as co_occurrence_count,
+                       totalA as episodes_with_given,
+                       (1.0 * co_count) / CASE WHEN totalA = 0 THEN 1 ELSE totalA END as p
+                ORDER BY p DESC, co_occurrence_count DESC
+                LIMIT $limit
+            """
+
+            result = session.run(query, tech=technique_id, limit=limit)
+            rows: List[ConditionalCooccurrence] = []
+            for rec in result:
+                rows.append(ConditionalCooccurrence(
+                    given_technique=technique_id,
+                    co_technique=rec["technique_id"],
+                    co_technique_name=rec["name"],
+                    episodes_with_given=rec["episodes_with_given"],
+                    co_occurrence_count=rec["co_occurrence_count"],
+                    probability=round(float(rec["p"]), 4)
+                ))
+
+            return ConditionalCooccurrenceResponse(
+                given_technique=technique_id,
+                results=rows,
+                generated_at=datetime.utcnow().isoformat()
+            )
+    except Exception as e:
+        logger.error(f"Failed to compute conditional co-occurrence: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        driver.close()

@@ -118,39 +118,53 @@ async def simulate_attack_paths(
     to generate plausible attack paths based on historical data and ATT&CK relationships.
     """
     try:
-        # Configure simulation
+        # Configure simulation (map fields to engine config)
         config = SimulationConfig(
             max_depth=request.max_depth,
-            num_paths=request.num_paths,
-            method=request.method,
-            include_probabilities=request.include_probabilities
+            max_paths=request.num_paths,
+            use_monte_carlo=(request.method.lower() == "monte_carlo")
         )
         
-        # Run simulation
-        result = simulator.simulate_paths(
+        # Run simulation – returns a list[SimulationPath]
+        sim_paths = simulator.simulate_paths(
             start_technique=request.start_technique,
             start_group=request.start_group,
             target_technique=request.target_technique,
             config=config
         )
         
-        # Transform result to response
-        paths = []
-        for path_data in result.get("paths", []):
-            paths.append(SimulationPath(
-                path_id=path_data["path_id"],
-                steps=path_data["steps"],
-                total_probability=path_data.get("probability", 1.0),
-                duration_estimate=path_data.get("duration"),
-                complexity_score=path_data.get("complexity", 0.5),
-                covered_tactics=path_data.get("tactics", [])
-            ))
+        # Shape response
+        api_paths: List[SimulationPath] = []
+        for p in sim_paths:
+            # Build simple steps structure from techniques + transition probabilities
+            steps: List[Dict[str, Any]] = []
+            for idx, tech in enumerate(p.techniques):
+                step: Dict[str, Any] = {"technique_id": tech}
+                if request.include_probabilities and idx < len(p.probabilities):
+                    step["probability"] = p.probabilities[idx]
+                steps.append(step)
+            api_paths.append(
+                SimulationPath(
+                    path_id=p.path_id,
+                    steps=steps,
+                    total_probability=p.cumulative_probability,
+                    duration_estimate=None,
+                    complexity_score=p.total_cost,
+                    covered_tactics=[]
+                )
+            )
+        
+        summary = {
+            "paths_returned": len(api_paths),
+            "method": request.method,
+            "max_depth": request.max_depth
+        }
         
         return SimulationResponse(
-            simulation_id=result["simulation_id"],
+            simulation_id=f"sim-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
             request=request,
-            paths=paths,
-            summary=result.get("summary", {}),
+            paths=api_paths,
+            summary=summary,
             created_at=datetime.utcnow().isoformat()
         )
         
@@ -267,6 +281,153 @@ async def get_technique_statistics(
         
     except Exception as e:
         logger.error(f"Failed to get technique statistics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ScenarioSimulationRequest(BaseModel):
+    """Request to simulate from sets of groups, software, and techniques."""
+    intrusion_sets: Optional[List[str]] = Field(None, description="List of Intrusion Set stix_ids")
+    software: Optional[List[str]] = Field(None, description="List of Software stix_ids")
+    techniques: Optional[List[str]] = Field(None, description="List of Technique stix_ids")
+    target_technique: Optional[str] = Field(None, description="Optional target technique")
+    max_starting_points: int = Field(5, ge=1, le=50, description="Limit starting techniques")
+    max_depth: int = Field(5, ge=1, le=10)
+    num_paths: int = Field(10, ge=1, le=100)
+    method: str = Field("deterministic", description="monte_carlo or deterministic")
+    include_probabilities: bool = Field(True)
+
+
+@router.post("/scenario", response_model=SimulationResponse)
+async def simulate_scenario(
+    request: ScenarioSimulationRequest,
+    simulator: AttackSimulator = Depends(get_simulator)
+) -> SimulationResponse:
+    """
+    Simulate possible attack chains given known Intrusion Sets, Software, and/or Techniques.
+    """
+    from neo4j import GraphDatabase
+    try:
+        # Derive starting techniques from inputs
+        uri = settings.neo4j_uri
+        user = settings.neo4j_user
+        password = settings.neo4j_password
+        driver = GraphDatabase.driver(uri, auth=(user, password))
+        starting_techniques: List[str] = []
+        with driver.session() as session:
+            result = session.run(
+                """
+                CALL {
+                  WITH $techs AS techs
+                  UNWIND techs AS tid
+                  WITH tid WHERE tid IS NOT NULL
+                  MATCH (t:AttackPattern {stix_id: tid})
+                  RETURN DISTINCT t.stix_id AS id
+                }
+                UNION
+                CALL {
+                  WITH $groups AS groups
+                  UNWIND groups AS gid
+                  WITH gid WHERE gid IS NOT NULL
+                  MATCH (g:IntrusionSet {stix_id: gid})-[:USES]->(t:AttackPattern)
+                  RETURN DISTINCT t.stix_id AS id
+                }
+                UNION
+                CALL {
+                  WITH $sw AS sw
+                  UNWIND sw AS sid
+                  WITH sid WHERE sid IS NOT NULL
+                  MATCH (s:Software {stix_id: sid})-[:USES]->(t:AttackPattern)
+                  RETURN DISTINCT t.stix_id AS id
+                }
+                UNION
+                CALL {
+                  WITH $sw AS sw
+                  UNWIND sw AS sid
+                  WITH sid WHERE sid IS NOT NULL
+                  MATCH (s:Software {stix_id: sid})-[:IMPLIES_TECHNIQUE]->(t:AttackPattern)
+                  RETURN DISTINCT t.stix_id AS id
+                }
+                """,
+                techs=request.techniques or [],
+                groups=request.intrusion_sets or [],
+                sw=request.software or []
+            )
+            for rec in result:
+                if rec["id"]:
+                    starting_techniques.append(rec["id"])
+        driver.close()
+        
+        # De-duplicate and limit
+        starting_techniques = list(dict.fromkeys(starting_techniques))[: request.max_starting_points]
+        
+        # Configure simulation
+        config = SimulationConfig(
+            max_depth=request.max_depth,
+            max_paths=request.num_paths,
+            use_monte_carlo=(request.method.lower() == "monte_carlo")
+        )
+        
+        # Run per starting technique and aggregate
+        all_paths = []
+        for start in starting_techniques:
+            paths = simulator.simulate_paths(
+                start_technique=start,
+                target_technique=request.target_technique,
+                config=config
+            )
+            all_paths.extend(paths)
+        
+        # Sort and trim
+        all_paths.sort(key=lambda p: p.cumulative_probability, reverse=True)
+        all_paths = all_paths[: request.num_paths]
+        
+        # Shape response paths
+        api_paths: List[SimulationPath] = []
+        for p in all_paths:
+            steps: List[Dict[str, Any]] = []
+            for idx, tech in enumerate(p.techniques):
+                step: Dict[str, Any] = {"technique_id": tech}
+                if request.include_probabilities and idx < len(p.probabilities):
+                    step["probability"] = p.probabilities[idx]
+                steps.append(step)
+            api_paths.append(
+                SimulationPath(
+                    path_id=p.path_id,
+                    steps=steps,
+                    total_probability=p.cumulative_probability,
+                    duration_estimate=None,
+                    complexity_score=p.total_cost,
+                    covered_tactics=[]
+                )
+            )
+        
+        summary = {
+            "starting_points": starting_techniques,
+            "paths_returned": len(api_paths),
+            "method": request.method,
+            "max_depth": request.max_depth
+        }
+        
+        # Build a compatible request echo for response
+        echo_request = SimulationRequest(
+            start_technique=None,
+            start_group=None,
+            target_technique=request.target_technique,
+            max_depth=request.max_depth,
+            num_paths=request.num_paths,
+            method=request.method,
+            include_probabilities=request.include_probabilities
+        )
+        
+        return SimulationResponse(
+            simulation_id=f"sim-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}",
+            request=echo_request,
+            paths=api_paths,
+            summary=summary,
+            created_at=datetime.utcnow().isoformat()
+        )
+    except Exception as e:
+        logger.error(f"Scenario simulation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

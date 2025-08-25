@@ -16,6 +16,9 @@ import {
   AlertCircle,
   FileText,
   Target,
+  Brain,
+  MessageSquare,
+  Activity,
 } from "lucide-react";
 
 const navigation = [
@@ -28,7 +31,10 @@ const navigation = [
   { name: "Techniques", href: "/techniques", icon: Layers },
   { name: "Detections", href: "/detections/strategies", icon: Shield },
   { name: "Flows", href: "/flows", icon: GitBranch },
-  { name: "Review", href: "/review", icon: CheckSquare },
+  { name: "Simulation", href: "/simulation", icon: Brain },
+  { name: "Review Queue", href: "/review/queue", icon: CheckSquare },
+  { name: "Feedback", href: "/feedback", icon: MessageSquare },
+  { name: "AL Analytics", href: "/analytics/active-learning", icon: Activity },
 ];
 
 export function Navigation() {
