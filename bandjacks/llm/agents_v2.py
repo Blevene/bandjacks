@@ -721,15 +721,17 @@ class AssemblerAgent:
             "objects": objects
         }
         
-        # Build attack flow if configured
+        # Build attack flow if configured (skip if neo4j not configured)
         flow = None
-        if config.get("build_flow", True):
+        if config.get("build_flow", False) and config.get("neo4j_uri"):
             try:
                 flowb = FlowBuilder(config["neo4j_uri"], config["neo4j_user"], config["neo4j_password"])
                 flow = flowb.build_from_bundle(bundle)
             except Exception as e:
                 print(f"Flow building failed: {e}")
                 flow = {}
+        else:
+            flow = {}
         
         return {
             "bundle": bundle,
