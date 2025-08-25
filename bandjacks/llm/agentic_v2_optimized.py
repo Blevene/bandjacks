@@ -134,6 +134,34 @@ def run_agentic_v2_optimized(report_text: str, config: Dict[str, Any], tracker: 
     tracker.set_stage("Assembler")
     result = AssemblerAgent().run(mem, config)
     result["metrics"] = tracker.snapshot()
+    
+    # Convert techniques to claims format for backward compatibility
+    claims = []
+    for tid, info in mem.techniques.items():
+        claims.append({
+            "technique_id": tid,
+            "technique_name": info.get("name", tid),
+            "confidence": info.get("confidence", 50),
+            "evidence": {
+                "quotes": info.get("evidence", []),
+                "line_refs": info.get("line_refs", [])
+            }
+        })
+    
+    # Also add claims directly from mem.claims if not consolidated
+    if not claims and mem.claims:
+        for claim in mem.claims:
+            claims.append({
+                "technique_id": claim.get("external_id", ""),
+                "technique_name": claim.get("name", ""),
+                "confidence": claim.get("confidence", 50),
+                "evidence": {
+                    "quotes": claim.get("quotes", []),
+                    "line_refs": claim.get("line_refs", [])
+                }
+            })
+    
+    result["claims"] = claims
     return result
 
 
