@@ -37,7 +37,11 @@ class Neo4jDDL:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:AnalyticOverride) REQUIRE n.override_id IS UNIQUE",
             # Sprint 7 Extension - Sigma rules
             "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SigmaRule) REQUIRE n.rule_id IS UNIQUE",
-            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SigmaFeedback) REQUIRE n.feedback_id IS UNIQUE"
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SigmaFeedback) REQUIRE n.feedback_id IS UNIQUE",
+            # Sprint 8 - Probabilistic Temporal Graph (PTG)
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SequenceModel) REQUIRE n.model_id IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:SequenceStatistics) REQUIRE (n.model_id, n.scope) IS UNIQUE",
+            "CREATE CONSTRAINT IF NOT EXISTS FOR (n:JudgeVerdict) REQUIRE n.verdict_id IS UNIQUE"
         ]
         
         for constraint in constraints:
@@ -100,7 +104,21 @@ class Neo4jDDL:
             "CREATE INDEX IF NOT EXISTS FOR (n:SigmaRule) ON (n.commit_sha)",
             "CREATE INDEX IF NOT EXISTS FOR (n:SigmaRule) ON (n.ingested_at)",
             "CREATE INDEX IF NOT EXISTS FOR (n:SigmaFeedback) ON (n.rule_id)",
-            "CREATE INDEX IF NOT EXISTS FOR (n:SigmaFeedback) ON (n.timestamp)"
+            "CREATE INDEX IF NOT EXISTS FOR (n:SigmaFeedback) ON (n.timestamp)",
+            # Sprint 8 - Probabilistic Temporal Graph (PTG)
+            "CREATE INDEX IF NOT EXISTS FOR (n:SequenceModel) ON (n.scope)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SequenceModel) ON (n.scope_type)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SequenceModel) ON (n.version)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SequenceModel) ON (n.created_at)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SequenceStatistics) ON (n.scope)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:SequenceStatistics) ON (n.model_id)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:JudgeVerdict) ON (n.from_technique)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:JudgeVerdict) ON (n.to_technique)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:JudgeVerdict) ON (n.model)",
+            "CREATE INDEX IF NOT EXISTS FOR (n:JudgeVerdict) ON (n.timestamp)",
+            # NEXT_P relationship indexes
+            "CREATE INDEX IF NOT EXISTS FOR ()-[r:NEXT_P]-() ON (r.model_id)",
+            "CREATE INDEX IF NOT EXISTS FOR ()-[r:NEXT_P]-() ON (r.p)"
         ]
         
         for index in indexes:
