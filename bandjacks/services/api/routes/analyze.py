@@ -13,7 +13,6 @@ from ....analysis.graph_analyzer import (
 )
 from ....analysis.interdiction import (
     InterdictionPlanner,
-    InterdictionStrategy,
     InterdictionPlan
 )
 from ....config import get_settings
@@ -249,14 +248,9 @@ async def plan_interdiction(
             neo4j_password=settings.neo4j_password
         )
         
-        # Map strategy string to enum
-        strategy_map = {
-            "greedy": InterdictionStrategy.GREEDY,
-            "optimal": InterdictionStrategy.OPTIMAL,
-            "balanced": InterdictionStrategy.BALANCED,
-            "coverage": InterdictionStrategy.COVERAGE_MAXIMIZING
-        }
-        strategy = strategy_map.get(request.strategy.lower(), InterdictionStrategy.OPTIMAL)
+        # Map strategy string to internal values
+        # Note: The InterdictionPlanner will handle strategy internally
+        strategy = request.strategy.lower()
         
         # Plan interdiction
         plan: InterdictionPlan = planner.plan_interdiction(
@@ -271,14 +265,15 @@ async def plan_interdiction(
         
         # Get alternative strategies for comparison
         alternatives = []
-        for alt_strategy_name, alt_strategy in strategy_map.items():
-            if alt_strategy != strategy:
+        strategy_options = ["greedy", "optimal", "balanced", "coverage"]
+        for alt_strategy_name in strategy_options:
+            if alt_strategy_name != strategy:
                 try:
                     alt_plan = planner.plan_interdiction(
                         model_id=request.model_id,
                         candidate_techniques=request.choke_points,
                         budget=request.budget,
-                        strategy=alt_strategy,
+                        strategy=alt_strategy_name,
                         source_techniques=request.source_techniques,
                         target_techniques=request.target_techniques,
                         cost_model=request.cost_model
@@ -295,13 +290,13 @@ async def plan_interdiction(
         # Build recommendations based on analysis
         recommendations = []
         
-        if plan.coverage_percent > 80:
+        if plan.coverage_percentage > 80:
             recommendations.append(
-                f"High coverage ({plan.coverage_percent:.0f}%) achieved with {len(plan.selected_techniques)} techniques"
+                f"High coverage ({plan.coverage_percentage:.0f}%) achieved with {len(plan.selected_nodes)} techniques"
             )
-        elif plan.coverage_percent < 50:
+        elif plan.coverage_percentage < 50:
             recommendations.append(
-                f"Low coverage ({plan.coverage_percent:.0f}%) - consider increasing budget or focusing on different choke points"
+                f"Low coverage ({plan.coverage_percentage:.0f}%) - consider increasing budget or focusing on different choke points"
             )
         
         if plan.expected_impact > 0.7:
@@ -309,9 +304,9 @@ async def plan_interdiction(
                 "Strong expected impact - these interdictions significantly disrupt attack paths"
             )
         
-        if len(plan.critical_techniques) > 0:
+        if len(critical_techniques) > 0:
             recommendations.append(
-                f"Focus on critical techniques: {', '.join(plan.critical_techniques[:3])}"
+                f"Focus on critical techniques: {', '.join(critical_techniques[:3])}"
             )
         
         # Check if better alternative exists
@@ -321,18 +316,27 @@ async def plan_interdiction(
                 f"Consider {best_alt['strategy']} strategy for {((best_alt['impact']/plan.expected_impact - 1) * 100):.0f}% better impact"
             )
         
+        # Extract technique IDs from selected nodes
+        selected_techniques = [node.technique_id for node in plan.selected_nodes]
+        
+        # Check for critical techniques (if any nodes are marked as critical)
+        critical_techniques = [
+            node.technique_id for node in plan.selected_nodes 
+            if node.is_dominator or node.criticality_score > 0.8
+        ]
+        
         return InterdictionResponse(
             model_id=request.model_id,
-            plan_id=f"interdiction-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
-            selected_techniques=plan.selected_techniques,
+            plan_id=plan.plan_id,
+            selected_techniques=selected_techniques,
             total_cost=plan.total_cost,
             expected_impact=round(plan.expected_impact, 3),
-            coverage_percent=round(plan.coverage_percent, 1),
-            blocked_paths=plan.blocked_paths,
+            coverage_percent=round(plan.coverage_percentage, 1),
+            blocked_paths=plan.paths_blocked,
             strategy_used=request.strategy,
             alternatives=alternatives,
             recommendations=recommendations,
-            created_at=datetime.utcnow().isoformat()
+            created_at=plan.created_at.isoformat()
         )
         
     except ValueError as e:

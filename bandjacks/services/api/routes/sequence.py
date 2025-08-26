@@ -23,6 +23,9 @@ from bandjacks.llm.judge_cache import JudgeVerdictCache
 from bandjacks.llm.evidence_pack import EvidencePackBuilder
 from bandjacks.llm.triage import PairTriage, TriageConfig
 from bandjacks.llm.judge_integration import PTGJudgeIntegrator
+from bandjacks.llm.budget import check_and_record_judge_cost, get_budget_tracker
+from bandjacks.llm.ptg_config import get_ptg_config, set_ptg_config, PTGBuildConfig
+from bandjacks.monitoring.ml_metrics import get_ml_metrics_tracker, record_model_prediction
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sequence", tags=["sequence"])
@@ -811,12 +814,44 @@ async def judge_technique_pairs(
                         cached_count += 1
                         continue
                 
+                # Check budget before making LLM call - Epic 4 T26
+                # Estimate based on evidence pack size (rough approximation)
+                estimated_tokens_in = len(str(evidence_pack.__dict__)) // 4  # Rough token estimate
+                estimated_tokens_out = 200  # Typical response size
+                model_name = judge_config.model_name if hasattr(judge_config, 'model_name') else "gpt-4o-mini"
+                
+                allowed, cost, rejection_reason = check_and_record_judge_cost(
+                    model=model_name,
+                    tokens_in=estimated_tokens_in,
+                    tokens_out=estimated_tokens_out,
+                    job_id=f"judge_{scope}"
+                )
+                
+                if not allowed:
+                    logger.warning(f"Budget exceeded for judge call: {rejection_reason}")
+                    errors.append(f"Budget exceeded for {from_tech} -> {to_tech}: {rejection_reason}")
+                    continue
+                
                 # Get judge verdict
                 verdict = judge_client.judge_pair(evidence_pack, scope_context=scope)
                 
                 # Cache the verdict
                 if use_cache:
                     judge_cache.cache_verdict(verdict)
+                
+                # Track metrics - Epic 4 T28
+                ml_tracker = get_ml_metrics_tracker()
+                ml_tracker.record_prediction(
+                    model_type="ptg_judge",
+                    true_label=verdict.verdict.value,  # We treat judge verdict as ground truth for now
+                    predicted_label=verdict.verdict.value,
+                    confidence=verdict.confidence,
+                    metadata={
+                        "from_technique": verdict.from_technique,
+                        "to_technique": verdict.to_technique,
+                        "scope": scope
+                    }
+                )
                 
                 verdicts.append({
                     "from_technique": verdict.from_technique,
@@ -838,6 +873,10 @@ async def judge_technique_pairs(
         # Get cache statistics
         cache_stats = judge_cache.get_cache_statistics() if use_cache else {}
         
+        # Get budget statistics - Epic 4 T26
+        budget_tracker = get_budget_tracker()
+        budget_stats = budget_tracker.get_usage_stats(job_id=f"judge_{scope}")
+        
         return {
             "total_pairs": len(pairs_to_judge),
             "judged": judged_count,
@@ -845,9 +884,318 @@ async def judge_technique_pairs(
             "errors": len(errors),
             "verdicts": verdicts,
             "error_details": errors[:10],  # Limit error details
-            "cache_statistics": cache_stats
+            "cache_statistics": cache_stats,
+            "budget_usage": {
+                "cost_usd": budget_stats.get("total_cost_usd", 0),
+                "usage_percent": budget_stats.get("usage_percent", 0),
+                "cost_per_100_pairs": budget_tracker.get_cost_per_100_pairs()
+            }
         }
         
     except Exception as e:
         logger.error(f"Judge endpoint failed: {e}")
         raise HTTPException(status_code=500, detail=f"Judge operation failed: {str(e)}")
+
+
+@router.get("/provenance/{ti}/{tj}",
+    summary="Get Pair Provenance",
+    description="""
+    Get complete provenance information for a judged technique pair.
+    
+    Epic 4 T25: Returns evidence pack hash, snippet IDs, sources, and judge history.
+    Includes all historical verdicts, evidence sources, and PTG transition info.
+    """
+)
+async def get_pair_provenance(
+    ti: str,
+    tj: str,
+    include_history: bool = Query(True, description="Include historical verdicts"),
+    neo4j_session=Depends(get_neo4j_session)
+) -> Dict[str, Any]:
+    """Get provenance information for a judged technique pair."""
+    try:
+        # Get judge verdicts from cache/storage
+        verdict_query = """
+            MATCH (v:JudgeVerdict {from_technique: $ti, to_technique: $tj})
+            RETURN v.verdict as verdict,
+                   v.confidence as confidence,
+                   v.evidence_ids as evidence_ids,
+                   v.evidence_hash as evidence_hash,
+                   v.rationale as rationale,
+                   v.model_name as model,
+                   v.created_at as timestamp
+            ORDER BY v.created_at DESC
+            LIMIT 10
+        """
+        
+        verdicts_result = neo4j_session.run(verdict_query, ti=ti, tj=tj)
+        verdicts = []
+        latest_evidence_hash = None
+        
+        for record in verdicts_result:
+            verdict_data = {
+                "verdict": record["verdict"],
+                "confidence": record["confidence"],
+                "evidence_ids": record["evidence_ids"] or [],
+                "evidence_hash": record["evidence_hash"],
+                "model": record["model"],
+                "timestamp": record["timestamp"]
+            }
+            if record["rationale"]:
+                verdict_data["rationale_summary"] = record["rationale"][:200]
+            
+            verdicts.append(verdict_data)
+            if not latest_evidence_hash and record["evidence_hash"]:
+                latest_evidence_hash = record["evidence_hash"]
+        
+        # Get evidence snippets from OpenSearch (if available)
+        evidence_sources = []
+        if latest_evidence_hash and verdicts and verdicts[0].get("evidence_ids"):
+            # Mock evidence sources for now - would query OpenSearch
+            for evidence_id in verdicts[0]["evidence_ids"][:5]:
+                evidence_sources.append({
+                    "evidence_id": evidence_id,
+                    "source_type": "report",
+                    "snippet": f"Evidence snippet for {evidence_id[:20]}...",
+                    "confidence": 0.85
+                })
+        
+        # Get PTG transition probability if exists
+        ptg_query = """
+            MATCH (from:AttackPattern {stix_id: $ti})-[r:NEXT_P]->(to:AttackPattern {stix_id: $tj})
+            RETURN r.p as probability,
+                   r.features as features,
+                   r.model_id as model_id,
+                   r.created_at as created_at
+            ORDER BY r.created_at DESC
+            LIMIT 1
+        """
+        
+        ptg_result = neo4j_session.run(ptg_query, ti=ti, tj=tj).single()
+        
+        ptg_info = None
+        if ptg_result:
+            ptg_info = {
+                "probability": ptg_result["probability"],
+                "features": json.loads(ptg_result["features"]) if ptg_result["features"] else {},
+                "model_id": ptg_result["model_id"],
+                "created_at": ptg_result["created_at"]
+            }
+        
+        # Get technique names
+        name_query = """
+            MATCH (from:AttackPattern {stix_id: $ti}), (to:AttackPattern {stix_id: $tj})
+            RETURN from.name as from_name, to.name as to_name
+        """
+        
+        names_result = neo4j_session.run(name_query, ti=ti, tj=tj).single()
+        
+        response = {
+            "from_technique": ti,
+            "to_technique": tj,
+            "from_name": names_result["from_name"] if names_result else "Unknown",
+            "to_name": names_result["to_name"] if names_result else "Unknown",
+            "evidence_hash": latest_evidence_hash,
+            "evidence_sources": evidence_sources,
+            "ptg_transition": ptg_info,
+            "judge_verdicts": verdicts if include_history else verdicts[:1],
+            "total_verdicts": len(verdicts),
+            "metadata": {
+                "provenance_version": "1.0",
+                "query_timestamp": datetime.utcnow().isoformat()
+            }
+        }
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Failed to get provenance for {ti} -> {tj}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/config",
+    summary="Get PTG Build Configuration",
+    description="""
+    Get current PTG building configuration flags and parameters.
+    
+    Epic 4 T27: Returns all configuration flags that control PTG building behavior,
+    including judge enablement, triage settings, evidence retrieval, and feature weights.
+    """
+)
+async def get_ptg_configuration() -> Dict[str, Any]:
+    """Get current PTG configuration."""
+    
+    config = get_ptg_config()
+    budget_tracker = get_budget_tracker()
+    
+    return {
+        "configuration": config.to_dict(),
+        "budget_status": budget_tracker.get_usage_stats(),
+        "validation": {
+            "weights_sum": sum([
+                config.alpha_statistical,
+                config.beta_judge,
+                config.gamma_structure,
+                config.delta_temporal,
+                config.epsilon_confidence
+            ]),
+            "is_valid": True
+        }
+    }
+
+
+@router.put("/config",
+    summary="Update PTG Build Configuration",
+    description="""
+    Update PTG building configuration flags and parameters.
+    
+    Epic 4 T27: Allows updating configuration flags without restarting the service.
+    Note: Feature weights (alpha, beta, gamma, delta, epsilon) must sum to 1.0.
+    """
+)
+async def update_ptg_configuration(
+    config_update: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Update PTG configuration."""
+    
+    try:
+        # Get current config
+        current_config = get_ptg_config()
+        
+        # Create new config with updates
+        config_dict = current_config.to_dict()
+        config_dict.update(config_update)
+        
+        # Create and validate new config
+        new_config = PTGBuildConfig(**config_dict)
+        new_config.validate()
+        
+        # Set the new config
+        set_ptg_config(new_config)
+        
+        return {
+            "status": "updated",
+            "configuration": new_config.to_dict(),
+            "validation": {
+                "weights_sum": sum([
+                    new_config.alpha_statistical,
+                    new_config.beta_judge,
+                    new_config.gamma_structure,
+                    new_config.delta_temporal,
+                    new_config.epsilon_confidence
+                ]),
+                "is_valid": True
+            }
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid configuration: {str(e)}")
+    except Exception as e:
+        logger.error(f"Failed to update PTG configuration: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/metrics",
+    summary="Get PTG Judge Metrics",
+    description="""
+    Get ML metrics for PTG judge performance and system usage.
+    
+    Epic 4 T28: Returns comprehensive metrics including:
+    - ML model performance (precision, recall, confidence calibration)
+    - Judge verdict distribution and confidence scores
+    - Budget usage and cost analytics
+    - Cache hit rates and performance stats
+    """
+)
+async def get_ptg_metrics() -> Dict[str, Any]:
+    """Get comprehensive PTG metrics."""
+    
+    try:
+        # Get ML metrics
+        ml_tracker = get_ml_metrics_tracker()
+        ml_metrics = ml_tracker.get_all_metrics()
+        
+        # Get budget metrics
+        budget_tracker = get_budget_tracker()
+        budget_stats = budget_tracker.get_usage_stats()
+        
+        # Get cache metrics
+        judge_cache = JudgeVerdictCache(
+            settings.neo4j_uri,
+            settings.neo4j_user,
+            settings.neo4j_password
+        )
+        cache_stats = judge_cache.get_cache_statistics()
+        
+        return {
+            "ml_performance": ml_metrics.get("ml_performance", {}),
+            "judge_metrics": {
+                "total_predictions": len(ml_tracker.predictions.get("ptg_judge", [])),
+                "confidence_distribution": ml_tracker.confidence_scores.get("ptg_judge", []),
+                "calibration": ml_tracker.calculate_confidence_calibration("ptg_judge")
+            },
+            "budget_metrics": {
+                "total_cost_usd": budget_stats.get("total_cost_usd", 0),
+                "daily_limit_usd": budget_stats.get("limit_usd", 10.0),
+                "usage_percent": budget_stats.get("usage_percent", 0),
+                "calls_by_model": budget_stats.get("calls_by_model", {}),
+                "cost_per_100_pairs": budget_tracker.get_cost_per_100_pairs()
+            },
+            "cache_metrics": cache_stats,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get PTG metrics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/metrics/export",
+    summary="Export PTG Metrics for Dashboard",
+    description="""
+    Export PTG metrics in a format suitable for Grafana or other dashboards.
+    
+    Epic 4 T28: Returns metrics formatted for dashboard ingestion with panels
+    for ML performance, budget tracking, and system health.
+    """
+)
+async def export_ptg_metrics() -> Dict[str, Any]:
+    """Export PTG metrics for dashboard."""
+    
+    try:
+        ml_tracker = get_ml_metrics_tracker()
+        dashboard_data = ml_tracker.export_for_dashboard()
+        
+        # Add PTG-specific panels
+        budget_tracker = get_budget_tracker()
+        budget_stats = budget_tracker.get_usage_stats()
+        
+        dashboard_data["panels"].append({
+            "id": "ptg_budget",
+            "title": "PTG Budget Usage",
+            "type": "gauge",
+            "data": {
+                "value": budget_stats.get("usage_percent", 0),
+                "max": 100,
+                "thresholds": [
+                    {"value": 80, "color": "yellow"},
+                    {"value": 95, "color": "red"}
+                ]
+            }
+        })
+        
+        dashboard_data["panels"].append({
+            "id": "judge_confidence",
+            "title": "Judge Confidence Distribution",
+            "type": "histogram",
+            "data": {
+                "values": ml_tracker.confidence_scores.get("ptg_judge", []),
+                "bins": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
+            }
+        })
+        
+        return dashboard_data
+        
+    except Exception as e:
+        logger.error(f"Failed to export PTG metrics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

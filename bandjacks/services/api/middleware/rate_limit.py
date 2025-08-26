@@ -27,6 +27,8 @@ ENDPOINT_LIMITS = {
     "/v1/search": 50,  # Moderate
     "/v1/analytics": 30,  # Computation-heavy
     "/v1/flows/build": 15,  # Complex operation
+    "/v1/sequence/judge": 10,  # LLM judge calls - Epic 4 T26
+    "/v1/sequence/infer": 5,  # PTG inference with judge - Epic 4 T26
 }
 
 
