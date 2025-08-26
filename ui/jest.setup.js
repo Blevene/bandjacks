@@ -28,6 +28,28 @@ afterEach(() => server.resetHandlers())
 // Clean up after the tests are finished.
 afterAll(() => server.close())
 
+// Mock matchMedia for next-themes
+Object.defineProperty(window, 'matchMedia', {
+  writable: true,
+  value: jest.fn().mockImplementation(query => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: jest.fn(), // deprecated
+    removeListener: jest.fn(), // deprecated
+    addEventListener: jest.fn(),
+    removeEventListener: jest.fn(),
+    dispatchEvent: jest.fn(),
+  })),
+})
+
+// Mock pointer capture methods for Radix UI
+if (typeof Element !== 'undefined') {
+  Element.prototype.hasPointerCapture = Element.prototype.hasPointerCapture || jest.fn()
+  Element.prototype.setPointerCapture = Element.prototype.setPointerCapture || jest.fn()
+  Element.prototype.releasePointerCapture = Element.prototype.releasePointerCapture || jest.fn()
+}
+
 // Mock next/navigation
 jest.mock('next/navigation', () => ({
   useRouter() {

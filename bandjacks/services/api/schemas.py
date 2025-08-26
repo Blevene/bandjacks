@@ -1,6 +1,6 @@
 """Pydantic schemas for API requests and responses."""
 
-from typing import Any, List, Optional, Dict, Literal
+from typing import Any, List, Optional, Dict, Literal, Union
 from pydantic import BaseModel, Field
 
 class VersionRef(BaseModel):
@@ -582,3 +582,67 @@ class DefenseCoverageResponse(BaseModel):
     gaps: List[str] = Field(..., description="Identified coverage gaps")
     recommendations: List[str] = Field(..., description="Defensive recommendations")
     trace_id: Optional[str] = Field(None, description="Request trace ID")
+
+
+# ============================================================================
+# SEQUENCE MODELING & PTG ENDPOINT SCHEMAS (Sprint 8)
+# ============================================================================
+
+class SequenceExtractionResponse(BaseModel):
+    """Response for sequence extraction from attack flows."""
+    sequences_extracted: int = Field(..., description="Number of sequences extracted")
+    scopes_analyzed: int = Field(..., description="Number of scopes analyzed") 
+    scope_summaries: List[Dict[str, Any]] = Field(..., description="Summary statistics per scope")
+    ambiguous_pairs_total: int = Field(..., description="Total ambiguous pairs across scopes")
+    model_id: Optional[str] = Field(None, description="Model ID if exported to Neo4j")
+    parameters: Dict[str, Any] = Field(..., description="Extraction parameters used")
+    extracted_at: str = Field(..., description="ISO timestamp of extraction")
+
+
+class PTGBuildRequest(BaseModel):
+    """Request to build a Probabilistic Temporal Graph."""
+    scope: str = Field(..., description="Scope identifier (intrusion_set_id or 'global')")
+    scope_type: str = Field("global", description="Scope type: 'intrusion-set' or 'global'")
+    background: bool = Field(False, description="Run PTG build in background")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="PTG construction parameters")
+
+
+class PTGBuildResponse(BaseModel):
+    """Response for PTG build operation.""" 
+    model_id: str = Field(..., description="Generated PTG model ID")
+    scope: str = Field(..., description="Scope that was processed")
+    scope_type: str = Field(..., description="Type of scope")
+    status: str = Field(..., description="Build status: building|completed|failed")
+    message: str = Field(..., description="Status message")
+    total_nodes: int = Field(..., description="Number of technique nodes")
+    total_edges: int = Field(..., description="Number of NEXT_P edges created")
+    parameters: Dict[str, Any] = Field(..., description="Parameters used")
+    statistics: Optional[Dict[str, Any]] = Field(None, description="Model statistics")
+    created_at: str = Field(..., description="ISO timestamp")
+
+
+class PTGModelResponse(BaseModel):
+    """Response for PTG model retrieval."""
+    model_id: str = Field(..., description="PTG model identifier")
+    scope: str = Field(..., description="Model scope")
+    scope_type: str = Field(..., description="Scope type")
+    version: str = Field(..., description="Model version")
+    nodes: Dict[str, Dict[str, Any]] = Field(..., description="Technique nodes with metadata")
+    edges: List[Dict[str, Any]] = Field(..., description="NEXT_P edges with probabilities")
+    parameters: Dict[str, Any] = Field(..., description="Model construction parameters")
+    statistics: Dict[str, Any] = Field(..., description="Model statistics")
+    filters_applied: Dict[str, Any] = Field(..., description="Filters applied to response")
+    created_at: str = Field(..., description="ISO timestamp")
+
+
+class SequenceStatisticsResponse(BaseModel):
+    """Response for pairwise sequence statistics."""
+    scope: str = Field(..., description="Statistics scope")
+    scope_type: str = Field(..., description="Scope type")
+    total_flows: int = Field(..., description="Number of flows analyzed")
+    total_techniques: int = Field(..., description="Number of unique techniques")
+    total_pairs: int = Field(..., description="Number of technique pairs")
+    top_techniques: Dict[str, int] = Field(..., description="Most frequent techniques")
+    top_pairs: Optional[Dict[str, float]] = Field(None, description="Top transitions by probability")
+    asymmetry_scores: Optional[Dict[str, float]] = Field(None, description="Directional asymmetry scores")
+    created_at: str = Field(..., description="ISO timestamp")

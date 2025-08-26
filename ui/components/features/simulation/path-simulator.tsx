@@ -16,6 +16,68 @@ import { typedApi } from "@/lib/api-client";
 import type { SimulationRequest, SimulationPath } from "@/lib/simulation-types";
 import { PlayCircle, Target, Users, GitBranch, AlertTriangle } from "lucide-react";
 import { PathVisualizer } from "@/components/shared/path-visualizer";
+import { IntelligentTechniqueInput } from "@/components/shared/intelligent-technique-input";
+
+// Mock data generator for development
+function generateMockPaths(request: SimulationRequest): SimulationPath[] {
+  const mockTechniques = [
+    { id: "T1055", name: "Process Injection", tactic: "Defense Evasion" },
+    { id: "T1003", name: "OS Credential Dumping", tactic: "Credential Access" },
+    { id: "T1078", name: "Valid Accounts", tactic: "Persistence" },
+    { id: "T1053", name: "Scheduled Task/Job", tactic: "Persistence" },
+    { id: "T1027", name: "Obfuscated Files or Information", tactic: "Defense Evasion" },
+    { id: "T1547", name: "Boot or Logon Autostart Execution", tactic: "Persistence" },
+    { id: "T1021", name: "Remote Services", tactic: "Lateral Movement" },
+    { id: "T1105", name: "Ingress Tool Transfer", tactic: "Command and Control" },
+    { id: "T1087", name: "Account Discovery", tactic: "Discovery" },
+    { id: "T1082", name: "System Information Discovery", tactic: "Discovery" }
+  ];
+
+  const numPaths = Math.min(request.num_paths, 5); // Limit for demo
+  const paths: SimulationPath[] = [];
+
+  for (let i = 0; i < numPaths; i++) {
+    const pathLength = Math.min(request.max_depth, Math.floor(Math.random() * 4) + 2);
+    const steps: SimulationStep[] = [];
+    const usedTechniques = new Set<string>();
+    
+    // Generate path steps
+    for (let j = 0; j < pathLength; j++) {
+      let technique;
+      do {
+        technique = mockTechniques[Math.floor(Math.random() * mockTechniques.length)];
+      } while (usedTechniques.has(technique.id) && usedTechniques.size < mockTechniques.length);
+      
+      usedTechniques.add(technique.id);
+      steps.push({
+        technique_id: technique.id,
+        technique_name: technique.name,
+        probability: request.include_probabilities ? Math.random() * 0.8 + 0.2 : undefined,
+        tactic: technique.tactic,
+        evidence_count: Math.floor(Math.random() * 10) + 1
+      });
+    }
+
+    const coveredTactics = [...new Set(steps.map(s => s.tactic!))];
+    const totalProbability = request.include_probabilities 
+      ? steps.reduce((acc, step) => acc * (step.probability || 0.5), 1)
+      : Math.random() * 0.7 + 0.3;
+
+    paths.push({
+      path_id: `mock-path-${i + 1}`,
+      steps,
+      total_probability: totalProbability,
+      duration_estimate: `${Math.floor(Math.random() * 24) + 1} hours`,
+      complexity_score: Math.random() * 5 + 2,
+      covered_tactics: coveredTactics,
+      confidence_score: Math.random() * 0.4 + 0.6,
+      warnings: Math.random() > 0.7 ? [`Path ${i + 1} includes hypothetical transitions`] : undefined,
+      is_hypothetical: Math.random() > 0.6
+    });
+  }
+
+  return paths.sort((a, b) => b.total_probability - a.total_probability);
+}
 
 export function PathSimulator() {
   const [loading, setLoading] = useState(false);
@@ -47,9 +109,11 @@ export function PathSimulator() {
       };
       
       const response = await typedApi.simulation.paths(request);
-      setResults(response.paths);
+      console.log('Simulation response:', response);
+      setResults(response.paths || []);
     } catch (err: any) {
-      setError(err.response?.data?.detail || "Simulation failed");
+      console.error('Simulation API error:', err);
+      setError(err.response?.data?.detail || err.message || "Simulation failed");
     } finally {
       setLoading(false);
     }
@@ -80,10 +144,15 @@ export function PathSimulator() {
                 </TabsTrigger>
               </TabsList>
             </Tabs>
-            <Input
-              placeholder={startType === "technique" ? "e.g., T1055" : "e.g., G0001"}
+            <IntelligentTechniqueInput
               value={startValue}
-              onChange={(e) => setStartValue(e.target.value)}
+              onChange={setStartValue}
+              placeholder={
+                startType === "technique"
+                  ? "Search techniques (e.g., 'process injection', 'credential dumping') or enter ID (T1055)"
+                  : "Search threat groups (e.g., 'Lazarus Group', 'APT1') or enter ID (G0001)"
+              }
+              type={startType}
             />
           </div>
 
@@ -92,11 +161,11 @@ export function PathSimulator() {
             <Label htmlFor="target">Target Technique (Optional)</Label>
             <div className="flex items-center gap-2">
               <Target className="h-4 w-4 text-muted-foreground" />
-              <Input
-                id="target"
-                placeholder="e.g., T1003"
+              <IntelligentTechniqueInput
                 value={targetTechnique}
-                onChange={(e) => setTargetTechnique(e.target.value)}
+                onChange={setTargetTechnique}
+                placeholder="Search target technique (e.g., 'credential access', 'lateral movement') or enter ID"
+                type="technique"
               />
             </div>
           </div>
@@ -210,6 +279,20 @@ export function PathSimulator() {
             {results.map((path, idx) => (
               <PathDisplay key={path.path_id} path={path} index={idx + 1} />
             ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {!loading && results.length === 0 && !error && (
+        <Card>
+          <CardContent className="py-12">
+            <div className="text-center text-muted-foreground">
+              <AlertTriangle className="h-8 w-8 mx-auto mb-2" />
+              <p>No attack paths found</p>
+              <p className="text-sm mt-1">
+                Try different techniques or ensure ATT&CK data is loaded in the backend
+              </p>
+            </div>
           </CardContent>
         </Card>
       )}

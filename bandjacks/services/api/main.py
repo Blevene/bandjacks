@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from bandjacks.services.api.settings import settings
-from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, reports_async
+from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, reports_async, sequence, simulate, analyze
 from bandjacks.services.api.middleware import TracingMiddleware
 from bandjacks.services.api.middleware.error_handler import ErrorHandlerMiddleware
 from bandjacks.services.api.middleware.auth import JWTAuthMiddleware
@@ -64,7 +64,7 @@ app = FastAPI(
 # Add CORS middleware for frontend development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],  # Frontend dev servers
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],  # Frontend dev servers
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -216,6 +216,8 @@ app.include_router(flows.router, prefix=settings.api_prefix)
 app.include_router(defense.router, prefix=settings.api_prefix)
 app.include_router(candidates.router, prefix=settings.api_prefix)
 app.include_router(simulation.router, prefix=settings.api_prefix)
+app.include_router(simulate.router, prefix=settings.api_prefix)
+app.include_router(analyze.router, prefix=settings.api_prefix)
 app.include_router(analytics.router, prefix=settings.api_prefix)
 app.include_router(provenance.router, prefix=settings.api_prefix)
 app.include_router(drift.router, prefix=settings.api_prefix)
@@ -229,6 +231,7 @@ app.include_router(notifications.router, prefix=settings.api_prefix)
 app.include_router(sigma.router, prefix=settings.api_prefix)
 app.include_router(reports.router, prefix=settings.api_prefix)
 app.include_router(reports_async.router, prefix=settings.api_prefix)
+app.include_router(sequence.router, prefix=settings.api_prefix)
 
 # Cache management endpoints
 @app.get("/v1/cache/stats", tags=["monitoring"])

@@ -3,9 +3,9 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { PageHeader } from "@/components/shared/page-header";
 import { PathSimulator } from "@/components/features/simulation/path-simulator";
-import { PredictionPanel } from "@/components/simulation/prediction-panel";
-import { WhatIfAnalyzer } from "@/components/simulation/whatif-analyzer";
-import { ScenarioBuilder } from "@/components/simulation/scenario-builder";
+import { PredictionPanel } from "@/components/features/simulation/prediction-panel";
+import { WhatIfAnalyzer } from "@/components/features/simulation/whatif-analyzer";
+import { ScenarioBuilder } from "@/components/features/simulation/scenario-builder";
 import { GitBranch, Brain, Shield, Layers } from "lucide-react";
 
 export default function SimulationPage() {
