@@ -26,6 +26,9 @@ from bandjacks.llm.judge_integration import PTGJudgeIntegrator
 from bandjacks.llm.budget import check_and_record_judge_cost, get_budget_tracker
 from bandjacks.llm.ptg_config import get_ptg_config, set_ptg_config, PTGBuildConfig
 from bandjacks.monitoring.ml_metrics import get_ml_metrics_tracker, record_model_prediction
+from bandjacks.llm.sequence_proposal import (
+    SequenceProposalBuilder, TransitionValidator, AnalystReviewFormatter
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sequence", tags=["sequence"])
@@ -1010,6 +1013,187 @@ async def get_pair_provenance(
         
     except Exception as e:
         logger.error(f"Failed to get provenance for {ti} -> {tj}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/propose",
+    summary="Generate Sequence Proposals",
+    description="""
+    Generate validated attack sequence proposals from judge verdicts and PTG model.
+    
+    This endpoint:
+    1. Retrieves judge verdicts for an intrusion set
+    2. Separates validated transitions from uncertain ones
+    3. Builds connected sequences from validated edges
+    4. Returns proposals ready for analyst review
+    
+    Unknown verdicts are assigned low transition confidence (0.1) and excluded from sequences.
+    """
+)
+async def generate_sequence_proposals(
+    intrusion_set_id: str = Query(..., description="STIX ID of the intrusion set"),
+    min_confidence: float = Query(0.5, description="Minimum confidence for proposals"),
+    max_sequences: int = Query(10, description="Maximum sequences to generate"),
+    include_uncertain: bool = Query(True, description="Include uncertain transitions in response"),
+    format_for_review: bool = Query(False, description="Return human-readable format"),
+    neo4j_session=Depends(get_neo4j_session)
+) -> Dict[str, Any]:
+    """Generate sequence proposals from validated transitions."""
+    try:
+        # Get intrusion set name
+        name_query = """
+            MATCH (g:IntrusionSet {stix_id: $intrusion_set_id})
+            RETURN g.name as name
+            LIMIT 1
+        """
+        name_result = neo4j_session.run(name_query, intrusion_set_id=intrusion_set_id)
+        name_record = name_result.single()
+        
+        if not name_record:
+            raise HTTPException(status_code=404, detail=f"Intrusion set {intrusion_set_id} not found")
+        
+        intrusion_set_name = name_record["name"]
+        
+        # Get judge verdicts for this intrusion set's techniques
+        verdict_query = """
+            MATCH (e:AttackEpisode)-[:ATTRIBUTED_TO]->(g:IntrusionSet {stix_id: $intrusion_set_id})
+            MATCH (e)-[:CONTAINS]->(a:AttackAction)
+            WITH COLLECT(DISTINCT a.attack_pattern_ref) as techniques
+            
+            MATCH (v:JudgeVerdict)
+            WHERE v.from_technique IN techniques AND v.to_technique IN techniques
+            RETURN v.from_technique as from_technique,
+                   v.to_technique as to_technique,
+                   v.verdict as verdict,
+                   v.confidence as confidence,
+                   v.evidence_ids as evidence_ids,
+                   v.rationale as rationale
+            ORDER BY v.confidence DESC
+            LIMIT 100
+        """
+        
+        verdicts_result = neo4j_session.run(verdict_query, intrusion_set_id=intrusion_set_id)
+        
+        # Convert to JudgeVerdict objects
+        from bandjacks.llm.judge_client import VerdictType
+        
+        judge_verdicts = []
+        for record in verdicts_result:
+            # Map string verdict to VerdictType enum
+            verdict_map = {
+                "i->j": VerdictType.FORWARD,
+                "j->i": VerdictType.REVERSE,
+                "bidirectional": VerdictType.BIDIRECTIONAL,
+                "unknown": VerdictType.UNKNOWN
+            }
+            
+            verdict_type = verdict_map.get(record["verdict"], VerdictType.UNKNOWN)
+            
+            verdict = JudgeVerdict(
+                from_technique=record["from_technique"],
+                to_technique=record["to_technique"],
+                verdict=verdict_type,
+                confidence=record["confidence"] or 0.5,
+                evidence_ids=record["evidence_ids"] or [],
+                rationale_summary=record["rationale"] or ""
+            )
+            judge_verdicts.append(verdict)
+        
+        # Initialize components
+        validator = TransitionValidator()
+        builder = SequenceProposalBuilder(
+            settings.neo4j_uri,
+            settings.neo4j_user,
+            settings.neo4j_password
+        )
+        
+        try:
+            # Categorize transitions
+            validated_edges, uncertain_edges = validator.categorize_transitions(judge_verdicts)
+            
+            # Filter validated edges by confidence
+            validated_edges = [
+                e for e in validated_edges 
+                if e.transition_confidence >= min_confidence
+            ]
+            
+            # Build proposals
+            proposals = builder.build_proposals(
+                validated_edges,
+                intrusion_set_id,
+                intrusion_set_name,
+                min_sequence_length=2,
+                max_sequences=max_sequences
+            )
+            
+            # Format response
+            if format_for_review:
+                formatter = AnalystReviewFormatter()
+                review_text = formatter.format_proposals(
+                    proposals,
+                    uncertain_edges if include_uncertain else None,
+                    include_stix_ids=True
+                )
+                
+                return {
+                    "intrusion_set_id": intrusion_set_id,
+                    "intrusion_set_name": intrusion_set_name,
+                    "review_text": review_text,
+                    "proposal_count": len(proposals),
+                    "validated_edge_count": len(validated_edges),
+                    "uncertain_edge_count": len(uncertain_edges)
+                }
+            else:
+                # Return structured data
+                response = {
+                    "intrusion_set_id": intrusion_set_id,
+                    "intrusion_set_name": intrusion_set_name,
+                    "proposals": [
+                        {
+                            "sequence_id": p.sequence_id,
+                            "techniques": p.techniques,
+                            "edges": [
+                                {
+                                    "from": e.from_technique,
+                                    "to": e.to_technique,
+                                    "confidence": e.transition_confidence,
+                                    "verdict": e.verdict
+                                }
+                                for e in p.edges
+                            ],
+                            "overall_confidence": p.overall_confidence,
+                            "validation_status": p.validation_status
+                        }
+                        for p in proposals
+                    ],
+                    "statistics": {
+                        "total_verdicts": len(judge_verdicts),
+                        "validated_edges": len(validated_edges),
+                        "uncertain_edges": len(uncertain_edges),
+                        "proposals_generated": len(proposals)
+                    }
+                }
+                
+                if include_uncertain:
+                    response["uncertain_transitions"] = [
+                        {
+                            "from": e.from_technique,
+                            "to": e.to_technique,
+                            "transition_confidence": e.transition_confidence,
+                            "judge_confidence": e.judge_confidence
+                        }
+                        for e in uncertain_edges
+                    ]
+                
+                return response
+                
+        finally:
+            builder.close()
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate proposals for {intrusion_set_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

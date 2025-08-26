@@ -291,6 +291,17 @@ class PTGBuilder:
         
         if judge_scores and (from_tech, to_tech) in judge_scores:
             features["judge_score"] = judge_scores[(from_tech, to_tech)]
+            # Mark confidence level based on judge score
+            # Judge returns 0.1 for unknown verdicts (low confidence)
+            if features["judge_score"] <= 0.1:
+                features["confidence_level"] = "low"
+                features["needs_validation"] = True
+            elif features["judge_score"] >= 0.7:
+                features["confidence_level"] = "high"
+                features["needs_validation"] = False
+            else:
+                features["confidence_level"] = "medium"
+                features["needs_validation"] = False
         
         return features
     
@@ -323,9 +334,15 @@ class PTGBuilder:
                 rationale_parts.append("LLM judge supports this direction")
             elif judge_score < -0.5:
                 rationale_parts.append("LLM judge questions this direction")
+            elif judge_score <= 0.1:
+                rationale_parts.append("LLM judge returned unknown (insufficient evidence)")
         
-        # Probability assessment
-        if probability > 0.7:
+        # Confidence assessment based on features
+        if features.get("confidence_level"):
+            confidence = f"{features['confidence_level']} confidence"
+            if features.get("needs_validation"):
+                confidence += " (needs validation)"
+        elif probability > 0.7:
             confidence = "high confidence"
         elif probability > 0.4:
             confidence = "moderate confidence"
