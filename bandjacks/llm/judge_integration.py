@@ -120,7 +120,9 @@ class JudgeScoreConverter:
             # Bidirectional gets positive score but lower magnitude
             return 0.5 * confidence
         else:  # UNKNOWN
-            return 0.0
+            # Assign low positive score to indicate low transition confidence
+            # This ensures unknown verdicts are deprioritized but not completely excluded
+            return 0.1
     
     def _calculate_evidence_strength(
         self,
