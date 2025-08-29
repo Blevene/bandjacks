@@ -181,12 +181,11 @@ export function IntelligentTechniqueInput({
     setIsLoading(true);
     try {
       const results = await apiClient.search.ttx({
-        query,
+        text: query,
         top_k: 5,
-        threshold: 0.3,
       });
 
-      setSearchResults(results.results || []);
+      setSearchResults((results.results || []) as unknown as TechniqueResult[]);
       setShowResults(results.results?.length > 0);
     } catch (error) {
       console.error('Search error:', error);

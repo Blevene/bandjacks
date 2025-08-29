@@ -21,11 +21,17 @@ class ChokePointAnalysis:
     betweenness_centrality: Dict[str, float]  # node -> centrality
     edge_betweenness: Dict[Tuple[str, str], float]  # edge -> centrality
     dominators: Dict[str, Set[str]]  # target -> dominators
-    min_cut_nodes: Set[str]
-    min_cut_edges: Set[Tuple[str, str]]
+    dominator_nodes: List[str]  # Flattened list of dominator nodes for API
+    min_cut_nodes: List[str]  # Changed to List for API compatibility
+    min_cut_edges: List[List[str]]  # Changed to List[List] for API JSON serialization
     articulation_points: Set[str]  # Critical nodes whose removal disconnects graph
     bridges: Set[Tuple[str, str]]  # Critical edges whose removal disconnects graph
     top_choke_points: List[Tuple[str, float]]  # Top N critical nodes with scores
+    source_techniques: List[str]  # Source techniques used in analysis
+    target_techniques: List[str]  # Target techniques used in analysis
+    graph_size: Dict[str, int]  # Graph statistics (nodes, edges)
+    paths_analyzed: int  # Number of paths analyzed
+    runtime_seconds: float  # Analysis runtime
     parameters: Dict[str, Any]
     created_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -80,9 +86,17 @@ class GraphAnalyzer:
             Choke point analysis results
         """
         logger.info(f"Analyzing choke points for model {model_id}")
+        import time
+        start_time = time.time()
         
         # Load graph
         G = self._load_ptg_as_networkx(model_id)
+        
+        # Initialize source and target lists if not provided
+        if source_techniques is None:
+            source_techniques = []
+        if target_techniques is None:
+            target_techniques = []
         
         # Calculate betweenness centrality
         node_betweenness = nx.betweenness_centrality(G, weight='weight')
@@ -102,6 +116,7 @@ class GraphAnalyzer:
         dominators = {}
         min_cut_nodes = set()
         min_cut_edges = set()
+        paths_analyzed = 0
         
         if source_techniques and target_techniques:
             # Find dominators for each target
@@ -116,6 +131,7 @@ class GraphAnalyzer:
                                 paths = list(nx.all_simple_paths(
                                     G, source, target, cutoff=10
                                 ))[:k_paths]
+                                paths_analyzed += len(paths)
                                 
                                 if paths:
                                     # Find nodes that appear in all paths
@@ -201,17 +217,37 @@ class GraphAnalyzer:
             reverse=True
         )[:top_n]
         
+        # Flatten dominator nodes for API
+        dominator_nodes_list = list(set(
+            node for doms in dominators.values() for node in doms
+        ))
+        
+        # Convert sets to lists for JSON serialization
+        min_cut_nodes_list = list(min_cut_nodes)
+        min_cut_edges_list = [[u, v] for u, v in min_cut_edges]
+        
+        runtime_seconds = time.time() - start_time
+        
         return ChokePointAnalysis(
             analysis_id=f"choke-{model_id[:8]}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}",
             model_id=model_id,
             betweenness_centrality=dict(node_betweenness),
             edge_betweenness=dict(edge_betweenness),
             dominators=dominators,
-            min_cut_nodes=min_cut_nodes,
-            min_cut_edges=min_cut_edges,
+            dominator_nodes=dominator_nodes_list,
+            min_cut_nodes=min_cut_nodes_list,
+            min_cut_edges=min_cut_edges_list,
             articulation_points=articulation_points,
             bridges=bridges,
             top_choke_points=top_choke_points,
+            source_techniques=source_techniques,
+            target_techniques=target_techniques,
+            graph_size={
+                "nodes": G.number_of_nodes(),
+                "edges": G.number_of_edges()
+            },
+            paths_analyzed=paths_analyzed,
+            runtime_seconds=runtime_seconds,
             parameters={
                 "source_techniques": source_techniques,
                 "target_techniques": target_techniques,

@@ -18,6 +18,7 @@ LLM_COSTS = {
     "gpt-4o-mini": {"input": 0.00015, "output": 0.0006},
     "gpt-5": {"input": 0.01, "output": 0.03},  # Estimated
     "gemini/gemini-2.5-flash": {"input": 0.0001, "output": 0.0003},
+    "gemini/gemini-2.5-pro": {"input": 0.00125, "output": 0.005},
     "gemini/gemini-pro": {"input": 0.00025, "output": 0.001},
     "claude-3-opus": {"input": 0.015, "output": 0.075},
     "claude-3-sonnet": {"input": 0.003, "output": 0.015},

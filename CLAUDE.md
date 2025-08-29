@@ -45,8 +45,11 @@ Key technologies and standards:
 uv sync                    # Install dependencies
 uv run pytest             # Run tests
 
-# Start services
+# Start services 
+# For development (with hot reload):
 uv run uvicorn bandjacks.services.api.main:app --reload --host 0.0.0.0 --port 8000
+# For production (with multiple workers):
+# uv run uvicorn bandjacks.services.api.main:app --workers 4 --host 0.0.0.0 --port 8000
 cd ui && npm run dev      # Frontend (Next.js) on port 3000
 
 # Development tasks

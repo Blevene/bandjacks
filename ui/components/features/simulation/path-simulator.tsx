@@ -13,7 +13,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LoadingSpinner } from "@/components/shared/loading-spinner";
 import { typedApi } from "@/lib/api-client";
-import type { SimulationRequest, SimulationPath } from "@/lib/simulation-types";
+import type { SimulationRequest, SimulationPath, SimulationStep } from "@/lib/simulation-types";
 import { PlayCircle, Target, Users, GitBranch, AlertTriangle } from "lucide-react";
 import { PathVisualizer } from "@/components/shared/path-visualizer";
 import { IntelligentTechniqueInput } from "@/components/shared/intelligent-technique-input";

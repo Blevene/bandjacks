@@ -1,11 +1,16 @@
 """Chunked document extraction for handling large PDFs efficiently."""
 
 import re
+import logging
+import time
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 import concurrent.futures
 from bandjacks.llm.agentic_v2_optimized import run_agentic_v2_optimized
 from bandjacks.llm.tracker import ExtractionTracker
+# Removed hardcoded threat actor and malware extraction - handled by proper entity recognition
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -117,6 +122,62 @@ class ChunkedExtractor:
         
         return chunks
     
+    def process_chunk_with_retry(
+        self,
+        chunk: DocumentChunk,
+        config: Dict[str, Any],
+        max_retries: int = 3
+    ) -> Dict[str, Any]:
+        """
+        Process a chunk with retry logic.
+        
+        Args:
+            chunk: Document chunk to process
+            config: Extraction configuration
+            max_retries: Maximum number of retry attempts
+            
+        Returns:
+            Extraction results for the chunk
+        """
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                tracker = ExtractionTracker()
+                result = self.process_chunk(chunk, config, tracker)
+                
+                # If we got results, return them
+                if result.get("claims") or result.get("techniques"):
+                    return result
+                    
+                # If empty but no error, might be legitimately empty
+                if not result.get("failed"):
+                    return result
+                    
+                # Otherwise, retry
+                last_error = result.get("error", "Unknown error")
+                
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"Chunk {chunk.chunk_id} attempt {attempt + 1} failed: {e}")
+            
+            # Wait before retry with exponential backoff
+            if attempt < max_retries - 1:
+                wait_time = (2 ** attempt) * 2  # 2, 4, 8 seconds
+                logger.info(f"Retrying chunk {chunk.chunk_id} in {wait_time}s...")
+                time.sleep(wait_time)
+        
+        # All retries failed
+        logger.error(f"Chunk {chunk.chunk_id} failed after {max_retries} attempts: {last_error}")
+        return {
+            "chunk_id": chunk.chunk_id,
+            "chunk_boundaries": (chunk.start_idx, chunk.end_idx),
+            "claims": [],
+            "techniques": {},
+            "error": f"Failed after {max_retries} attempts: {last_error}",
+            "failed": True
+        }
+    
     def process_chunk(
         self,
         chunk: DocumentChunk,
@@ -134,16 +195,22 @@ class ChunkedExtractor:
         Returns:
             Extraction results for the chunk
         """
-        # Create chunk-specific config with aggressive optimization
+        # Create chunk-specific config, preserving dynamic spans from parent config
         chunk_config = config.copy()
+        
+        # Use parent's max_spans if provided (dynamic), otherwise default
+        spans_for_chunk = config.get("max_spans", 10)  # Dynamic spans per chunk
+        
         chunk_config.update({
-            "use_batch_mapper": True,
-            "disable_discovery": True,
-            "disable_targeted_extraction": True,
-            "skip_verification": True,
-            "max_spans": 5,  # Limit spans per chunk
-            "span_score_threshold": 0.85,  # Higher threshold for chunks
-            "max_tool_iterations": 2,  # Reduce iterations
+            "use_batch_mapper": config.get("use_batch_mapper", True),
+            "use_batch_retriever": config.get("use_batch_retriever", True),
+            "disable_discovery": config.get("disable_discovery", False),  # Enable discovery by default
+            "disable_targeted_extraction": config.get("disable_targeted_extraction", True),
+            "skip_verification": config.get("skip_verification", True),
+            "max_spans": spans_for_chunk,  # Use dynamic spans from parent
+            "span_score_threshold": config.get("span_score_threshold", 0.85),
+            "confidence_threshold": config.get("confidence_threshold", 50),
+            "max_tool_iterations": 2,  # Reduce iterations for speed
         })
         
         # Add chunk context to help with deduplication
@@ -160,16 +227,33 @@ class ChunkedExtractor:
                 config=chunk_config,
                 tracker=tracker
             )
+            
+            # Ensure result has required fields
+            if not isinstance(result, dict):
+                result = {"claims": []}
+            
             result["chunk_id"] = chunk.chunk_id
             result["chunk_boundaries"] = (chunk.start_idx, chunk.end_idx)
+            
+            # Log successful extraction
+            claims_count = len(result.get("claims", []))
+            if claims_count > 0:
+                logger.info(f"Chunk {chunk.chunk_id} extracted {claims_count} claims successfully")
+            else:
+                logger.warning(f"Chunk {chunk.chunk_id} completed but found no claims")
+                
             return result
+            
         except Exception as e:
-            print(f"[ERROR] Chunk {chunk.chunk_id} extraction failed: {e}")
+            logger.error(f"Chunk {chunk.chunk_id} extraction failed: {e}", exc_info=True)
+            # Return empty result but continue processing other chunks
             return {
                 "chunk_id": chunk.chunk_id,
                 "chunk_boundaries": (chunk.start_idx, chunk.end_idx),
                 "claims": [],
-                "error": str(e)
+                "techniques": {},
+                "error": str(e),
+                "failed": True
             }
     
     def merge_results(self, chunk_results: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -192,6 +276,9 @@ class ChunkedExtractor:
         # Track seen techniques to avoid duplicates
         seen_techniques = {}
         all_claims = []
+        
+        # Early termination threshold
+        MAX_TECHNIQUES = 60  # Reasonable upper limit
         
         for result in chunk_results:
             chunk_id = result.get("chunk_id", -1)
@@ -230,6 +317,11 @@ class ChunkedExtractor:
                     claim["source_chunk"] = chunk_id
                     seen_techniques[tech_id] = claim
                     all_claims.append(claim)
+                    
+                    # Check if we've found enough techniques
+                    if len(seen_techniques) >= MAX_TECHNIQUES:
+                        logger.info(f"Found {len(seen_techniques)} techniques, stopping merge early")
+                        break
         
         # Convert to final format
         merged["claims"] = list(seen_techniques.values())
@@ -247,9 +339,20 @@ class ChunkedExtractor:
         
         # Aggregate metrics
         total_time = sum(r.get("metrics", {}).get("dur_sec", 0) for r in chunk_results)
+        successful_chunks = sum(1 for r in chunk_results if not r.get("failed", False))
+        failed_chunks = sum(1 for r in chunk_results if r.get("failed", False))
+        
         merged["metrics"]["total_chunks"] = len(chunk_results)
+        merged["metrics"]["successful_chunks"] = successful_chunks
+        merged["metrics"]["failed_chunks"] = failed_chunks
         merged["metrics"]["total_time_sec"] = total_time
         merged["metrics"]["techniques_found"] = len(merged["techniques"])
+        merged["metrics"]["total_claims"] = len(merged["claims"])
+        
+        # Log summary
+        logger.info(f"Merge complete: {len(merged['techniques'])} techniques from {successful_chunks}/{len(chunk_results)} successful chunks")
+        if failed_chunks > 0:
+            logger.warning(f"{failed_chunks} chunks failed during processing")
         
         return merged
     
@@ -257,7 +360,8 @@ class ChunkedExtractor:
         self,
         text: str,
         config: Dict[str, Any],
-        parallel: bool = True
+        parallel: bool = True,
+        progress_callback: Optional[callable] = None
     ) -> Dict[str, Any]:
         """
         Extract techniques from document using chunked processing.
@@ -266,13 +370,18 @@ class ChunkedExtractor:
             text: Full document text
             config: Extraction configuration
             parallel: Whether to process chunks in parallel
+            progress_callback: Optional callback for progress updates
             
         Returns:
             Extraction results with merged techniques
         """
         # Create chunks
         chunks = self.create_chunks(text)
-        print(f"[INFO] Created {len(chunks)} chunks from {len(text)} chars")
+        spans_per_chunk = config.get("max_spans", 10)
+        total_potential_spans = len(chunks) * spans_per_chunk
+        
+        logger.info(f"Created {len(chunks)} chunks from {len(text)} chars")
+        logger.info(f"Processing with {spans_per_chunk} spans per chunk (up to {total_potential_spans} total spans)")
         
         # Process chunks
         chunk_results = []
@@ -283,34 +392,59 @@ class ChunkedExtractor:
                 # Create individual trackers for each chunk
                 futures = []
                 for chunk in chunks:
-                    tracker = ExtractionTracker()
-                    future = executor.submit(self.process_chunk, chunk, config, tracker)
+                    # Use retry version for better resilience
+                    future = executor.submit(self.process_chunk_with_retry, chunk, config)
                     futures.append((future, chunk.chunk_id))
                 
                 # Collect results as they complete
+                completed = 0
                 for future, chunk_id in futures:
                     try:
                         result = future.result(timeout=60)  # 1 minute timeout per chunk
                         chunk_results.append(result)
-                        print(f"[INFO] Chunk {chunk_id} complete: {len(result.get('claims', []))} claims")
+                        completed += 1
+                        
+                        # Update progress
+                        if progress_callback:
+                            progress_pct = 35 + int((completed / len(chunks)) * 30)  # 35-65% for extraction
+                            progress_callback(progress_pct, f"Processed chunk {completed}/{len(chunks)}")
+                        
+                        logger.info(f"Chunk {chunk_id} complete: {len(result.get('claims', []))} claims")
                     except Exception as e:
-                        print(f"[ERROR] Chunk {chunk_id} failed: {e}")
+                        logger.error(f"Chunk {chunk_id} failed: {e}")
+                        completed += 1
                         chunk_results.append({
                             "chunk_id": chunk_id,
                             "claims": [],
-                            "error": str(e)
+                            "techniques": {},
+                            "error": str(e),
+                            "failed": True
                         })
+                        
+                        if progress_callback:
+                            progress_pct = 35 + int((completed / len(chunks)) * 30)
+                            progress_callback(progress_pct, f"Chunk {completed}/{len(chunks)} (failed)")
         else:
             # Process chunks sequentially
-            for chunk in chunks:
-                tracker = ExtractionTracker()
-                result = self.process_chunk(chunk, config, tracker)
+            for i, chunk in enumerate(chunks):
+                # Use retry version for better resilience
+                result = self.process_chunk_with_retry(chunk, config)
                 chunk_results.append(result)
-                print(f"[INFO] Chunk {chunk.chunk_id} complete: {len(result.get('claims', []))} claims")
+                
+                # Update progress
+                if progress_callback:
+                    progress_pct = 35 + int(((i + 1) / len(chunks)) * 30)  # 35-65% for extraction
+                    progress_callback(progress_pct, f"Processed chunk {i + 1}/{len(chunks)}")
+                
+                logger.info(f"Chunk {chunk.chunk_id} complete: {len(result.get('claims', []))} claims")
         
         # Merge results
         merged = self.merge_results(chunk_results)
-        print(f"[INFO] Extraction complete: {len(merged['techniques'])} unique techniques from {len(chunks)} chunks")
+        logger.info(f"Extraction complete: {len(merged['techniques'])} unique techniques from {len(chunks)} chunks")
+        
+        # Threat actors and malware extraction removed - should be handled by proper entity recognition
+        merged["threat_actors"] = []
+        merged["malware"] = []
         
         return merged
 

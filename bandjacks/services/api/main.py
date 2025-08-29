@@ -1,17 +1,19 @@
 """Main FastAPI application."""
 
 import logging
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from bandjacks.services.api.settings import settings
-from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, reports_async, sequence, simulate, analyze
+from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, sequence, simulate, analyze
 from bandjacks.services.api.middleware import TracingMiddleware
 from bandjacks.services.api.middleware.error_handler import ErrorHandlerMiddleware
 from bandjacks.services.api.middleware.auth import JWTAuthMiddleware
 from bandjacks.services.api.middleware.rate_limit import RateLimitMiddleware
+from bandjacks.services.api.job_processor import get_job_processor
 from bandjacks.loaders.neo4j_ddl import ensure_ddl
-from bandjacks.loaders.opensearch_index import ensure_attack_nodes_index, ensure_attack_flows_index
+from bandjacks.loaders.opensearch_index import ensure_attack_nodes_index, ensure_attack_flows_index, OpenSearchIndexManager
 from bandjacks.loaders.edge_embeddings import ensure_attack_edges_index
 from bandjacks.llm.cache import get_cache_stats, clear_cache
 from bandjacks.monitoring.compliance_metrics import get_compliance_report, get_compliance_metrics
@@ -87,7 +89,7 @@ if settings.enable_auth:
 app.add_middleware(TracingMiddleware)
 
 @app.on_event("startup")
-def startup():
+async def startup():
     # ensure infra bits exist
     try:
         ensure_ddl(settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password)
@@ -97,8 +99,37 @@ def startup():
         ensure_attack_nodes_index(settings.opensearch_url, settings.os_index_nodes)
         ensure_attack_edges_index(settings.opensearch_url)
         ensure_attack_flows_index(settings.opensearch_url)
+        
+        # Initialize reports index
+        from opensearchpy import OpenSearch
+        os_client = OpenSearch(
+            hosts=[settings.opensearch_url],
+            http_auth=(settings.opensearch_user, settings.opensearch_password),
+            use_ssl=False,
+            verify_certs=False
+        )
+        index_manager = OpenSearchIndexManager(os_client)
+        index_manager.create_reports_index()
     except Exception as e:
         print(f"[startup] OpenSearch index ensure failed: {e}")
+    
+    # Start the job processor for async report processing
+    try:
+        job_processor = get_job_processor()
+        await job_processor.start()
+        logger.info("Job processor started successfully")
+    except Exception as e:
+        logger.error(f"Failed to start job processor: {e}")
+
+@app.on_event("shutdown")
+async def shutdown():
+    # Stop the job processor gracefully
+    try:
+        job_processor = get_job_processor()
+        await job_processor.stop()
+        logger.info("Job processor stopped successfully")
+    except Exception as e:
+        logger.error(f"Failed to stop job processor: {e}")
 
 # Configure API tags for better organization
 tags_metadata = [
@@ -230,7 +261,6 @@ app.include_router(ml_metrics.router, prefix=settings.api_prefix)
 app.include_router(notifications.router, prefix=settings.api_prefix)
 app.include_router(sigma.router, prefix=settings.api_prefix)
 app.include_router(reports.router, prefix=settings.api_prefix)
-app.include_router(reports_async.router, prefix=settings.api_prefix)
 app.include_router(sequence.router, prefix=settings.api_prefix)
 
 # Cache management endpoints

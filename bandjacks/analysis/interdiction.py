@@ -77,8 +77,12 @@ class InterdictionPlanner:
     def plan_interdiction(
         self,
         model_id: str,
-        source_techniques: List[str],
-        target_techniques: List[str],
+        candidate_techniques: Optional[List[str]] = None,
+        budget: Optional[int] = None,
+        strategy: Optional[str] = None,
+        source_techniques: Optional[List[str]] = None,
+        target_techniques: Optional[List[str]] = None,
+        cost_model: Optional[Dict[str, float]] = None,
         config: Optional[InterdictionConfig] = None
     ) -> InterdictionPlan:
         """
@@ -86,15 +90,29 @@ class InterdictionPlanner:
         
         Args:
             model_id: PTG model identifier
+            candidate_techniques: Candidate techniques for interdiction
+            budget: Maximum techniques to interdict
+            strategy: Strategy to use (greedy, optimal, balanced, coverage)
             source_techniques: Attack starting points
             target_techniques: Attack goals
-            config: Interdiction configuration
+            cost_model: Custom costs per technique
+            config: Interdiction configuration (overrides individual params)
             
         Returns:
             Interdiction plan
         """
+        # Create config from parameters if not provided
         if config is None:
-            config = InterdictionConfig()
+            config = InterdictionConfig(
+                budget=float(budget) if budget is not None else 10.0,
+                strategy=strategy if strategy is not None else "greedy"
+            )
+        
+        # Ensure we have source and target techniques
+        if source_techniques is None:
+            source_techniques = []
+        if target_techniques is None:
+            target_techniques = []
         
         logger.info(f"Planning interdiction for model {model_id} with budget {config.budget}")
         
@@ -106,12 +124,22 @@ class InterdictionPlanner:
         )
         
         # Build interdiction candidates
-        candidates = self._build_interdiction_candidates(
-            model_id=model_id,
-            choke_analysis=choke_analysis,
-            source_techniques=source_techniques,
-            target_techniques=target_techniques
-        )
+        if candidate_techniques:
+            # If specific candidates provided, use those
+            candidates = self._build_specific_candidates(
+                candidate_techniques=candidate_techniques,
+                choke_analysis=choke_analysis,
+                cost_model=cost_model
+            )
+        else:
+            # Otherwise, analyze from choke points
+            candidates = self._build_interdiction_candidates(
+                model_id=model_id,
+                choke_analysis=choke_analysis,
+                source_techniques=source_techniques,
+                target_techniques=target_techniques,
+                cost_model=cost_model
+            )
         
         # Select interdiction nodes based on strategy
         if config.strategy == "greedy":
@@ -151,12 +179,58 @@ class InterdictionPlanner:
             }
         )
     
+    def _build_specific_candidates(
+        self,
+        candidate_techniques: List[str],
+        choke_analysis: Any,
+        cost_model: Optional[Dict[str, float]] = None
+    ) -> List[InterdictionNode]:
+        """
+        Build interdiction candidates from specific technique list.
+        
+        Args:
+            candidate_techniques: Specific techniques to consider
+            choke_analysis: Choke point analysis results
+            cost_model: Custom costs per technique
+            
+        Returns:
+            List of interdiction candidates
+        """
+        candidates = []
+        
+        # Get default costs if not provided
+        if cost_model is None:
+            cost_model = self._get_mitigation_costs()
+        
+        for tech_id in candidate_techniques:
+            # Get criticality from choke analysis if available
+            criticality = choke_analysis.betweenness_centrality.get(tech_id, 0.5) * 10
+            
+            # Check if it's a dominator
+            is_dominator = any(tech_id in doms for doms in choke_analysis.dominators.values())
+            
+            node = InterdictionNode(
+                technique_id=tech_id,
+                name=self._get_technique_name(tech_id),
+                criticality_score=criticality,
+                mitigation_cost=cost_model.get(tech_id, 1.0),
+                mitigation_effectiveness=1.0,
+                affected_paths=0,  # Will be calculated if needed
+                betweenness_centrality=choke_analysis.betweenness_centrality.get(tech_id, 0),
+                is_dominator=is_dominator,
+                is_articulation_point=tech_id in choke_analysis.articulation_points
+            )
+            candidates.append(node)
+        
+        return sorted(candidates, key=lambda x: x.criticality_score, reverse=True)
+    
     def _build_interdiction_candidates(
         self,
         model_id: str,
         choke_analysis: Any,
         source_techniques: List[str],
-        target_techniques: List[str]
+        target_techniques: List[str],
+        cost_model: Optional[Dict[str, float]] = None
     ) -> List[InterdictionNode]:
         """
         Build list of interdiction candidates with scores.
@@ -173,7 +247,10 @@ class InterdictionPlanner:
         candidates = []
         
         # Get mitigation costs from Neo4j
-        mitigation_costs = self._get_mitigation_costs()
+        if cost_model is None:
+            mitigation_costs = self._get_mitigation_costs()
+        else:
+            mitigation_costs = cost_model
         
         # Analyze paths for coverage
         path_analysis = self.graph_analyzer.analyze_paths(

@@ -21,12 +21,32 @@ import httpx
 
 import PyPDF2
 from bandjacks.llm.chunked_extractor import extract_chunked
-from bandjacks.services.api.routes.reports import extract_text_from_pdf
 import os
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+
+def extract_text_from_pdf(pdf_path: str) -> str:
+    """Extract text from a PDF file."""
+    try:
+        import pdfplumber
+        text_parts = []
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    text_parts.append(text)
+        return "\n\n".join(text_parts)
+    except ImportError:
+        # Fallback to PyPDF2
+        text_parts = []
+        with open(pdf_path, 'rb') as f:
+            pdf_reader = PyPDF2.PdfReader(f)
+            for page in pdf_reader.pages:
+                text_parts.append(page.extract_text())
+        return '\n'.join(text_parts)
 
 
 class BatchExtractor:

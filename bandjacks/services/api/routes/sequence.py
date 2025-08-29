@@ -29,6 +29,8 @@ from bandjacks.monitoring.ml_metrics import get_ml_metrics_tracker, record_model
 from bandjacks.llm.sequence_proposal import (
     SequenceProposalBuilder, TransitionValidator, AnalystReviewFormatter
 )
+from bandjacks.services.sequence_analyzer import SequenceAnalyzer, SequenceAnalysisResult
+# from bandjacks.llm.gemini_sequence_inference import GeminiSequenceInferencer  # TODO: Add this module
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sequence", tags=["sequence"])
@@ -1383,3 +1385,787 @@ async def export_ptg_metrics() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to export PTG metrics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/analyze/{intrusion_set_id}",
+    summary="Analyze Intrusion Set Sequences",
+    description="""
+    Perform comprehensive sequence analysis for an intrusion set.
+    
+    This endpoint:
+    1. Builds or retrieves a PTG model for the intrusion set
+    2. Uses LLM judge to validate top transitions
+    3. Generates sequence proposals from validated transitions
+    4. Creates a detailed analysis report
+    
+    Returns analysis results including validated transitions, uncertain edges,
+    and sequence proposals ready for analyst review.
+    """
+)
+async def analyze_intrusion_set_sequences(
+    intrusion_set_id: str,
+    use_judge: bool = Query(True, description="Use LLM judge for validation"),
+    max_transitions_to_judge: int = Query(100, description="Maximum transitions to validate"),
+    min_confidence: float = Query(0.4, description="Minimum confidence for proposals"),
+    max_sequences: int = Query(20, description="Maximum sequences to generate"),
+    neo4j_session=Depends(get_neo4j_session)
+) -> Dict[str, Any]:
+    """Analyze sequences for an intrusion set."""
+    
+    try:
+        analyzer = SequenceAnalyzer(
+            settings.neo4j_uri,
+            settings.neo4j_user,
+            settings.neo4j_password,
+            settings.opensearch_url
+        )
+        
+        result = analyzer.analyze_intrusion_set(
+            intrusion_set_id=intrusion_set_id,
+            use_judge=use_judge,
+            max_transitions_to_judge=max_transitions_to_judge,
+            min_confidence=min_confidence,
+            max_sequences=max_sequences
+        )
+        
+        return {
+            "intrusion_set_id": result.intrusion_set_id,
+            "intrusion_set_name": result.intrusion_set_name,
+            "generated_at": result.generated_at.isoformat(),
+            "ptg_model": {
+                "model_id": result.ptg_model_id,
+                "techniques_count": result.techniques_count,
+                "transitions_count": result.transitions_count
+            },
+            "validation_results": {
+                "validated_transitions": result.validated_transitions,
+                "uncertain_transitions": result.uncertain_transitions,
+                "unknown_count": result.unknown_count
+            },
+            "sequence_proposals": result.sequence_proposals,
+            "statistics": result.statistics,
+            "markdown_report": result.markdown_report
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to analyze sequences for {intrusion_set_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if 'analyzer' in locals():
+            analyzer.close()
+
+
+@router.get("/analysis/{intrusion_set_id}",
+    summary="Get Latest Sequence Analysis",
+    description="""
+    Retrieve the most recent sequence analysis results for an intrusion set.
+    
+    Returns cached analysis if available within the last 24 hours,
+    otherwise returns 404.
+    """
+)
+async def get_sequence_analysis(
+    intrusion_set_id: str,
+    neo4j_session=Depends(get_neo4j_session)
+) -> Dict[str, Any]:
+    """Get latest analysis results for an intrusion set."""
+    
+    try:
+        # Check for recent analysis
+        query = """
+            MATCH (m:SequenceModel {scope: $scope})
+            WHERE datetime() - duration({hours: 24}) < m.created_at
+            RETURN m.model_id as model_id,
+                   m.parameters as parameters,
+                   m.statistics as statistics,
+                   m.created_at as created_at
+            ORDER BY m.created_at DESC
+            LIMIT 1
+        """
+        
+        result = neo4j_session.run(query, scope=intrusion_set_id)
+        record = result.single()
+        
+        if not record:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No recent analysis found for {intrusion_set_id}. Please run /analyze endpoint first."
+            )
+        
+        # Get intrusion set details
+        name_query = """
+            MATCH (g:IntrusionSet {stix_id: $intrusion_set_id})
+            RETURN g.name as name, g.description as description
+        """
+        
+        name_result = neo4j_session.run(name_query, intrusion_set_id=intrusion_set_id)
+        name_record = name_result.single()
+        
+        if not name_record:
+            raise HTTPException(status_code=404, detail=f"Intrusion set {intrusion_set_id} not found")
+        
+        # Get validated transitions
+        transitions_query = """
+            MATCH (t1:AttackPattern)-[r:NEXT_P {model_id: $model_id}]->(t2:AttackPattern)
+            WHERE r.confidence_level = 'high' OR r.confidence_level IS NULL AND r.p >= 0.5
+            RETURN t1.stix_id as from_technique,
+                   t1.name as from_name,
+                   t2.stix_id as to_technique,
+                   t2.name as to_name,
+                   r.p as confidence,
+                   r.features as features
+            ORDER BY r.p DESC
+            LIMIT 20
+        """
+        
+        transitions_result = neo4j_session.run(transitions_query, model_id=record["model_id"])
+        
+        validated_transitions = []
+        for trans in transitions_result:
+            validated_transitions.append({
+                "from_technique": trans["from_technique"],
+                "from_name": trans["from_name"],
+                "to_technique": trans["to_technique"],
+                "to_name": trans["to_name"],
+                "confidence": trans["confidence"],
+                "features": json.loads(trans["features"]) if trans["features"] else {}
+            })
+        
+        statistics = json.loads(record["statistics"]) if record["statistics"] else {}
+        
+        return {
+            "intrusion_set_id": intrusion_set_id,
+            "intrusion_set_name": name_record["name"],
+            "intrusion_set_description": name_record["description"],
+            "model_id": record["model_id"],
+            "created_at": record["created_at"].isoformat() if record["created_at"] else "",
+            "parameters": json.loads(record["parameters"]) if record["parameters"] else {},
+            "statistics": statistics,
+            "validated_transitions": validated_transitions,
+            "techniques_count": statistics.get("total_nodes", 0),
+            "transitions_count": statistics.get("total_edges", 0)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get analysis for {intrusion_set_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/intrusion-sets",
+    summary="List Intrusion Sets with Sequence Analysis",
+    description="""
+    List all intrusion sets with their sequence analysis status.
+    
+    Returns:
+    - Intrusion set details
+    - Sequence model information if analyzed
+    - Technique and transition counts
+    - Validation statistics
+    """
+)
+async def list_intrusion_sets_with_sequences(
+    neo4j_session=Depends(get_neo4j_session)
+) -> Dict[str, Any]:
+    """List intrusion sets with sequence analysis status."""
+    
+    try:
+        query = """
+            MATCH (g:IntrusionSet)
+            OPTIONAL MATCH (g)-[:USES]->(t:AttackPattern)
+            WITH g, COUNT(DISTINCT t) as technique_count
+            OPTIONAL MATCH (m:SequenceModel {scope: g.stix_id})
+            WITH g, technique_count, m
+            ORDER BY g.stix_id, m.created_at DESC
+            WITH g, technique_count, COLLECT(m)[0] as latest_model
+            OPTIONAL MATCH (t1:AttackPattern)-[r:NEXT_P {model_id: latest_model.model_id}]->(t2:AttackPattern)
+            WHERE r.p >= 0.5
+            WITH g, technique_count, latest_model, COUNT(DISTINCT r) as validated_count
+            RETURN g.stix_id as stix_id,
+                   g.name as name,
+                   g.description as description,
+                   technique_count as techniques_count,
+                   latest_model.model_id as model_id,
+                   latest_model.created_at as last_analyzed,
+                   latest_model.total_edges as transitions_count,
+                   validated_count as validated_count
+            ORDER BY g.name
+        """
+        
+        result = neo4j_session.run(query)
+        
+        intrusion_sets = []
+        for record in result:
+            intrusion_set = {
+                "stix_id": record["stix_id"],
+                "name": record["name"],
+                "description": record["description"],
+                "techniques_count": record["techniques_count"] or 0,
+                "model_id": record["model_id"],
+                "last_analyzed": record["last_analyzed"].isoformat() if record["last_analyzed"] else None,
+                "transitions_count": record["transitions_count"] or 0,
+                "validated_count": record["validated_count"] or 0,
+                "uncertain_count": 0  # Would need additional query
+            }
+            intrusion_sets.append(intrusion_set)
+        
+        return {
+            "intrusion_sets": intrusion_sets,
+            "total": len(intrusion_sets)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to list intrusion sets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sources",
+    summary="List All Sequence Sources",
+    description="""
+    List all sources of attack sequences including:
+    - Intrusion Sets
+    - Reports with AttackFlows
+    - Campaigns with AttackEpisodes
+    
+    Returns sources with their associated attack flows and sequence information.
+    """
+)
+async def list_sequence_sources(
+    source_type: Optional[str] = Query(None, description="Filter by source type: intrusion-set, report, campaign"),
+    neo4j_session=Depends(get_neo4j_session)
+) -> Dict[str, Any]:
+    """List all potential sources of attack sequences."""
+    
+    try:
+        sources = []
+        
+        # Get Intrusion Sets
+        if not source_type or source_type == "intrusion-set":
+            intrusion_query = """
+                MATCH (g:IntrusionSet)
+                OPTIONAL MATCH (g)-[:USES]->(t:AttackPattern)
+                WITH g, COUNT(DISTINCT t) as technique_count
+                OPTIONAL MATCH (e:AttackEpisode)-[:ATTRIBUTED_TO]->(g)
+                WITH g, technique_count, COUNT(DISTINCT e) as episode_count
+                OPTIONAL MATCH (m:SequenceModel {scope: g.stix_id})
+                WITH g, technique_count, episode_count, m
+                ORDER BY g.stix_id, m.created_at DESC
+                WITH g, technique_count, episode_count, COLLECT(m)[0] as latest_model
+                RETURN g.stix_id as stix_id,
+                       g.name as name,
+                       g.description as description,
+                       'intrusion-set' as source_type,
+                       technique_count,
+                       episode_count,
+                       latest_model.model_id as model_id,
+                       latest_model.created_at as last_analyzed
+                ORDER BY g.name
+            """
+            
+            result = neo4j_session.run(intrusion_query)
+            for record in result:
+                sources.append({
+                    "stix_id": record["stix_id"],
+                    "name": record["name"],
+                    "description": record["description"],
+                    "source_type": "intrusion-set",
+                    "techniques_count": record["technique_count"] or 0,
+                    "episodes_count": record["episode_count"] or 0,
+                    "flows_count": 0,  # Will be updated below
+                    "model_id": record["model_id"],
+                    "last_analyzed": record["last_analyzed"].isoformat() if record["last_analyzed"] else None
+                })
+        
+        # Get Reports with AttackFlows
+        if not source_type or source_type == "report":
+            report_query = """
+                MATCH (r:Report)
+                OPTIONAL MATCH (r)-[:REFERENCES]->(f:AttackFlow)
+                WITH r, COUNT(DISTINCT f) as flow_count
+                OPTIONAL MATCH (r)-[:REFERENCES]->(e:AttackEpisode)
+                WITH r, flow_count, COUNT(DISTINCT e) as episode_count
+                OPTIONAL MATCH (r)-[:REFERENCES]->(e:AttackEpisode)-[:CONTAINS]->(a:AttackAction)
+                WITH r, flow_count, episode_count, COUNT(DISTINCT a.attack_pattern_ref) as technique_count
+                WHERE flow_count > 0 OR episode_count > 0
+                RETURN r.stix_id as stix_id,
+                       r.name as name,
+                       r.description as description,
+                       'report' as source_type,
+                       technique_count,
+                       episode_count,
+                       flow_count,
+                       r.created as created
+                ORDER BY r.created DESC
+                LIMIT 100
+            """
+            
+            result = neo4j_session.run(report_query)
+            for record in result:
+                sources.append({
+                    "stix_id": record["stix_id"],
+                    "name": record["name"],
+                    "description": record["description"],
+                    "source_type": "report",
+                    "techniques_count": record["technique_count"] or 0,
+                    "episodes_count": record["episode_count"] or 0,
+                    "flows_count": record["flow_count"] or 0,
+                    "model_id": None,
+                    "created": record["created"].isoformat() if record["created"] else None
+                })
+        
+        # Get Campaigns with AttackEpisodes
+        if not source_type or source_type == "campaign":
+            campaign_query = """
+                MATCH (c:Campaign)
+                OPTIONAL MATCH (c)-[:USES]->(t:AttackPattern)
+                WITH c, COUNT(DISTINCT t) as technique_count
+                OPTIONAL MATCH (c)-[:HAS_EPISODE]->(e:AttackEpisode)
+                WITH c, technique_count, COUNT(DISTINCT e) as episode_count
+                OPTIONAL MATCH (c)-[:HAS_FLOW]->(f:AttackFlow)
+                WITH c, technique_count, episode_count, COUNT(DISTINCT f) as flow_count
+                WHERE episode_count > 0 OR flow_count > 0 OR technique_count > 0
+                RETURN c.stix_id as stix_id,
+                       c.name as name,
+                       c.description as description,
+                       'campaign' as source_type,
+                       technique_count,
+                       episode_count,
+                       flow_count,
+                       c.created as created,
+                       c.first_seen as first_seen,
+                       c.last_seen as last_seen
+                ORDER BY c.created DESC
+                LIMIT 100
+            """
+            
+            result = neo4j_session.run(campaign_query)
+            for record in result:
+                sources.append({
+                    "stix_id": record["stix_id"],
+                    "name": record["name"],
+                    "description": record["description"],
+                    "source_type": "campaign",
+                    "techniques_count": record["technique_count"] or 0,
+                    "episodes_count": record["episode_count"] or 0,
+                    "flows_count": record["flow_count"] or 0,
+                    "model_id": None,
+                    "created": record["created"].isoformat() if record["created"] else None,
+                    "first_seen": record["first_seen"],
+                    "last_seen": record["last_seen"]
+                })
+        
+        return {
+            "sources": sources,
+            "total": len(sources),
+            "by_type": {
+                "intrusion-sets": len([s for s in sources if s["source_type"] == "intrusion-set"]),
+                "reports": len([s for s in sources if s["source_type"] == "report"]),
+                "campaigns": len([s for s in sources if s["source_type"] == "campaign"])
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to list sequence sources: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/report/{report_id}/sequences",
+    summary="Get Sequences from Report",
+    description="""
+    Extract attack sequences from a report's associated AttackFlows and AttackEpisodes.
+    
+    Returns:
+    - AttackEpisodes linked to the report
+    - AttackFlows referenced by the report
+    - Extracted technique sequences
+    """
+)
+async def get_report_sequences(
+    report_id: str,
+    neo4j_session=Depends(get_neo4j_session)
+) -> Dict[str, Any]:
+    """Extract sequences from a report."""
+    
+    try:
+        # Get report details
+        report_query = """
+            MATCH (r:Report {stix_id: $report_id})
+            RETURN r.name as name, r.description as description
+        """
+        result = neo4j_session.run(report_query, report_id=report_id)
+        record = result.single()
+        
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+        
+        # Get AttackEpisodes from report
+        episodes_query = """
+            MATCH (r:Report {stix_id: $report_id})-[:REFERENCES]->(e:AttackEpisode)
+            OPTIONAL MATCH (e)-[:CONTAINS]->(a:AttackAction)
+            WITH e, COLLECT({
+                action_id: a.action_id,
+                attack_pattern_ref: a.attack_pattern_ref,
+                name: a.name,
+                order: a.order
+            }) as actions
+            RETURN e.episode_id as episode_id,
+                   e.flow_id as flow_id,
+                   e.name as name,
+                   e.episode_type as episode_type,
+                   actions
+            ORDER BY e.episode_id
+        """
+        
+        episodes_result = neo4j_session.run(episodes_query, report_id=report_id)
+        episodes = []
+        all_techniques = set()
+        
+        for ep_record in episodes_result:
+            actions = sorted(ep_record["actions"], key=lambda x: x.get("order", 999))
+            techniques = [a["attack_pattern_ref"] for a in actions if a["attack_pattern_ref"]]
+            all_techniques.update(techniques)
+            
+            episodes.append({
+                "episode_id": ep_record["episode_id"],
+                "flow_id": ep_record["flow_id"],
+                "name": ep_record["name"],
+                "episode_type": ep_record["episode_type"],
+                "techniques": techniques,
+                "action_count": len(actions)
+            })
+        
+        # Get AttackFlows from report
+        flows_query = """
+            MATCH (r:Report {stix_id: $report_id})-[:REFERENCES]->(f:AttackFlow)
+            OPTIONAL MATCH (f)-[:HAS_ACTION]->(a:AttackAction)
+            WITH f, COLLECT({
+                action_id: a.action_id,
+                attack_pattern_ref: a.attack_pattern_ref,
+                name: a.name
+            }) as actions
+            RETURN f.flow_id as flow_id,
+                   f.name as name,
+                   f.description as description,
+                   actions
+        """
+        
+        flows_result = neo4j_session.run(flows_query, report_id=report_id)
+        flows = []
+        
+        for flow_record in flows_result:
+            flow_techniques = [a["attack_pattern_ref"] for a in flow_record["actions"] if a["attack_pattern_ref"]]
+            all_techniques.update(flow_techniques)
+            
+            flows.append({
+                "flow_id": flow_record["flow_id"],
+                "name": flow_record["name"],
+                "description": flow_record["description"],
+                "techniques": flow_techniques,
+                "action_count": len(flow_record["actions"])
+            })
+        
+        return {
+            "report_id": report_id,
+            "report_name": record["name"],
+            "report_description": record["description"],
+            "episodes": episodes,
+            "flows": flows,
+            "total_techniques": len(all_techniques),
+            "unique_techniques": list(all_techniques)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get report sequences for {report_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/campaign/{campaign_id}/sequences",
+    summary="Get Sequences from Campaign",
+    description="""
+    Extract attack sequences from a campaign's associated AttackEpisodes and techniques.
+    
+    Returns:
+    - AttackEpisodes linked to the campaign
+    - Campaign techniques
+    - Temporal information (first_seen, last_seen)
+    """
+)
+async def get_campaign_sequences(
+    campaign_id: str,
+    neo4j_session=Depends(get_neo4j_session)
+) -> Dict[str, Any]:
+    """Extract sequences from a campaign."""
+    
+    try:
+        # Get campaign details
+        campaign_query = """
+            MATCH (c:Campaign {stix_id: $campaign_id})
+            RETURN c.name as name, 
+                   c.description as description,
+                   c.first_seen as first_seen,
+                   c.last_seen as last_seen
+        """
+        result = neo4j_session.run(campaign_query, campaign_id=campaign_id)
+        record = result.single()
+        
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Campaign {campaign_id} not found")
+        
+        # Get AttackEpisodes from campaign
+        episodes_query = """
+            MATCH (c:Campaign {stix_id: $campaign_id})-[:HAS_EPISODE]->(e:AttackEpisode)
+            OPTIONAL MATCH (e)-[:CONTAINS]->(a:AttackAction)
+            WITH e, COLLECT({
+                action_id: a.action_id,
+                attack_pattern_ref: a.attack_pattern_ref,
+                name: a.name,
+                order: a.order,
+                timestamp: a.timestamp
+            }) as actions
+            RETURN e.episode_id as episode_id,
+                   e.flow_id as flow_id,
+                   e.name as name,
+                   e.episode_type as episode_type,
+                   e.first_seen as first_seen,
+                   e.last_seen as last_seen,
+                   actions
+            ORDER BY e.first_seen, e.episode_id
+        """
+        
+        episodes_result = neo4j_session.run(episodes_query, campaign_id=campaign_id)
+        episodes = []
+        all_techniques = set()
+        
+        for ep_record in episodes_result:
+            actions = sorted(ep_record["actions"], key=lambda x: (x.get("timestamp") or "", x.get("order", 999)))
+            techniques = [a["attack_pattern_ref"] for a in actions if a["attack_pattern_ref"]]
+            all_techniques.update(techniques)
+            
+            episodes.append({
+                "episode_id": ep_record["episode_id"],
+                "flow_id": ep_record["flow_id"],
+                "name": ep_record["name"],
+                "episode_type": ep_record["episode_type"],
+                "first_seen": ep_record["first_seen"],
+                "last_seen": ep_record["last_seen"],
+                "techniques": techniques,
+                "action_count": len(actions)
+            })
+        
+        # Get direct techniques used by campaign
+        techniques_query = """
+            MATCH (c:Campaign {stix_id: $campaign_id})-[:USES]->(t:AttackPattern)
+            RETURN t.stix_id as technique_id,
+                   t.name as technique_name
+            ORDER BY t.name
+        """
+        
+        techniques_result = neo4j_session.run(techniques_query, campaign_id=campaign_id)
+        direct_techniques = []
+        
+        for tech_record in techniques_result:
+            direct_techniques.append({
+                "technique_id": tech_record["technique_id"],
+                "technique_name": tech_record["technique_name"]
+            })
+            all_techniques.add(tech_record["technique_id"])
+        
+        # Try to order episodes temporally
+        if episodes:
+            # Sort by first_seen if available, otherwise by episode_id
+            episodes.sort(key=lambda x: (x.get("first_seen") or "", x["episode_id"]))
+        
+        return {
+            "campaign_id": campaign_id,
+            "campaign_name": record["name"],
+            "campaign_description": record["description"],
+            "first_seen": record["first_seen"],
+            "last_seen": record["last_seen"],
+            "episodes": episodes,
+            "direct_techniques": direct_techniques,
+            "total_techniques": len(all_techniques),
+            "unique_techniques": list(all_techniques)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get campaign sequences for {campaign_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/infer-gemini/{intrusion_set_id}",
+    summary="Infer Sequences with Gemini-2.5-Pro",
+    description="""
+    Use Gemini-2.5-Pro to infer attack sequences from an intrusion set's techniques.
+    
+    This endpoint:
+    1. Retrieves all techniques from AttackEpisode data for the intrusion set
+    2. Groups techniques by tactic for context
+    3. Prompts Gemini-2.5-Pro to infer logical attack sequences
+    4. Returns multiple sequences with confidence scores and reasoning
+    5. Optionally compares with existing PTG model
+    
+    This is experimental functionality to explore zero-shot sequence inference from
+    unordered technique sets using large language models.
+    """
+)
+async def infer_sequences_with_gemini(
+    intrusion_set_id: str,
+    max_sequences: int = Query(5, description="Maximum number of sequences to infer", ge=1, le=10),
+    temperature: float = Query(0.3, description="Temperature for generation", ge=0, le=1),
+    compare_with_ptg: bool = Query(False, description="Compare with existing PTG model"),
+    neo4j_session=Depends(get_neo4j_session)
+) -> Dict[str, Any]:
+    """Infer attack sequences using Gemini-2.5-Pro."""
+    
+    try:
+        # TODO: Uncomment when GeminiSequenceInferencer is implemented
+        raise HTTPException(
+            status_code=501, 
+            detail="Gemini sequence inference not yet implemented"
+        )
+        # Initialize Gemini inferencer
+        # inferencer = GeminiSequenceInferencer(
+        #     neo4j_uri=settings.neo4j_uri,
+        #     neo4j_user=settings.neo4j_user,
+        #     neo4j_password=settings.neo4j_password,
+        #     model="gemini/gemini-2.5-pro",
+        #     temperature=temperature,
+        #     max_sequences=max_sequences
+        # )
+        
+        # # Infer sequences
+        # logger.info(f"Starting Gemini sequence inference for {intrusion_set_id}")
+        # inference_result = inferencer.infer_sequences(intrusion_set_id)
+        
+        # Format response
+        response = {
+            "intrusion_set_id": inference_result.intrusion_set_id,
+            "intrusion_set_name": inference_result.intrusion_set_name,
+            "total_techniques": inference_result.total_techniques,
+            "model_used": inference_result.model_used,
+            "inference_time": inference_result.inference_time,
+            "sequences": [
+                {
+                    "sequence_id": seq.sequence_id,
+                    "techniques": seq.techniques,
+                    "technique_names": seq.technique_names,
+                    "confidence": seq.confidence,
+                    "reasoning": seq.reasoning,
+                    "length": seq.length,
+                    "tactic_progression": seq.tactic_progression
+                }
+                for seq in inference_result.inferred_sequences
+            ],
+            "token_usage": {
+                "prompt_tokens": inference_result.prompt_tokens,
+                "completion_tokens": inference_result.completion_tokens
+            }
+        }
+        
+        # Optionally compare with PTG model
+        if compare_with_ptg:
+            comparison = inferencer.compare_with_ptg(inference_result)
+            response["ptg_comparison"] = comparison
+        
+        return response
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to infer sequences for {intrusion_set_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if 'inferencer' in locals():
+            inferencer.close()
+
+
+@router.get("/report/{intrusion_set_id}",
+    summary="Get Sequence Analysis Report",
+    description="""
+    Generate a human-readable markdown report for sequence analysis results.
+    
+    Returns a formatted report suitable for analyst review, including:
+    - Executive summary
+    - Validated attack sequences
+    - Confidence assessments
+    - Recommendations for further analysis
+    """
+)
+async def get_sequence_report(
+    intrusion_set_id: str,
+    include_uncertain: bool = Query(True, description="Include uncertain transitions"),
+    include_stix_ids: bool = Query(False, description="Include STIX IDs in report"),
+    neo4j_session=Depends(get_neo4j_session)
+) -> Dict[str, Any]:
+    """Generate human-readable report for sequence analysis."""
+    
+    try:
+        analyzer = SequenceAnalyzer(
+            settings.neo4j_uri,
+            settings.neo4j_user,
+            settings.neo4j_password,
+            settings.opensearch_url
+        )
+        
+        # Check if analysis exists
+        query = """
+            MATCH (m:SequenceModel {scope: $scope})
+            WHERE datetime() - duration({hours: 24}) < m.created_at
+            RETURN m.model_id as model_id
+            LIMIT 1
+        """
+        
+        result = neo4j_session.run(query, scope=intrusion_set_id)
+        if not result.single():
+            # Run analysis if not exists
+            analysis_result = analyzer.analyze_intrusion_set(
+                intrusion_set_id=intrusion_set_id,
+                use_judge=True,
+                max_transitions_to_judge=50,
+                min_confidence=0.4,
+                max_sequences=10
+            )
+        else:
+            # Retrieve existing analysis (simplified - would need full retrieval logic)
+            name_query = """
+                MATCH (g:IntrusionSet {stix_id: $intrusion_set_id})
+                RETURN g.name as name
+            """
+            name_result = neo4j_session.run(name_query, intrusion_set_id=intrusion_set_id)
+            name_record = name_result.single()
+            
+            if not name_record:
+                raise HTTPException(status_code=404, detail=f"Intrusion set {intrusion_set_id} not found")
+            
+            # Create minimal result for report generation
+            analysis_result = SequenceAnalysisResult(
+                intrusion_set_id=intrusion_set_id,
+                intrusion_set_name=name_record["name"]
+            )
+            
+            # Would populate with actual data from Neo4j
+            analysis_result.markdown_report = analyzer._generate_markdown_report(analysis_result)
+        
+        return {
+            "intrusion_set_id": intrusion_set_id,
+            "intrusion_set_name": analysis_result.intrusion_set_name,
+            "report": analysis_result.markdown_report,
+            "generated_at": analysis_result.generated_at.isoformat(),
+            "statistics": analysis_result.statistics
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Failed to generate report for {intrusion_set_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if 'analyzer' in locals():
+            analyzer.close()

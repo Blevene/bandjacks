@@ -65,10 +65,32 @@ export default function ReportsPage() {
 
   const fetchReports = async () => {
     try {
-      // TODO: Use actual endpoint when backend implements /v1/reports
-      // For now, we'll simulate with empty data
-      const mockReports: Report[] = [];
-      setReports(mockReports);
+      const response = await typedApi.reports.list({
+        limit: 100,
+        status: statusFilter !== "all" ? statusFilter : undefined,
+      });
+      
+      // Transform API response to match our Report interface
+      const transformedReports: Report[] = response.reports.map((report: any) => ({
+        id: report.report_id,
+        name: report.name,
+        description: report.description,
+        published: report.published,
+        created: report.created,
+        modified: report.modified,
+        object_refs: [],
+        campaign_id: report.has_campaign ? `campaign-${report.report_id}` : undefined,
+        flow_id: report.has_flow ? `flow-${report.report_id}` : undefined,
+        entity_counts: {
+          attack_patterns: report.techniques_count,
+          intrusion_sets: 0,
+          software: 0,
+        },
+        extraction_status: report.status as any,
+        confidence_avg: report.confidence_avg,
+      }));
+      
+      setReports(transformedReports);
     } catch (error) {
       console.error("Error fetching reports:", error);
       toast({
@@ -82,15 +104,27 @@ export default function ReportsPage() {
   };
 
   const fetchStats = async () => {
-    // TODO: Get actual stats from backend
-    const mockStats: ReportStats = {
-      total_reports: 0,
-      with_campaigns: 0,
-      with_flows: 0,
-      total_entities: 0,
-      recent_7_days: 0,
-    };
-    setStats(mockStats);
+    try {
+      const response = await typedApi.reports.getStatistics();
+      
+      setStats({
+        total_reports: response.total_reports,
+        with_campaigns: response.with_campaigns,
+        with_flows: response.with_flows,
+        total_entities: Math.round(response.avg_techniques * response.total_reports),
+        recent_7_days: response.recent_7_days,
+      });
+    } catch (error) {
+      console.error("Error fetching stats:", error);
+      // Use default stats on error
+      setStats({
+        total_reports: 0,
+        with_campaigns: 0,
+        with_flows: 0,
+        total_entities: 0,
+        recent_7_days: 0,
+      });
+    }
   };
 
   const getStatusColor = (status?: string) => {
@@ -284,65 +318,67 @@ export default function ReportsPage() {
           ) : (
             <div className="space-y-4">
               {filteredReports.map((report) => (
-                <Link key={report.id} href={`/reports/${encodeURIComponent(report.id)}`}>
-                  <div className="flex items-start gap-4 p-4 border rounded-lg hover:bg-muted/50 cursor-pointer">
-                    <FileText className="h-5 w-5 text-blue-500 mt-1" />
-                    <div className="flex-1">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2">
-                            <h3 className="font-medium">{report.name}</h3>
-                            {report.extraction_status && (
-                              <Badge className={getStatusColor(report.extraction_status)} variant="secondary">
-                                {report.extraction_status}
-                              </Badge>
-                            )}
-                            {getConfidenceIcon(report.confidence_avg)}
-                          </div>
-                          {report.description && (
-                            <p className="text-sm text-muted-foreground mt-1">
-                              {report.description}
-                            </p>
+                <div 
+                  key={report.id} 
+                  className="flex items-start gap-4 p-4 border rounded-lg hover:bg-muted/50 cursor-pointer"
+                  onClick={() => window.location.href = `/reports/${encodeURIComponent(report.id)}/review`}
+                >
+                  <FileText className="h-5 w-5 text-blue-500 mt-1" />
+                  <div className="flex-1">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-medium">{report.name}</h3>
+                          {report.extraction_status && (
+                            <Badge className={getStatusColor(report.extraction_status)} variant="secondary">
+                              {report.extraction_status}
+                            </Badge>
                           )}
-                          <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
-                            {report.published && (
-                              <span className="flex items-center gap-1">
-                                <Calendar className="h-3 w-3" />
-                                Published: {format(new Date(report.published), "MMM d, yyyy")}
-                              </span>
-                            )}
-                            {report.entity_counts && (
-                              <>
-                                <span>{report.entity_counts.attack_patterns} techniques</span>
-                                <span>{report.entity_counts.intrusion_sets} actors</span>
-                                <span>{report.entity_counts.software} tools</span>
-                              </>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 mt-2">
-                            {report.campaign_id && (
-                              <Link href={`/campaigns/${report.campaign_id}`} onClick={(e) => e.stopPropagation()}>
-                                <Badge variant="outline" className="cursor-pointer hover:bg-muted">
-                                  <Target className="h-3 w-3 mr-1" />
-                                  Campaign
-                                </Badge>
-                              </Link>
-                            )}
-                            {report.flow_id && (
-                              <Link href={`/flows/${report.flow_id}`} onClick={(e) => e.stopPropagation()}>
-                                <Badge variant="outline" className="cursor-pointer hover:bg-muted">
-                                  <GitBranch className="h-3 w-3 mr-1" />
-                                  Flow
-                                </Badge>
-                              </Link>
-                            )}
-                          </div>
+                          {getConfidenceIcon(report.confidence_avg)}
                         </div>
-                        <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                        {report.description && (
+                          <p className="text-sm text-muted-foreground mt-1">
+                            {report.description}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
+                          {report.published && (
+                            <span className="flex items-center gap-1">
+                              <Calendar className="h-3 w-3" />
+                              Published: {format(new Date(report.published), "MMM d, yyyy")}
+                            </span>
+                          )}
+                          {report.entity_counts && (
+                            <>
+                              <span>{report.entity_counts.attack_patterns} techniques</span>
+                              <span>{report.entity_counts.intrusion_sets} actors</span>
+                              <span>{report.entity_counts.software} tools</span>
+                            </>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 mt-2">
+                          {report.campaign_id && (
+                            <Link href={`/campaigns/${report.campaign_id}`} onClick={(e) => e.stopPropagation()}>
+                              <Badge variant="outline" className="cursor-pointer hover:bg-muted">
+                                <Target className="h-3 w-3 mr-1" />
+                                Campaign
+                              </Badge>
+                            </Link>
+                          )}
+                          {report.flow_id && (
+                            <Link href={`/flows/${report.flow_id}`} onClick={(e) => e.stopPropagation()}>
+                              <Badge variant="outline" className="cursor-pointer hover:bg-muted">
+                                <GitBranch className="h-3 w-3 mr-1" />
+                                Flow
+                              </Badge>
+                            </Link>
+                          )}
+                        </div>
                       </div>
+                      <ChevronRight className="h-5 w-5 text-muted-foreground" />
                     </div>
                   </div>
-                </Link>
+                </div>
               ))}
             </div>
           )}
