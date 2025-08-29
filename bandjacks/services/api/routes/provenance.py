@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from neo4j import GraphDatabase
 
 from ....config import get_settings
+from ....loaders.evidence_retriever import EvidenceRetriever, EvidenceSnippet
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/provenance", tags=["provenance"])
@@ -26,6 +27,8 @@ class ProvenanceSource(BaseModel):
     modified: Optional[str]
     confidence: float
     extraction_method: Optional[str]
+    evidence_text: Optional[str] = None
+    evidence_ids: Optional[List[str]] = None
 
 
 class ProvenanceRelation(BaseModel):
@@ -378,6 +381,15 @@ def _get_object_sources(session, object_id: str, object_type: str) -> List[Prove
     """Get source information for an object."""
     sources = []
     
+    # Initialize evidence retriever
+    evidence_retriever = None
+    try:
+        evidence_retriever = EvidenceRetriever(
+            opensearch_url=getattr(settings, 'opensearch_url', 'http://localhost:9200')
+        )
+    except Exception as e:
+        logger.warning(f"Could not initialize evidence retriever: {e}")
+    
     # Get direct source properties
     result = session.run(
         """
@@ -390,13 +402,27 @@ def _get_object_sources(session, object_id: str, object_type: str) -> List[Prove
                n.source_modified as modified,
                n.source_report as report,
                n.extraction_method as method,
-               n.confidence_score as confidence
+               n.confidence_score as confidence,
+               n.evidence_ids as evidence_ids
         """,
         object_id=object_id
     )
     
     record = result.single()
     if record and (record["collection"] or record["report"]):
+        evidence_text = None
+        evidence_ids = record.get("evidence_ids", [])
+        
+        # Retrieve evidence text if available
+        if evidence_retriever and evidence_ids:
+            evidence_snippets = []
+            for eid in evidence_ids[:3]:  # Limit to first 3 evidence IDs
+                snippet = evidence_retriever.get_evidence_by_id(eid)
+                if snippet:
+                    evidence_snippets.append(snippet.text)
+            if evidence_snippets:
+                evidence_text = " ... ".join(evidence_snippets)
+        
         sources.append(ProvenanceSource(
             source_id=record["report"] or f"{record['collection']}-{record['version']}",
             source_type="report" if record["report"] else "attack-release",
@@ -405,21 +431,37 @@ def _get_object_sources(session, object_id: str, object_type: str) -> List[Prove
             url=record["url"],
             modified=record["modified"],
             confidence=record["confidence"] or 1.0,
-            extraction_method=record["method"]
+            extraction_method=record["method"],
+            evidence_text=evidence_text,
+            evidence_ids=evidence_ids
         ))
     
-    # Get extraction sources
+    # Get extraction sources with evidence
     result = session.run(
         """
         MATCH (n)<-[:EXTRACTED_FROM]-(doc)
         WHERE n.stix_id = $object_id OR n.flow_id = $object_id
         RETURN doc.document_id as doc_id, doc.name as doc_name,
-               doc.type as doc_type, doc.url as doc_url
+               doc.type as doc_type, doc.url as doc_url,
+               doc.extraction_id as extraction_id
         """,
         object_id=object_id
     )
     
     for record in result:
+        evidence_text = None
+        evidence_ids = []
+        
+        # Get evidence for this extraction
+        if evidence_retriever and record.get("extraction_id"):
+            evidence_snippets = evidence_retriever.get_evidence_for_extraction(
+                record["extraction_id"],
+                min_confidence=0.6
+            )
+            if evidence_snippets:
+                evidence_ids = [s.evidence_id for s in evidence_snippets[:3]]
+                evidence_text = " ... ".join([s.text for s in evidence_snippets[:3]])
+        
         sources.append(ProvenanceSource(
             source_id=record["doc_id"],
             source_type=record["doc_type"] or "document",
@@ -428,8 +470,14 @@ def _get_object_sources(session, object_id: str, object_type: str) -> List[Prove
             url=record["doc_url"],
             modified=None,
             confidence=0.8,
-            extraction_method="llm_extraction"
+            extraction_method="llm_extraction",
+            evidence_text=evidence_text,
+            evidence_ids=evidence_ids
         ))
+    
+    # Clean up
+    if evidence_retriever:
+        evidence_retriever.close()
     
     return sources
 

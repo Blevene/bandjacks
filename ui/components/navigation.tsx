@@ -19,6 +19,7 @@ import {
   Brain,
   MessageSquare,
   Activity,
+  TrendingUp,
 } from "lucide-react";
 
 const navigation = [
@@ -31,6 +32,7 @@ const navigation = [
   { name: "Techniques", href: "/techniques", icon: Layers },
   { name: "Detections", href: "/detections/strategies", icon: Shield },
   { name: "Flows", href: "/flows", icon: GitBranch },
+  { name: "Sequences", href: "/sequences", icon: TrendingUp },
   { name: "Simulation", href: "/simulation", icon: Brain },
   { name: "Review Queue", href: "/review/queue", icon: CheckSquare },
   { name: "Feedback", href: "/feedback", icon: MessageSquare },

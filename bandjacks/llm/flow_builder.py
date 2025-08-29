@@ -1,19 +1,24 @@
-"""Attack flow builder with LLM integration and deterministic assembly."""
+"""Consolidated attack flow builder with LLM synthesis, STIX export, and OpenSearch integration."""
 
 import uuid
 import json
+import re
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from neo4j import GraphDatabase
+from opensearchpy import OpenSearch
 
-from bandjacks.llm.flows import AttackFlowSynthesizer, synthesize_attack_flow
+from bandjacks.llm.client import LLMClient
+from bandjacks.llm.schemas import ATTACK_FLOW_SCHEMA
+from bandjacks.llm.attack_flow_validator import AttackFlowValidator
 from bandjacks.loaders.embedder import encode
 
 
 class FlowBuilder:
-    """Build and persist attack flows from various sources."""
+    """Consolidated attack flow builder with all generation capabilities."""
     
-    def __init__(self, neo4j_uri: str, neo4j_user: str, neo4j_password: str):
+    def __init__(self, neo4j_uri: str, neo4j_user: str, neo4j_password: str,
+                 opensearch_client: Optional[OpenSearch] = None):
         """
         Initialize flow builder.
         
@@ -21,34 +26,45 @@ class FlowBuilder:
             neo4j_uri: Neo4j connection URI
             neo4j_user: Neo4j username
             neo4j_password: Neo4j password
+            opensearch_client: Optional OpenSearch client for text/embedding lookups
         """
-        self.synthesizer = AttackFlowSynthesizer()
         self.driver = GraphDatabase.driver(
             neo4j_uri,
             auth=(neo4j_user, neo4j_password)
         )
+        self.opensearch = opensearch_client
+        self.llm_client = LLMClient()
+        self.validator = AttackFlowValidator()
     
     def build_from_extraction(
         self,
         extraction_data: Dict[str, Any],
         source_id: Optional[str] = None,
-        report_text: str = ""
+        report_text: Optional[str] = None,
+        use_stored_text: bool = True
     ) -> Dict[str, Any]:
         """
-        Build flow using AttackFlowSynthesizer for LLM synthesis.
+        Build flow using LLM synthesis with stored text when available.
         
         Args:
             extraction_data: Results from LLMExtractor
-            source_id: Optional source document ID
+            source_id: Optional source document ID (report ID)
             report_text: Optional original report text for context
+            use_stored_text: Whether to fetch text from OpenSearch if available
             
         Returns:
             Flow data with episode and actions
         """
-        # Use existing synthesize_attack_flow function
-        llm_flow = synthesize_attack_flow(
+        # Try to get stored text and embeddings from OpenSearch if source_id is provided
+        if use_stored_text and source_id and self.opensearch:
+            stored_text = self._get_stored_text(source_id)
+            if stored_text:
+                report_text = stored_text
+        
+        # Use LLM synthesis with full context
+        llm_flow = self._synthesize_attack_flow(
             extraction_result=extraction_data,
-            report_text=report_text,
+            report_text=report_text or "",
             max_steps=25
         )
         
@@ -1145,6 +1161,543 @@ class FlowBuilder:
             "avg_confidence": flow_data["stats"]["avg_confidence"],
             "llm_synthesized": flow_data.get("llm_synthesized", False)
         }
+    
+    def _get_stored_text(self, report_id: str) -> Optional[str]:
+        """
+        Retrieve stored text from OpenSearch for a report.
+        
+        Args:
+            report_id: Report/source ID
+            
+        Returns:
+            Stored raw text or None
+        """
+        if not self.opensearch:
+            return None
+            
+        try:
+            from bandjacks.store.opensearch_report_store import OpenSearchReportStore
+            store = OpenSearchReportStore(self.opensearch)
+            report = store.get_report(report_id)
+            
+            if report:
+                # Return raw text if available
+                return report.get("raw_text")
+        except Exception as e:
+            print(f"Error retrieving stored text: {e}")
+        
+        return None
+    
+    def _synthesize_attack_flow(
+        self,
+        extraction_result: Dict[str, Any],
+        report_text: str = "",
+        max_steps: int = 25
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Synthesize attack flow using LLM (absorbed from AttackFlowSynthesizer).
+        
+        Args:
+            extraction_result: Result from LLM extraction
+            report_text: Original report text for context
+            max_steps: Maximum number of flow steps
+            
+        Returns:
+            Attack flow dictionary or None if synthesis fails
+        """
+        try:
+            # Prepare CTI data from extraction
+            cti_data = self._prepare_cti_data(extraction_result)
+            
+            # Build the prompt
+            prompt = self._build_flow_prompt(cti_data, report_text, max_steps)
+            
+            # Call LLM to generate flow
+            messages = [
+                {"role": "system", "content": "You are a CTI analyst creating chronological attack flows."},
+                {"role": "user", "content": prompt}
+            ]
+            
+            response = self.llm_client.call(
+                messages=messages,
+                tools=None  # No tools needed for flow generation
+            )
+            
+            # Parse and validate response
+            attack_flow = self._parse_llm_response(response["content"])
+            
+            # Validate flow references
+            if attack_flow:
+                attack_flow = self._validate_flow(attack_flow, cti_data)
+            
+            return attack_flow
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to synthesize attack flow: {e}")
+            return None
+    
+    def _prepare_cti_data(self, extraction_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Prepare CTI data structure from extraction results.
+        
+        Args:
+            extraction_result: Extraction results
+            
+        Returns:
+            Structured CTI data
+        """
+        cti_data = {
+            "claims": [],
+            "entities": {
+                "techniques": [],
+                "tools": [],
+                "malware": [],
+                "threat_actors": [],
+                "campaigns": []
+            },
+            "temporal": {}
+        }
+        
+        # Aggregate data from all chunks
+        if "chunks" in extraction_result:
+            for chunk in extraction_result["chunks"]:
+                if "claims" in chunk:
+                    cti_data["claims"].extend(chunk["claims"])
+                if "entities" in chunk:
+                    for key, values in chunk.get("entities", {}).items():
+                        if key in cti_data["entities"]:
+                            cti_data["entities"][key].extend(values)
+                if "temporal" in chunk:
+                    cti_data["temporal"].update(chunk["temporal"])
+        
+        # Also check top-level extraction_claims
+        if "extraction_claims" in extraction_result:
+            cti_data["claims"].extend(extraction_result["extraction_claims"])
+        
+        # Remove duplicates from entities
+        for key in cti_data["entities"]:
+            cti_data["entities"][key] = list(set(cti_data["entities"][key]))
+        
+        return cti_data
+    
+    def _build_flow_prompt(
+        self,
+        cti_data: Dict[str, Any],
+        report_text: str,
+        max_steps: int
+    ) -> str:
+        """
+        Build the attack flow generation prompt.
+        
+        Args:
+            cti_data: Structured CTI data
+            report_text: Report text
+            max_steps: Max flow steps
+            
+        Returns:
+            Formatted prompt
+        """
+        # Extract entities
+        entities = self._extract_entities(cti_data)
+        
+        # Extract claims with evidence
+        claims = self._extract_claims(cti_data)
+        
+        # Extract temporal info
+        temporal = cti_data.get("temporal", {})
+        
+        # Truncate report text if needed
+        report_truncated = report_text[:8000] + "..." if len(report_text) > 8000 else report_text
+        
+        prompt = """You are a senior CTI analyst creating a chronological MITRE ATT&CK flow diagram.
+
+Given the extracted CTI data and report text, create an ordered sequence of attack steps.
+
+## Attack Flow Requirements
+
+1. **Select Key Steps**: Choose up to {max_steps} pivotal steps from the CTI entities
+2. **Determine Order**: Use temporal phrases, causal relationships, and narrative flow
+3. **Reference Entities**: Every step must reference an existing technique, tool, or malware
+4. **Provide Evidence**: Each step needs a description and reason citing evidence
+5. **Handle Uncertainty**: If order is unclear, note uncertainty in reasoning
+
+## Step Schema
+
+Each step must include:
+- **order**: Integer starting at 1 (use gaps for parallel actions)
+- **entity**: Reference to technique/tool/malware with label and ID
+- **description**: What action was performed (≤120 chars)
+- **reason**: Why this step is positioned here (≤60 chars)
+
+## CTI Data
+
+Entities extracted:
+{entities}
+
+Claims with evidence:
+{claims}
+
+Temporal information:
+{temporal}
+
+## Report Text
+
+{report_text}
+
+Create a logical attack flow showing the sequence of techniques, tools, and infrastructure used.
+
+IMPORTANT:
+- Every step MUST reference real entities from the CTI data
+- Steps must be supported by evidence from claims or report text
+- Include the primary threat actor in the flow name
+- If confidence is low, mention uncertainty in notes
+
+Output as JSON matching the attack flow schema."""
+        
+        return prompt.format(
+            max_steps=max_steps,
+            entities=json.dumps(entities, indent=2),
+            claims=json.dumps(claims, indent=2),
+            temporal=json.dumps(temporal, indent=2),
+            report_text=report_truncated
+        )
+    
+    def _extract_entities(self, cti_data: Dict[str, Any]) -> Dict[str, List[str]]:
+        """Extract unique entities from CTI data."""
+        entities = {
+            "techniques": [],
+            "tools": [],
+            "malware": [],
+            "threat_actors": [],
+            "campaigns": []
+        }
+        
+        # From entities section
+        if "entities" in cti_data:
+            for key in entities.keys():
+                if key in cti_data["entities"]:
+                    entities[key] = list(set(cti_data["entities"][key]))
+        
+        # From claims
+        if "claims" in cti_data:
+            for claim in cti_data["claims"]:
+                # Extract techniques from mappings
+                for mapping in claim.get("mappings", []):
+                    if mapping.get("external_id"):
+                        tech_info = f"{mapping['external_id']}: {mapping.get('name', '')}"
+                        if tech_info not in entities["techniques"]:
+                            entities["techniques"].append(tech_info)
+                
+                # Extract actors
+                if claim.get("actor") and claim["actor"] not in entities["threat_actors"]:
+                    entities["threat_actors"].append(claim["actor"])
+                
+                # Extract tools/malware
+                if claim.get("tool"):
+                    tool = claim["tool"]
+                    if tool not in entities["tools"] and tool not in entities["malware"]:
+                        # Determine if malware or tool based on context
+                        if any(mal_ind in tool.lower() for mal_ind in ["trojan", "backdoor", "ransomware", "rat"]):
+                            entities["malware"].append(tool)
+                        else:
+                            entities["tools"].append(tool)
+        
+        return entities
+    
+    def _extract_claims(self, cti_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Extract key claims with evidence."""
+        claims = []
+        
+        if "claims" in cti_data:
+            for claim in cti_data["claims"][:30]:  # Limit to 30 claims
+                claim_summary = {
+                    "type": claim.get("type"),
+                    "text": claim.get("span", {}).get("text", "") if isinstance(claim.get("span"), dict) else claim.get("span", ""),
+                    "actor": claim.get("actor"),
+                    "technique": claim.get("technique"),
+                    "evidence": claim.get("evidence", [])[:2]  # Limit evidence
+                }
+                claims.append(claim_summary)
+        
+        return claims
+    
+    def _parse_llm_response(self, response: str) -> Optional[Dict[str, Any]]:
+        """Parse and validate LLM response."""
+        try:
+            # Try direct parse
+            try:
+                flow = json.loads(response)
+            except json.JSONDecodeError:
+                # Extract from code block
+                json_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', response, re.DOTALL)
+                if json_match:
+                    flow = json.loads(json_match.group(1))
+                else:
+                    # Try to find JSON object
+                    json_match = re.search(r'\{.*\}', response, re.DOTALL)
+                    if json_match:
+                        flow = json.loads(json_match.group(0))
+                    else:
+                        return None
+            
+            # Ensure required fields
+            if "flow" not in flow:
+                flow["flow"] = {
+                    "label": "AttackFlow",
+                    "pk": f"flow-{uuid.uuid4().hex[:8]}",
+                    "properties": {
+                        "name": "Unknown Attack Flow",
+                        "description": "Extracted attack sequence"
+                    }
+                }
+            
+            if "steps" not in flow:
+                flow["steps"] = []
+            
+            # Add missing step fields
+            for i, step in enumerate(flow["steps"]):
+                if "order" not in step:
+                    step["order"] = i + 1
+                if "entity" not in step:
+                    step["entity"] = {"label": "Technique", "pk": "unknown"}
+                if "description" not in step:
+                    step["description"] = "Unknown action"
+                if "reason" not in step:
+                    step["reason"] = "Sequence position"
+            
+            return flow
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to parse attack flow: {e}")
+            return None
+    
+    def _validate_flow(
+        self,
+        flow: Dict[str, Any],
+        cti_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Validate flow references against CTI data.
+        
+        Args:
+            flow: Generated attack flow
+            cti_data: Original CTI data for validation
+            
+        Returns:
+            Validated attack flow
+        """
+        # Extract valid entity IDs from CTI data
+        valid_techniques = set()
+        valid_tools = set()
+        
+        if "claims" in cti_data:
+            for claim in cti_data["claims"]:
+                for mapping in claim.get("mappings", []):
+                    if mapping.get("external_id"):
+                        valid_techniques.add(mapping["external_id"])
+                if claim.get("tool"):
+                    valid_tools.add(claim["tool"])
+        
+        # Validate each step
+        validated_steps = []
+        for step in flow.get("steps", []):
+            entity = step.get("entity", {})
+            
+            # Check if entity is valid
+            if entity.get("label") == "Technique":
+                # Try to match technique ID
+                pk = entity.get("pk", "")
+                if pk.startswith("T") and any(pk in tech for tech in valid_techniques):
+                    validated_steps.append(step)
+                elif len(validated_steps) < 5:  # Keep some steps even if not perfect match
+                    validated_steps.append(step)
+            elif entity.get("label") in ["Tool", "Malware"]:
+                # Check if tool/malware is mentioned
+                pk = entity.get("pk", "")
+                if pk in valid_tools or len(validated_steps) < 5:
+                    validated_steps.append(step)
+            else:
+                # Keep infrastructure and other types
+                validated_steps.append(step)
+        
+        flow["steps"] = validated_steps
+        
+        # Add validation note
+        if "notes" not in flow:
+            flow["notes"] = ""
+        flow["notes"] += f" Validated {len(validated_steps)} steps against CTI data."
+        
+        return flow
+    
+    def export_to_stix_attack_flow(
+        self,
+        flow_data: Dict[str, Any],
+        scope: str = "incident",
+        marking_refs: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Export flow to STIX Attack Flow 2.0 format (absorbed from AttackFlowGenerator).
+        
+        Args:
+            flow_data: Internal flow data
+            scope: Flow scope ("incident", "campaign", or "global")
+            marking_refs: Optional list of marking definition references
+            
+        Returns:
+            Valid Attack Flow 2.0 JSON bundle
+        """
+        # Initialize bundle
+        bundle_id = f"bundle--{uuid.uuid4()}"
+        flow_id = f"attack-flow--{uuid.uuid4()}"
+        
+        bundle = {
+            "type": "bundle",
+            "id": bundle_id,
+            "spec_version": "2.1",
+            "created": datetime.utcnow().isoformat() + "Z",
+            "modified": datetime.utcnow().isoformat() + "Z",
+            "objects": []
+        }
+        
+        # Create attack-flow object
+        flow_obj = {
+            "type": "attack-flow",
+            "id": flow_id,
+            "spec_version": "2.1",
+            "created": flow_data.get("created_at", datetime.utcnow().isoformat() + "Z"),
+            "modified": datetime.utcnow().isoformat() + "Z",
+            "name": flow_data.get("name", "Generated Attack Flow"),
+            "description": flow_data.get("description", f"Attack flow with {len(flow_data['actions'])} steps"),
+            "scope": scope,
+            "start_refs": [],
+            "created_by_ref": "identity--bandjacks-generator"
+        }
+        
+        # Add markings if provided
+        if marking_refs:
+            flow_obj["object_marking_refs"] = marking_refs
+        
+        # Add identity object
+        identity_obj = {
+            "type": "identity",
+            "id": "identity--bandjacks-generator",
+            "spec_version": "2.1",
+            "created": datetime.utcnow().isoformat() + "Z",
+            "modified": datetime.utcnow().isoformat() + "Z",
+            "name": "Bandjacks Attack Flow Generator",
+            "identity_class": "system"
+        }
+        bundle["objects"].append(identity_obj)
+        
+        # Create attack-action objects for techniques
+        action_stix_map = {}  # Map internal action_id to STIX action ID
+        for i, action in enumerate(flow_data["actions"]):
+            stix_action_id = f"attack-action--{uuid.uuid4()}"
+            action_stix_map[action["action_id"]] = stix_action_id
+            
+            # Look up technique details if available
+            technique_ref = action.get("attack_pattern_ref", action.get("technique_id", "unknown"))
+            technique_info = self._lookup_technique(technique_ref) if self.driver else {}
+            
+            action_obj = {
+                "type": "attack-action",
+                "id": stix_action_id,
+                "spec_version": "2.1",
+                "created": datetime.utcnow().isoformat() + "Z",
+                "modified": datetime.utcnow().isoformat() + "Z",
+                "name": action.get("name", technique_info.get("name", f"Action: {technique_ref}")),
+                "technique_id": technique_ref,
+                "description": (action.get("description", "") or technique_info.get("description", ""))[:500],
+                "confidence": int(action.get("confidence", 75)),
+                "execution_start": action.get("order", i),
+                "execution_end": action.get("order", i) + 1
+            }
+            
+            # Add tactic references if available
+            if technique_info.get("tactics"):
+                action_obj["tactic_refs"] = [f"x-mitre-tactic--{t}" for t in technique_info["tactics"]]
+            
+            # Add to start_refs if it's the first action
+            if i == 0:
+                flow_obj["start_refs"].append(stix_action_id)
+            
+            bundle["objects"].append(action_obj)
+        
+        # Create relationships for edges
+        for edge in flow_data.get("edges", []):
+            if edge["source"] in action_stix_map and edge["target"] in action_stix_map:
+                relationship = {
+                    "type": "relationship",
+                    "id": f"relationship--{uuid.uuid4()}",
+                    "spec_version": "2.1",
+                    "created": datetime.utcnow().isoformat() + "Z",
+                    "modified": datetime.utcnow().isoformat() + "Z",
+                    "relationship_type": "followed-by",
+                    "source_ref": action_stix_map[edge["source"]],
+                    "target_ref": action_stix_map[edge["target"]],
+                    "confidence": int(edge.get("probability", 0.5) * 100),
+                    "x_rationale": edge.get("rationale", "sequential")
+                }
+                bundle["objects"].append(relationship)
+        
+        # Add the flow object
+        bundle["objects"].append(flow_obj)
+        
+        # Validate the bundle
+        is_valid, errors = self.validator.validate(bundle)
+        if not is_valid:
+            print(f"Warning: Generated Attack Flow has validation issues: {errors}")
+        
+        return bundle
+    
+    def _lookup_technique(self, technique_id: str) -> Dict[str, Any]:
+        """
+        Look up technique details from Neo4j.
+        
+        Args:
+            technique_id: Technique STIX ID or external ID
+            
+        Returns:
+            Technique info dict
+        """
+        if not self.driver:
+            return {}
+        
+        with self.driver.session() as session:
+            # Try STIX ID first
+            if technique_id.startswith("attack-pattern--"):
+                result = session.run(
+                    """
+                    MATCH (t:AttackPattern {stix_id: $id})
+                    OPTIONAL MATCH (t)-[:HAS_TACTIC]->(tac:Tactic)
+                    RETURN t.name as name, t.description as description,
+                           collect(DISTINCT tac.shortname) as tactics
+                    """,
+                    id=technique_id
+                )
+            else:
+                # Try external ID
+                result = session.run(
+                    """
+                    MATCH (t:AttackPattern)
+                    WHERE t.external_id = $id OR $id IN t.external_ids
+                    OPTIONAL MATCH (t)-[:HAS_TACTIC]->(tac:Tactic)
+                    RETURN t.name as name, t.description as description,
+                           collect(DISTINCT tac.shortname) as tactics
+                    LIMIT 1
+                    """,
+                    id=technique_id
+                )
+            
+            record = result.single()
+            if record:
+                return {
+                    "name": record["name"],
+                    "description": record["description"],
+                    "tactics": record["tactics"]
+                }
+        
+        return {}
     
     def close(self):
         """Close Neo4j connection."""

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { typedApi } from "@/lib/api-client";
@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 
-export default function DetectionStrategiesPage() {
+function DetectionStrategiesContent() {
   const searchParams = useSearchParams();
   const techniqueFilter = searchParams.get("technique");
   
@@ -252,5 +252,17 @@ export default function DetectionStrategiesPage() {
         </Card>
       )}
     </div>
+  );
+}
+
+export default function DetectionStrategiesPage() {
+  return (
+    <Suspense fallback={
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    }>
+      <DetectionStrategiesContent />
+    </Suspense>
   );
 }

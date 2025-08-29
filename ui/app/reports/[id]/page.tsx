@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { useParams, useRouter } from "next/navigation";
 import {
@@ -106,7 +107,23 @@ export default function ReportDetailPage() {
   const fetchReport = async () => {
     try {
       const data = await typedApi.reports.get(reportId);
-      setReport(data);
+      // API returns { report: {...}, entities: {...}, campaign: {...} }
+      // Extract and merge the data for the component
+      const reportWithEntities = {
+        ...data.report,
+        id: data.report.stix_id, // Map stix_id to id
+        entities: data.entities,
+        campaign: data.campaign,
+        // Map entities to relationships format expected by UI
+        relationships: {
+          describes: [
+            ...(data.entities?.attack_patterns || []),
+            ...(data.entities?.intrusion_sets || []),
+            ...(data.entities?.software || [])
+          ]
+        }
+      };
+      setReport(reportWithEntities);
     } catch (error: any) {
       console.error("Error fetching report:", error);
       toast({
@@ -220,6 +237,17 @@ export default function ReportDetailPage() {
           )}
         </div>
         <div className="flex flex-col gap-2 items-end">
+          {/* Review button for pending extraction results */}
+          {report.x_bj_provenance?.extraction_method && techniques.length > 0 && (
+            <Button
+              onClick={() => router.push(`/reports/${report.id}/review`)}
+              variant="default"
+              className="flex items-center gap-2"
+            >
+              <Shield className="h-4 w-4" />
+              Review Extraction ({techniques.length} techniques)
+            </Button>
+          )}
           {campaigns.length > 0 && (
             <Link href={`/campaigns/${campaigns[0].id}`}>
               <Badge variant="outline" className="cursor-pointer hover:bg-muted">
@@ -287,7 +315,7 @@ export default function ReportDetailPage() {
           <CardContent>
             <div className="text-sm font-medium">
               {report.published 
-                ? format(new Date(report.published), "MMM d, yyyy")
+                ? (report.published ? format(new Date(report.published), "MMM d, yyyy") : "N/A")
                 : "Unknown"}
             </div>
             <p className="text-xs text-muted-foreground">
@@ -304,7 +332,7 @@ export default function ReportDetailPage() {
           <CardContent>
             <div className="text-sm font-medium">
               {report.x_bj_provenance?.extracted_at 
-                ? format(new Date(report.x_bj_provenance.extracted_at), "MMM d, yyyy")
+                ? (report.x_bj_provenance.extracted_at ? format(new Date(report.x_bj_provenance.extracted_at), "MMM d, yyyy") : "N/A")
                 : "Manual"}
             </div>
             <p className="text-xs text-muted-foreground">
@@ -622,7 +650,7 @@ export default function ReportDetailPage() {
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span>Report ID: {report.id}</span>
             <span>STIX {report.spec_version}</span>
-            <span>Modified: {format(new Date(report.modified), "MMM d, yyyy HH:mm")}</span>
+            <span>Modified: {report.modified ? format(new Date(report.modified), "MMM d, yyyy HH:mm") : "N/A"}</span>
           </div>
         </CardContent>
       </Card>

@@ -1,537 +1,287 @@
-"""Report ingestion API endpoints with agentic_v2_optimized integration."""
+"""Consolidated report management endpoints.
 
-import logging
-import hashlib
+This module combines all report-related functionality:
+- Ingestion (sync/async)
+- Retrieval and search
+- Review workflow
+- Attribution management
+- Flow generation
+- Job management
+"""
+
+import os
+import uuid
 import json
-from typing import Dict, Any, List, Optional, Tuple, Literal
-from datetime import datetime
-from uuid import uuid4
 import asyncio
+import logging
+import tempfile
+import shutil
+from typing import Dict, Any, List, Optional, Set, Tuple
+from datetime import datetime, timedelta
 from pathlib import Path
+import httpx
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, status
+from opensearchpy import OpenSearch
 from pydantic import BaseModel, Field
-import pdfplumber
-from neo4j import GraphDatabase
+from neo4j import Session
 
-from bandjacks.llm.agentic_v2_optimized import run_agentic_v2_optimized
-from bandjacks.llm.chunked_extractor import extract_chunked
-from bandjacks.llm.tracker import ExtractionTracker
-from bandjacks.llm.bundle_validator import validate_bundle_for_upsert
+from bandjacks.services.api.deps import get_neo4j_session, get_opensearch_client
+from bandjacks.services.api.settings import settings
+from bandjacks.services.api.job_store import get_job_store
 from bandjacks.store.report_store import ReportStore
 from bandjacks.store.campaign_store import CampaignStore
-from bandjacks.services.api.settings import settings
-from bandjacks.services.api.deps import get_neo4j_session
+from bandjacks.store.opensearch_report_store import OpenSearchReportStore
+# Legacy import removed - using extraction_pipeline instead
+from bandjacks.llm.flow_builder import FlowBuilder
 
 logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/reports", tags=["reports"])
 
-
-class ReportSDO(BaseModel):
-    """STIX Report object."""
-    type: Literal["report"] = "report"
-    spec_version: Literal["2.1"] = "2.1"
-    id: Optional[str] = Field(None, description="STIX ID (auto-generated if not provided)")
-    name: str = Field(..., description="Report name/title")
-    description: Optional[str] = Field(None, description="Report description")
-    published: Optional[str] = Field(None, description="Publication date (ISO 8601)")
-    created: Optional[str] = Field(None, description="Creation timestamp (ISO 8601)")
-    modified: Optional[str] = Field(None, description="Last modified timestamp (ISO 8601)")
-    object_refs: List[str] = Field(default_factory=list, description="Referenced STIX objects")
-    external_references: List[Dict[str, Any]] = Field(default_factory=list)
-    object_marking_refs: List[str] = Field(default_factory=list)
-    x_bj_provenance: Optional[Dict[str, Any]] = Field(None, description="Bandjacks provenance")
+# Job store is now handled by FileJobStore for persistence across workers
 
 
-class IngestConfig(BaseModel):
-    """Configuration for report ingestion."""
-    use_batch_mapper: bool = Field(True, description="Use optimized batch mapper")
-    skip_verification: bool = Field(False, description="Skip evidence verification for speed")
-    force_provisional_campaign: bool = Field(False, description="Force campaign creation even if rubric not met")
-    disable_targeted_extraction: bool = Field(True, description="Skip second pass extraction")
-    max_spans: int = Field(10, description="Maximum spans to process")
-    confidence_threshold: float = Field(50.0, description="Minimum confidence for extraction")
-    auto_generate_flow: bool = Field(True, description="Auto-generate Attack Flow if techniques found")
-
+# ============================================================================
+# SCHEMA DEFINITIONS
+# ============================================================================
 
 class IngestRequest(BaseModel):
     """Request for report ingestion."""
-    report_sdo: Optional[ReportSDO] = Field(None, description="STIX Report object")
-    file_url: Optional[str] = Field(None, description="URL to file for extraction")
-    inline_text: Optional[str] = Field(None, description="Inline text content")
-    config: IngestConfig = Field(default_factory=IngestConfig)
-
-
-class RubricEvidence(BaseModel):
-    """Evidence details for rubric evaluation."""
-    time_bounds_detected: List[Dict[str, Any]] = Field(default_factory=list, description="Time bounds found")
-    distinct_techniques: List[str] = Field(default_factory=list, description="Unique techniques identified")
-    intrusion_sets: List[Dict[str, Any]] = Field(default_factory=list, description="Intrusion sets with confidence")
-    sequence_cues: List[str] = Field(default_factory=list, description="Sequential indicators found")
-    confidence_scores: Dict[str, float] = Field(default_factory=dict, description="Entity confidence scores")
-
-
-class RubricDecision(BaseModel):
-    """Campaign creation rubric evaluation."""
-    time_bounded: bool = Field(False, description="Has first_seen/last_seen")
-    operational_scope: bool = Field(False, description="Multiple techniques detected")
-    attribution_present: bool = Field(False, description="IntrusionSet identified")
-    multi_step_activity: bool = Field(False, description="Sequenced activity detected")
-    first_seen: Optional[str] = None
-    last_seen: Optional[str] = None
-    criteria_met: int = Field(0, description="Number of criteria met")
-    created_campaign: bool = Field(False, description="Whether campaign was created")
-    reason: Optional[str] = None
+    text: Optional[str] = Field(None, description="Text content to ingest")
+    url: Optional[str] = Field(None, description="URL to fetch and ingest")
+    name: Optional[str] = Field(None, description="Report name")
+    use_batch_mapper: bool = Field(True, description="Use batch mapper for extraction")
+    skip_verification: bool = Field(False, description="Skip verification")
+    webhook_url: Optional[str] = Field(None, description="Webhook URL for async notifications")
 
 
 class IngestResponse(BaseModel):
     """Response from report ingestion."""
+    report_id: str = Field(..., description="Generated report ID")
+    provisional: bool = Field(..., description="Whether report is provisional")
+    rubric: Any = Field(..., description="Quality rubric")
+    rubric_evidence: Dict[str, Any] = Field(..., description="Evidence for rubric")
+    entities: Dict[str, Any] = Field(..., description="Extracted entities")
+    trace_id: str = Field(..., description="Trace ID for debugging")
+    extraction_metrics: Dict[str, Any] = Field(..., description="Extraction metrics")
+
+
+class ReportGetResponse(BaseModel):
+    """Report retrieval response."""
     report_id: str
-    campaign_id: Optional[str] = None
-    flow_id: Optional[str] = None
-    provisional: bool = False
-    rubric: RubricDecision
-    rubric_evidence: RubricEvidence
-    object_refs: List[str]
-    entities: Dict[str, List[str]]
-    rejected: List[Dict[str, str]]
-    warnings: List[str]
-    trace_id: str
-    extraction_metrics: Dict[str, Any]
+    name: str
+    description: str
+    created: str
+    modified: str
+    status: str
+    extraction: Optional[Dict[str, Any]] = None
+    review: Optional[Dict[str, Any]] = None
+    attribution: Optional[Dict[str, Any]] = None
 
 
-def extract_text_from_pdf(file_path: str) -> str:
-    """Extract text from PDF file."""
-    try:
-        text_parts = []
-        with pdfplumber.open(file_path) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if text:
-                    text_parts.append(text)
-        return "\n\n".join(text_parts)
-    except Exception as e:
-        logger.error(f"Failed to extract PDF text: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to extract PDF text: {str(e)}")
+class CampaignMergeRequest(BaseModel):
+    """Request to merge reports into a campaign."""
+    report_ids: List[str] = Field(..., description="Report IDs to merge")
+    campaign_name: str = Field(..., description="Campaign name")
+    campaign_description: Optional[str] = Field(None, description="Campaign description")
+    confidence_threshold: float = Field(0.7, description="Confidence threshold")
 
 
-def evaluate_campaign_rubric(
-    claims: List[Dict[str, Any]], 
-    force_provisional: bool = False
-) -> Tuple[RubricDecision, RubricEvidence]:
-    """
-    Evaluate whether to create a campaign based on extraction results.
-    
-    Criteria (need ≥2 for campaign):
-    1. Time-bounded: first_seen/last_seen present
-    2. Operational scope: Multiple techniques
-    3. Attribution: IntrusionSet identified
-    4. Multi-step: Sequence detected
-    """
-    decision = RubricDecision()
-    evidence = RubricEvidence()
-    
-    # Check for time bounds
-    timestamps = []
-    for claim in claims:
-        if claim.get("first_seen") or claim.get("last_seen"):
-            time_bound = {
-                "text": claim.get("text", ""),
-                "first_seen": claim.get("first_seen"),
-                "last_seen": claim.get("last_seen")
-            }
-            evidence.time_bounds_detected.append(time_bound)
-            if claim.get("first_seen"):
-                timestamps.append(claim["first_seen"])
-            if claim.get("last_seen"):
-                timestamps.append(claim["last_seen"])
-    
-    if timestamps:
-        decision.time_bounded = True
-        decision.first_seen = min(timestamps)
-        decision.last_seen = max(timestamps)
-    
-    # Check operational scope (multiple techniques)
-    techniques = {c.get("technique_id") for c in claims if c.get("technique_id")}
-    evidence.distinct_techniques = list(techniques)
-    if len(techniques) >= 2:
-        decision.operational_scope = True
-    
-    # Check attribution
-    for claim in claims:
-        if claim.get("intrusion_set"):
-            evidence.intrusion_sets.append({
-                "name": claim["intrusion_set"],
-                "confidence": claim.get("confidence", 0.5),
-                "evidence": claim.get("evidence", {})
-            })
-            evidence.confidence_scores[claim["intrusion_set"]] = claim.get("confidence", 0.5)
-    
-    if evidence.intrusion_sets:
-        decision.attribution_present = True
-    
-    # Check for multi-step activity (sequence indicators)
-    sequence_indicators = ["then", "followed by", "next", "after", "subsequently", "before", "during", "while"]
-    full_text = " ".join(c.get("text", "") for c in claims).lower()
-    for indicator in sequence_indicators:
-        if indicator in full_text:
-            evidence.sequence_cues.append(indicator)
-    
-    if evidence.sequence_cues:
-        decision.multi_step_activity = True
-    
-    # Count criteria met
-    criteria = [
-        decision.time_bounded,
-        decision.operational_scope,
-        decision.attribution_present,
-        decision.multi_step_activity
-    ]
-    decision.criteria_met = sum(criteria)
-    
-    # Decision: create campaign if ≥2 criteria OR forced
-    if decision.criteria_met >= 2 or force_provisional:
-        decision.created_campaign = True
-        if force_provisional and decision.criteria_met < 2:
-            decision.reason = f"Provisional campaign (forced): {decision.criteria_met}/4 criteria met"
-        else:
-            decision.reason = f"Campaign created: {decision.criteria_met}/4 criteria met"
-    else:
-        decision.created_campaign = False
-        decision.reason = f"Campaign not created: only {decision.criteria_met}/4 criteria met"
-    
-    return decision, evidence
+class ReviewSubmission(BaseModel):
+    """Review submission for a report."""
+    reviewer_id: str = Field(..., description="Reviewer ID")
+    technique_actions: List[Dict[str, Any]] = Field(..., description="Review actions for techniques")
+    notes: Optional[str] = Field(None, description="Review notes")
 
 
-def create_stix_bundle(
-    report: ReportSDO,
-    extraction_results: Dict[str, Any],
-    rubric: RubricDecision,
-    rubric_evidence: RubricEvidence,
-    campaign_id: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Create STIX bundle with proper relationships per relationships_annotation.md.
-    Report uses object_refs[] to reference objects, not 'describes' relationships.
-    """
-    bundle = {
-        "type": "bundle",
-        "id": f"bundle--{uuid4()}",
-        "objects": []
-    }
-    
-    # Will track all referenced object IDs for Report.object_refs[]
-    referenced_ids = []
-    
-    # Add Report SDO (will be updated with object_refs at the end)
-    report_dict = report.dict(exclude_none=True)
-    if not report_dict.get("id"):
-        report_dict["id"] = f"report--{uuid4()}"
-    
-    # Ensure required STIX timestamps are present
-    now_iso = datetime.utcnow().isoformat() + "Z"
-    if not report_dict.get("created"):
-        report_dict["created"] = now_iso
-    if not report_dict.get("modified"):
-        report_dict["modified"] = now_iso
-    
-    # Add provenance
-    report_dict["x_bj_provenance"] = {
-        "extraction_method": "agentic_v2_optimized",
-        "extracted_at": datetime.utcnow().isoformat(),
-        "rubric_evaluation": rubric.dict(),
-        "rubric_evidence": rubric_evidence.dict()
-    }
-    
-    report_id = report_dict["id"]
-    
-    # Extract entities from claims
-    techniques = []
-    intrusion_sets = []
-    software = []
-    relationships = []
-    
-    for claim in extraction_results.get("claims", []):
-        # Add AttackPattern
-        if claim.get("technique_id"):
-            technique = {
-                "type": "attack-pattern",
-                "spec_version": "2.1",
-                "id": f"attack-pattern--{uuid4()}",
-                "name": claim.get("technique_name", claim["technique_id"]),
-                "created": now_iso,
-                "modified": now_iso,
-                "external_references": [{
-                    "source_name": "mitre-attack",
-                    "external_id": claim["technique_id"],
-                    "url": f"https://attack.mitre.org/techniques/{claim['technique_id'].replace('.', '/')}/"
-                }],
-                "x_bj_provenance": {
-                    "evidence": claim.get("evidence", {}),
-                    "confidence": claim.get("confidence", 0.5)
-                }
-            }
-            techniques.append(technique)
-            bundle["objects"].append(technique)
-            referenced_ids.append(technique["id"])  # Add to Report's object_refs
-        
-        # Add IntrusionSet if present
-        if claim.get("intrusion_set"):
-            intrusion_set = {
-                "type": "intrusion-set",
-                "spec_version": "2.1",
-                "id": f"intrusion-set--{uuid4()}",
-                "name": claim["intrusion_set"],
-                "x_bj_provenance": {
-                    "evidence": claim.get("evidence", {}),
-                    "confidence": claim.get("confidence", 0.5)
-                }
-            }
-            intrusion_sets.append(intrusion_set)
-            bundle["objects"].append(intrusion_set)
-            referenced_ids.append(intrusion_set["id"])  # Add to Report's object_refs
-    
-    # Create Campaign if rubric met
-    if rubric.created_campaign:
-        campaign = {
-            "type": "campaign",
-            "spec_version": "2.1",
-            "id": campaign_id or f"campaign--{uuid4()}",
-            "name": f"Campaign from {report.name}",
-            "description": f"Campaign extracted from report: {report.name}",
-            "created": now_iso,
-            "modified": now_iso
-        }
-        
-        if rubric.first_seen:
-            campaign["first_seen"] = rubric.first_seen
-        if rubric.last_seen:
-            campaign["last_seen"] = rubric.last_seen
-        
-        # Mark as provisional if forced
-        if rubric.criteria_met < 2:
-            campaign["x_bj_status"] = "provisional"
-        
-        bundle["objects"].append(campaign)
-        referenced_ids.append(campaign["id"])  # Add to Report's object_refs
-        
-        # Create ATTRIBUTED_TO relationships
-        for intrusion_set in intrusion_sets:
-            relationships.append({
-                "type": "relationship",
-                "spec_version": "2.1",
-                "id": f"relationship--{uuid4()}",
-                "relationship_type": "attributed-to",
-                "source_ref": campaign["id"],
-                "target_ref": intrusion_set["id"],
-                "created": now_iso,
-                "modified": now_iso
-            })
-        
-        # Create USES relationships for techniques
-        for technique in techniques:
-            relationships.append({
-                "type": "relationship",
-                "spec_version": "2.1",
-                "id": f"relationship--{uuid4()}",
-                "relationship_type": "uses",
-                "source_ref": campaign["id"],
-                "target_ref": technique["id"],
-                "created": now_iso,
-                "modified": now_iso
-            })
-    
-    # Add all relationships to bundle
-    bundle["objects"].extend(relationships)
-    
-    # Set Report's object_refs to all referenced objects (not including relationships)
-    report_dict["object_refs"] = referenced_ids
-    
-    # Add the Report to the bundle (with object_refs populated)
-    bundle["objects"].insert(0, report_dict)
-    
-    return bundle
+class ApprovalRequest(BaseModel):
+    """Report approval request."""
+    reviewer_id: str = Field(..., description="Reviewer ID")
+    upsert_to_graph: bool = Field(False, description="Upsert to Neo4j")
+    generate_flow: bool = Field(False, description="Generate attack flow")
 
+
+class JobStatusResponse(BaseModel):
+    """Job status response."""
+    job_id: str
+    status: str
+    progress: int
+    message: str
+    created_at: str
+    completed_at: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    file_name: Optional[str] = None
+    file_size: Optional[int] = None
+
+
+class JobListResponse(BaseModel):
+    """Job list response."""
+    jobs: List[Dict[str, Any]]
+    total: int
+
+
+class AttributionRequest(BaseModel):
+    """Attribution update request."""
+    intrusion_sets: List[str] = Field(..., description="Intrusion set IDs")
+    malware: List[str] = Field(..., description="Malware IDs")
+    confidence: float = Field(..., description="Attribution confidence")
+    notes: Optional[str] = Field(None, description="Attribution notes")
+
+
+class ReportListItem(BaseModel):
+    """Report list item."""
+    report_id: str
+    name: str
+    description: str
+    created: Optional[str] = None
+    modified: Optional[str] = None
+    status: str
+    extraction_status: Optional[str] = None
+    techniques_count: int = 0
+    claims_count: int = 0
+    confidence_avg: float = 0.0
+    has_campaign: bool = False
+    has_flow: bool = False
+    reviewed_at: Optional[str] = None
+    approved_at: Optional[str] = None
+
+
+class ReportsListResponse(BaseModel):
+    """Reports list response."""
+    reports: List[ReportListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+# ============================================================================
+# SECTION 1: INGESTION ENDPOINTS (SYNC & ASYNC)
+# ============================================================================
 
 @router.post(
     "/ingest",
     response_model=IngestResponse,
     operation_id="ingestReport",
-    summary="Ingest Report with Extraction",
-    description="""
-    Ingest a threat intelligence report, extract entities using agentic_v2_optimized,
-    apply campaign creation rubric, and create STIX objects with proper relationships.
-    
-    The extraction pipeline will:
-    1. Extract text from PDF/document if needed
-    2. Run agentic_v2_optimized for technique extraction
-    3. Apply campaign creation rubric (≥2 criteria needed)
-    4. Create STIX bundle with relationships per spec
-    5. Validate and upsert to graph
-    """
+    summary="Ingest Report",
+    description="Ingest a threat intelligence report from text or URL (synchronous)."
 )
 async def ingest_report(request: IngestRequest):
-    """Ingest report with full extraction pipeline."""
+    """Synchronous report ingestion from text or URL."""
     
-    trace_id = f"trace-{uuid4()}"
-    logger.info(f"Starting report ingestion: {trace_id}")
+    trace_id = str(uuid.uuid4())[:8]
     
     try:
         # Get text content
-        if request.inline_text:
-            text_content = request.inline_text
-        elif request.file_url:
-            # TODO: Implement file download and extraction
-            raise HTTPException(status_code=501, detail="File URL extraction not yet implemented")
+        if request.text:
+            text_content = request.text
+            source_info = {"type": "inline"}
+        elif request.url:
+            # URL ingestion not currently supported
+            raise HTTPException(status_code=400, detail="URL ingestion not currently implemented")
         else:
-            raise HTTPException(status_code=400, detail="Either inline_text or file_url must be provided")
+            raise HTTPException(status_code=400, detail="Either text or url must be provided")
         
-        # Create or use provided Report SDO
-        if not request.report_sdo:
-            request.report_sdo = ReportSDO(
-                name="Extracted Report",
-                description="Auto-generated report from extraction",
-                published=datetime.utcnow().isoformat()
+        # Check content size and redirect to async if too large
+        if len(text_content) > 5000:
+            return HTTPException(
+                status_code=400,
+                detail="Content too large for synchronous processing. Use /ingest_async endpoint."
             )
         
-        # Run extraction with chunked extractor for large documents
-        tracker = ExtractionTracker()
-        config = request.config.dict()
-        
-        logger.info(f"Running extraction on text ({len(text_content)} chars)")
-        
-        # Use chunked extraction for large documents
-        if len(text_content) > 5000:  # Threshold for chunked processing
-            logger.info("Using chunked extraction for large document")
-            extraction_results = extract_chunked(
-                text=text_content,
-                config=config,
-                chunk_size=3000,
-                overlap=200,
-                max_chunks=10,
-                parallel=True
-            )
-        else:
-            # Use regular extraction for small documents
-            extraction_results = run_agentic_v2_optimized(
-                report_text=text_content,
-                config=config,
-                tracker=tracker
-            )
-        
-        logger.info(f"Extraction complete: {len(extraction_results.get('claims', []))} claims found")
-        
-        # Evaluate campaign rubric
-        claims = extraction_results.get("claims", [])
-        logger.info(f"Extraction returned: {json.dumps(extraction_results, default=str)[:500]}")
-        rubric, rubric_evidence = evaluate_campaign_rubric(claims, request.config.force_provisional_campaign)
-        
-        # Create STIX bundle
-        bundle = create_stix_bundle(
-            request.report_sdo,
-            extraction_results,
-            rubric,
-            rubric_evidence
-        )
-        
-        logger.info(f"Bundle created with {len(bundle.get('objects', []))} objects")
-        if bundle.get('objects'):
-            report_obj = bundle['objects'][0]
-            logger.info(f"Report object_refs: {len(report_obj.get('object_refs', []))} items")
-        
-        # Validate bundle
-        is_valid, validation_errors = validate_bundle_for_upsert(bundle)
-        if not is_valid:
-            logger.error(f"Bundle validation failed: {validation_errors}")
-            raise HTTPException(status_code=400, detail=f"Invalid STIX bundle: {'; '.join(validation_errors)}")
-        
-        # Upsert to graph
-        report_store = ReportStore(
-            neo4j_uri=settings.neo4j_uri,
-            neo4j_user=settings.neo4j_user,
-            neo4j_password=settings.neo4j_password
-        )
-        
-        upsert_result = report_store.upsert_bundle(bundle)
-        report_store.close()
-        
-        # Prepare response
-        report_id = bundle["objects"][0]["id"]
-        campaign_id = None
-        flow_id = None
-        
-        # Find campaign if created
-        for obj in bundle["objects"]:
-            if obj["type"] == "campaign":
-                campaign_id = obj["id"]
-                break
-        
-        # Extract entity lists
-        entities = {
-            "describes": [],
-            "intrusion_sets": [],
-            "software": [],
-            "attack_patterns": []
+        # Extract techniques using unified pipeline
+        from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
+        config = {
+            "use_batch_mapper": request.use_batch_mapper,
+            "use_batch_retriever": True,  # Always use batch retriever for performance
+            "skip_verification": request.skip_verification,
+            "max_spans": 20,
+            "disable_discovery": False,
+            "disable_targeted_extraction": True
         }
         
-        for obj in bundle["objects"]:
-            if obj["type"] == "attack-pattern":
-                entities["attack_patterns"].append(obj["id"])
-                entities["describes"].append(obj["id"])
-            elif obj["type"] == "intrusion-set":
-                entities["intrusion_sets"].append(obj["id"])
-                entities["describes"].append(obj["id"])
-            elif obj["type"] in ["tool", "malware"]:
-                entities["software"].append(obj["id"])
-                entities["describes"].append(obj["id"])
-        
-        # Get extraction metrics
-        metrics = tracker.snapshot()
-        metrics["duration_ms"] = metrics.get("total_time", 0) * 1000
-        metrics["spans_found"] = len(extraction_results.get("spans", []))
-        metrics["techniques_extracted"] = len(entities["attack_patterns"])
-        metrics["confidence_avg"] = sum(c.get("confidence", 0) for c in claims) / max(1, len(claims))
-        
-        # Get object_refs from the report in the bundle
-        report_obj = bundle["objects"][0]
-        object_refs = report_obj.get("object_refs", [])
-        
-        return IngestResponse(
-            report_id=report_id,
-            campaign_id=campaign_id,
-            flow_id=flow_id,
-            provisional=rubric.criteria_met < 2 and rubric.created_campaign,
-            rubric=rubric,
-            rubric_evidence=rubric_evidence,
-            object_refs=object_refs,
-            entities=entities,
-            rejected=upsert_result.get("rejected", []),
-            warnings=upsert_result.get("warnings", []),
-            trace_id=trace_id,
-            extraction_metrics=metrics
+        # Run extraction pipeline
+        pipeline_results = run_extraction_pipeline(
+            report_text=text_content,
+            config=config,
+            source_id=f"report--{uuid.uuid4()}"
         )
         
-    except HTTPException:
-        raise
+        # Extract results in expected format
+        extraction_results = {
+            "techniques": pipeline_results.get("techniques", {}),
+            "techniques_count": pipeline_results.get("techniques_count", pipeline_results.get("technique_count", 0)),
+            "claims": pipeline_results.get("claims", []),
+            "entities": pipeline_results.get("entities", {}),
+            "metrics": pipeline_results.get("metrics", {})
+        }
+        
+        # Create report SDO
+        report_name = request.name or f"Report {datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        report_sdo = {
+            "type": "report",
+            "id": f"report--{uuid.uuid4()}",
+            "name": report_name,
+            "description": text_content[:500],
+            "published": datetime.utcnow().isoformat() + "Z",
+            "object_refs": []
+        }
+        
+        # Evaluate rubric
+        rubric = evaluate_rubric(extraction_results)
+        rubric_evidence = generate_rubric_evidence(extraction_results, rubric)
+        
+        # Create bundle
+        bundle = create_stix_bundle(report_sdo, extraction_results, rubric, rubric_evidence)
+        
+        # Save to OpenSearch
+        os_client = get_opensearch_client()
+        os_store = OpenSearchReportStore(os_client)
+        
+        os_store.save_report(
+            report_id=report_sdo["id"],
+            job_id=trace_id,
+            report_data=report_sdo,
+            extraction_result={
+                "techniques_count": extraction_results.get("techniques_count", 0),
+                "claims_count": len(extraction_results.get("claims", [])),
+                "bundle_preview": bundle,
+                "extraction_claims": extraction_results.get("claims", [])
+            },
+            source_info=source_info,
+            raw_text=text_content,
+            text_chunks=create_text_chunks(text_content)
+        )
+        
+        return IngestResponse(
+            report_id=report_sdo["id"],
+            provisional=rubric.criteria_met < 2,
+            rubric={"criteria_met": rubric.criteria_met},
+            rubric_evidence=rubric_evidence,
+            entities=extraction_results.get("entities", {}),
+            trace_id=trace_id,
+            extraction_metrics=extraction_results.get("metrics", {})
+        )
+        
     except Exception as e:
-        logger.error(f"Report ingestion failed ({trace_id}): {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
+        logger.error(f"Report ingestion failed ({trace_id}): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post(
     "/ingest/upload",
     response_model=IngestResponse,
     operation_id="ingestReportUpload",
-    summary="Ingest Report from File Upload",
-    description="Upload a PDF/TXT/MD file for extraction and ingestion."
+    summary="Ingest Report from File",
+    description="Upload a PDF/TXT/MD file for extraction (synchronous)."
 )
 async def ingest_report_upload(
     file: UploadFile = File(...),
     use_batch_mapper: bool = Form(True),
-    skip_verification: bool = Form(False),
-    force_provisional_campaign: bool = Form(False)
+    skip_verification: bool = Form(False)
 ):
-    """Handle file upload for report ingestion."""
+    """Synchronous report ingestion from file upload."""
     
     # Validate file type
     allowed_types = {".pdf", ".txt", ".md", ".markdown"}
@@ -539,107 +289,1038 @@ async def ingest_report_upload(
     if file_ext not in allowed_types:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {file_ext}. Allowed: {', '.join(allowed_types)}"
+            detail=f"Unsupported file type: {file_ext}"
         )
     
-    try:
-        # Save uploaded file temporarily
-        temp_path = f"/tmp/upload_{uuid4()}{file_ext}"
-        with open(temp_path, "wb") as f:
-            content = await file.read()
-            f.write(content)
-        
-        # Extract text based on file type
-        if file_ext == ".pdf":
-            text_content = extract_text_from_pdf(temp_path)
-        else:
-            text_content = content.decode("utf-8")
-        
-        # Clean up temp file
-        Path(temp_path).unlink(missing_ok=True)
-        
-        # Create ingestion request
-        request = IngestRequest(
-            report_sdo=ReportSDO(
-                name=file.filename,
-                description=f"Uploaded report: {file.filename}",
-                published=datetime.utcnow().isoformat()
-            ),
-            inline_text=text_content,
-            config=IngestConfig(
-                use_batch_mapper=use_batch_mapper,
-                skip_verification=skip_verification,
-                force_provisional_campaign=force_provisional_campaign
-            )
-        )
-        
-        # Process ingestion
-        return await ingest_report(request)
-        
-    except Exception as e:
-        logger.error(f"File upload ingestion failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Upload processing failed: {str(e)}")
-
-
-@router.get(
-    "/{report_id}",
-    operation_id="getReport",
-    summary="Get Report Details",
-    description="Get report with linked entities and campaign decision."
-)
-async def get_report(report_id: str):
-    """Get report details with relationships."""
+    # Process file
+    content = await file.read()
     
-    try:
-        report_store = ReportStore(
-            neo4j_uri=settings.neo4j_uri,
-            neo4j_user=settings.neo4j_user,
-            neo4j_password=settings.neo4j_password
+    if file_ext == ".pdf":
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        try:
+            text_content = load_pdf_text(tmp_path)
+        finally:
+            os.unlink(tmp_path)
+    else:
+        text_content = content.decode("utf-8", errors="ignore")
+    
+    # Check size and redirect if needed
+    if len(text_content) > 5000:
+        raise HTTPException(
+            status_code=400,
+            detail="File too large for synchronous processing. Use /ingest_file_async endpoint."
         )
-        
-        report = report_store.get_report_with_relationships(report_id)
-        report_store.close()
-        
-        if not report:
-            raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
-        
-        return report
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get report: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get report: {str(e)}")
+    
+    # Use the main ingest function
+    request = IngestRequest(
+        text=text_content,
+        name=file.filename,
+        use_batch_mapper=use_batch_mapper,
+        skip_verification=skip_verification
+    )
+    
+    return await ingest_report(request)
 
 
 @router.post(
-    "/campaigns/merge",
-    operation_id="mergeCampaigns",
-    summary="Merge Provisional Campaigns",
-    description="Merge multiple provisional campaigns into a confirmed campaign."
+    "/ingest_async",
+    response_model=JobStatusResponse,
+    summary="Ingest Report Async",
+    description="Ingest a report asynchronously from text or URL."
 )
-async def merge_campaigns(
-    from_ids: List[str],
-    into_id: Optional[str] = None
-):
-    """Merge provisional campaigns."""
+async def ingest_report_async(request: IngestRequest):
+    """Asynchronous report ingestion from text or URL.
+    
+    This endpoint:
+    1. Saves text content to a temp file
+    2. Creates a job record in the job store
+    3. Returns immediately with job ID
+    4. The JobProcessor picks up and processes the job asynchronously
+    """
+    
+    job_id = f"job-{uuid.uuid4().hex[:8]}"
+    
+    # Get text content
+    if request.text:
+        text_content = request.text
+        source_type = "inline"
+    elif request.url:
+        # URL ingestion not currently supported
+        raise HTTPException(status_code=400, detail="URL ingestion not currently implemented")
+    else:
+        raise HTTPException(status_code=400, detail="Either text or url required")
+    
+    # Create temp file for text content
+    temp_dir = tempfile.gettempdir()
+    temp_path = os.path.join(temp_dir, f"{job_id}.txt")
     
     try:
-        campaign_store = CampaignStore(
-            neo4j_uri=settings.neo4j_uri,
-            neo4j_user=settings.neo4j_user,
-            neo4j_password=settings.neo4j_password
-        )
+        # Save text to file
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            f.write(text_content)
         
-        result = campaign_store.merge_campaigns(
-            from_ids=from_ids,
-            into_id=into_id or f"campaign--{uuid4()}"
-        )
-        
-        campaign_store.close()
-        
-        return result
+        file_size = os.path.getsize(temp_path)
         
     except Exception as e:
-        logger.error(f"Campaign merge failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Merge failed: {str(e)}")
+        logger.error(f"Failed to save text content: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save content: {str(e)}"
+        )
+    
+    # Create job in the persistent job store (queued status)
+    job_store = get_job_store()
+    job_data = job_store.create_job(
+        job_id=job_id,
+        file_path=temp_path,
+        file_name=request.name or "inline_text",
+        file_ext=".txt",
+        file_size=file_size,
+        config={
+            "use_batch_mapper": request.use_batch_mapper,
+            "skip_verification": request.skip_verification,
+            "auto_generate_flow": True,
+            "webhook_url": request.webhook_url
+        }
+    )
+    
+    # FileJobStore is already updated above
+    
+    return JobStatusResponse(
+        job_id=job_id,
+        status="queued",
+        progress=0,
+        message="Content queued for processing",
+        created_at=job_data["created_at"]
+    )
+
+
+@router.post(
+    "/ingest_file_async",
+    response_model=JobStatusResponse,
+    summary="Ingest File Async",
+    description="Upload and process a file asynchronously."
+)
+async def ingest_file_async(
+    file: UploadFile = File(...),
+    use_batch_mapper: bool = Form(True),
+    skip_verification: bool = Form(False),
+    auto_generate_flow: bool = Form(True),
+    webhook_url: Optional[str] = Form(None)
+):
+    """Asynchronous file upload and processing using queue-based job processor.
+    
+    This endpoint:
+    1. Saves the uploaded file to disk (blocking)
+    2. Creates a job record in the job store
+    3. Returns immediately with job ID
+    4. The JobProcessor picks up and processes the job asynchronously
+    """
+    
+    # Validate file type
+    allowed_types = {".pdf", ".txt", ".md", ".markdown"}
+    file_ext = Path(file.filename).suffix.lower()
+    if file_ext not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {file_ext}"
+        )
+    
+    job_id = f"job-{uuid.uuid4().hex[:8]}"
+    
+    # Create temp file path
+    temp_dir = tempfile.gettempdir()
+    temp_path = os.path.join(temp_dir, f"{job_id}{file_ext}")
+    
+    # Save file to disk (blocking but fast)
+    try:
+        # Use shutil to copy efficiently without loading entire file into memory
+        with open(temp_path, 'wb') as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        
+        file_size = os.path.getsize(temp_path)
+        
+    except Exception as e:
+        logger.error(f"Failed to save uploaded file: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to save file: {str(e)}"
+        )
+    
+    # Create job in the persistent job store (queued status)
+    job_store = get_job_store()
+    job_data = job_store.create_job(
+        job_id=job_id,
+        file_path=temp_path,
+        file_name=file.filename,
+        file_ext=file_ext,
+        file_size=file_size,
+        config={
+            "use_batch_mapper": use_batch_mapper,
+            "skip_verification": skip_verification,
+            "auto_generate_flow": auto_generate_flow,
+            "webhook_url": webhook_url
+        }
+    )
+    
+    # FileJobStore is already updated above
+    
+    # Return immediately - job will be processed by JobProcessor
+    return JobStatusResponse(
+        job_id=job_id,
+        status="queued",
+        progress=0,
+        message="File uploaded successfully, queued for processing",
+        created_at=job_data["created_at"],
+        file_name=file.filename,
+        file_size=file_size
+    )
+
+
+# ============================================================================
+# SECTION 2: RETRIEVAL ENDPOINTS
+# ============================================================================
+
+@router.get(
+    "/{report_id}",
+    response_model=ReportGetResponse,
+    summary="Get Report",
+    description="Retrieve a report by ID from OpenSearch or Neo4j."
+)
+async def get_report(
+    report_id: str,
+    os_client: OpenSearch = Depends(get_opensearch_client),
+    neo4j_session: Session = Depends(get_neo4j_session)
+):
+    """Get a report by ID."""
+    
+    # First check OpenSearch
+    os_store = OpenSearchReportStore(os_client)
+    report = os_store.get_report(report_id)
+    
+    if report:
+        return report
+    
+    # Not in OpenSearch, check Neo4j
+    query = """
+        MATCH (r:Report {stix_id: $report_id})
+        RETURN r
+    """
+    result = neo4j_session.run(query, report_id=report_id)
+    record = result.single()
+    
+    if record:
+        return dict(record["r"])
+    
+    raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+
+
+@router.get(
+    "/",
+    response_model=ReportsListResponse,
+    summary="List Reports",
+    description="List all reports with filtering and search."
+)
+async def list_reports(
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    status: Optional[str] = Query(None),
+    has_campaign: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),
+    sort_by: str = Query("ingested_at"),
+    sort_order: str = Query("desc"),
+    os_client: OpenSearch = Depends(get_opensearch_client)
+):
+    """List all reports with optional filtering."""
+    
+    os_store = OpenSearchReportStore(os_client)
+    
+    result = os_store.list_reports(
+        limit=limit,
+        offset=offset,
+        status=status,
+        has_campaign=has_campaign,
+        search_query=search,
+        sort_by=sort_by,
+        sort_order=sort_order
+    )
+    
+    # Transform to response model
+    report_items = []
+    for report in result["reports"]:
+        extraction = report.get("extraction", {})
+        review_info = report.get("review", {})
+        
+        report_items.append(ReportListItem(
+            report_id=report["report_id"],
+            name=report.get("name"),
+            description=report.get("description", "")[:200],
+            created=report.get("created"),
+            modified=report.get("modified"),
+            status=report.get("status"),
+            extraction_status=report.get("extraction_status"),
+            techniques_count=extraction.get("techniques_count", 0),
+            claims_count=extraction.get("claims_count", 0),
+            confidence_avg=extraction.get("confidence_avg", 0),
+            has_campaign=bool(report.get("campaign")),
+            has_flow=bool(extraction.get("flow")),
+            reviewed_at=review_info.get("reviewed_at"),
+            approved_at=report.get("approval", {}).get("approved_at")
+        ))
+    
+    return ReportsListResponse(
+        reports=report_items,
+        total=result["total"],
+        limit=limit,
+        offset=offset
+    )
+
+
+@router.get(
+    "/stats",
+    summary="Get Statistics",
+    description="Get aggregate statistics about reports."
+)
+async def get_report_statistics(
+    os_client: OpenSearch = Depends(get_opensearch_client)
+):
+    """Get report statistics."""
+    
+    os_store = OpenSearchReportStore(os_client)
+    return os_store.get_statistics()
+
+
+# ============================================================================
+# SECTION 3: JOB MANAGEMENT
+# ============================================================================
+
+@router.get(
+    "/jobs/{job_id}/status",
+    response_model=JobStatusResponse,
+    summary="Get Job Status",
+    description="Get status of an async processing job."
+)
+async def get_job_status(job_id: str):
+    """Get job status from persistent store or in-memory cache."""
+    
+    # First check persistent store
+    job_store = get_job_store()
+    job = job_store.get(job_id)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    return JobStatusResponse(
+        job_id=job_id,
+        status=job["status"],
+        progress=job.get("progress", 0),
+        message=job.get("message", ""),
+        created_at=job["created_at"],
+        completed_at=job.get("completed_at"),
+        result=job.get("result"),
+        error=job.get("error"),
+        file_name=job.get("file_name"),
+        file_size=job.get("file_size")
+    )
+
+
+@router.get(
+    "/jobs",
+    response_model=JobListResponse,
+    summary="List Jobs",
+    description="List all async processing jobs."
+)
+async def list_jobs():
+    """List all jobs."""
+    
+    try:
+        # Use FileJobStore instead of in-memory store
+        job_store = get_job_store()
+        all_jobs = job_store.list_all()
+        
+        jobs = []
+        for job_id, job_data in all_jobs.items():
+            jobs.append({
+                "job_id": job_id,
+                "status": job_data["status"],
+                "created_at": job_data["created_at"],
+                "progress": job_data.get("progress", 0)
+            })
+        
+        # Sort by created_at descending
+        jobs.sort(key=lambda x: x["created_at"], reverse=True)
+        
+        return JobListResponse(
+            jobs=jobs,
+            total=len(jobs)
+        )
+    except Exception as e:
+        logger.error(f"Error in list_jobs: {e}", exc_info=True)
+        raise
+
+
+@router.delete(
+    "/jobs/{job_id}",
+    summary="Delete Job",
+    description="Delete a completed job from the store."
+)
+async def delete_job(job_id: str):
+    """Delete a job."""
+    
+    # Use FileJobStore instead of in-memory store
+    job_store = get_job_store()
+    job = job_store.get(job_id)
+    
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+    
+    if job["status"] in ["pending", "processing"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete active job"
+        )
+    
+    # Delete from FileJobStore
+    job_store.delete(job_id)
+    
+    return {"message": f"Job {job_id} deleted"}
+
+
+# ============================================================================
+# SECTION 4: REVIEW WORKFLOW
+# ============================================================================
+
+@router.get(
+    "/{report_id}/review",
+    summary="Get Review Status",
+    description="Get review status and decisions for a report."
+)
+async def get_review_status(
+    report_id: str,
+    os_client: OpenSearch = Depends(get_opensearch_client)
+):
+    """Get review status for a report."""
+    
+    os_store = OpenSearchReportStore(os_client)
+    report = os_store.get_report(report_id)
+    
+    if not report:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    
+    extraction = report.get("extraction", {})
+    review_info = report.get("review", {})
+    
+    return {
+        "report_id": report_id,
+        "status": report.get("status"),
+        "techniques_count": extraction.get("techniques_count", 0),
+        "review": review_info,
+        "bundle_preview": extraction.get("bundle", {})
+    }
+
+
+@router.post(
+    "/{report_id}/review",
+    summary="Submit Review",
+    description="Submit technique review decisions."
+)
+async def submit_review(
+    report_id: str,
+    review: ReviewSubmission,
+    os_client: OpenSearch = Depends(get_opensearch_client)
+):
+    """Submit review for a report."""
+    
+    os_store = OpenSearchReportStore(os_client)
+    report = os_store.get_report(report_id)
+    
+    if not report:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    
+    # Update review in OpenSearch
+    os_store.update_review(
+        report_id=report_id,
+        reviewer_id=review.reviewer_id,
+        technique_actions=review.technique_actions,
+        notes=review.notes
+    )
+    
+    return {
+        "message": "Review submitted successfully",
+        "report_id": report_id,
+        "techniques_reviewed": len(review.technique_actions)
+    }
+
+
+@router.post(
+    "/{report_id}/approve",
+    summary="Approve Report",
+    description="Approve report and optionally upsert to graph."
+)
+async def approve_report(
+    report_id: str,
+    request: ApprovalRequest,
+    os_client: OpenSearch = Depends(get_opensearch_client)
+):
+    """Approve and finalize the report review."""
+    
+    os_store = OpenSearchReportStore(os_client)
+    report = os_store.get_report(report_id)
+    
+    if not report:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    
+    if report.get("status") != "reviewed":
+        raise HTTPException(
+            status_code=400,
+            detail="Report must be reviewed before approval"
+        )
+    
+    # Get review data
+    extraction = report.get("extraction", {})
+    review_info = report.get("review", {})
+    bundle_preview = extraction.get("bundle", {})
+    
+    # Filter approved techniques
+    decisions = review_info.get("decisions", {})
+    approved_ids = set([tid for tid, action in decisions.items() if action.get("action") == "approve"])
+    
+    # Build approved bundle
+    approved_bundle = {
+        "type": "bundle",
+        "id": f"bundle--{uuid.uuid4()}",
+        "objects": []
+    }
+    
+    # Add report and approved objects
+    if bundle_preview.get("objects"):
+        # Add report
+        approved_bundle["objects"].append(bundle_preview["objects"][0])
+        
+        # Add approved techniques
+        for obj in bundle_preview["objects"][1:]:
+            if obj.get("id") in approved_ids:
+                # Apply edits if needed
+                if decisions.get(obj["id"], {}).get("action") == "edit":
+                    edited_data = decisions[obj["id"]].get("edited_data", {})
+                    obj.update(edited_data)
+                approved_bundle["objects"].append(obj)
+    
+    # Update status
+    os_store.approve_report(
+        report_id=report_id,
+        approver_id=request.reviewer_id,
+        upserted=False
+    )
+    
+    result = {
+        "report_id": report_id,
+        "status": "approved",
+        "approved_techniques": len(approved_ids),
+        "bundle_size": len(approved_bundle["objects"])
+    }
+    
+    # Upsert to Neo4j if requested
+    if request.upsert_to_graph and approved_bundle["objects"]:
+        try:
+            # Upsert to graph
+            report_store = ReportStore(
+                neo4j_uri=settings.neo4j_uri,
+                neo4j_user=settings.neo4j_user,
+                neo4j_password=settings.neo4j_password
+            )
+            try:
+                upsert_result = report_store.upsert_bundle(approved_bundle)
+                result["upserted"] = True
+                result["upsert_result"] = upsert_result
+                
+                # Update OpenSearch
+                os_store.approve_report(
+                    report_id=report_id,
+                    approver_id=request.reviewer_id,
+                    upserted=True
+                )
+                
+                # Generate flow if requested
+                if request.generate_flow:
+                    try:
+                        flow_builder = FlowBuilder(
+                            neo4j_uri=settings.neo4j_uri,
+                            neo4j_user=settings.neo4j_user,
+                            neo4j_password=settings.neo4j_password,
+                            opensearch_client=os_client
+                        )
+                        
+                        # Filter extraction for approved techniques
+                        flow_extraction = extraction.copy()
+                        flow_extraction["claims"] = [
+                            claim for claim in extraction.get("claims", [])
+                            if claim.get("technique_id") in approved_ids
+                        ]
+                        
+                        # Build flow
+                        flow_data = flow_builder.build_from_extraction(
+                            extraction_data=flow_extraction,
+                            source_id=report_id,
+                            use_stored_text=True
+                        )
+                        
+                        if flow_data:
+                            flow_builder.persist_to_neo4j(flow_data)
+                            result["flow_generated"] = True
+                            result["flow_id"] = flow_data.get("episode_id")
+                            
+                            # Update OpenSearch
+                            os_store.update_report_flow(
+                                report_id=report_id,
+                                flow_id=flow_data.get("episode_id"),
+                                flow_data=flow_data
+                            )
+                        
+                        flow_builder.close()
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to generate flow: {e}")
+                        result["flow_error"] = str(e)
+                        
+            finally:
+                report_store.close()
+                
+        except Exception as e:
+            logger.error(f"Failed to upsert: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    return result
+
+
+@router.get(
+    "/{report_id}/review/claims",
+    summary="Get Extraction Claims",
+    description="Get detailed extraction claims for review."
+)
+async def get_extraction_claims(
+    report_id: str,
+    os_client: OpenSearch = Depends(get_opensearch_client)
+):
+    """Get extraction claims for a report."""
+    
+    os_store = OpenSearchReportStore(os_client)
+    report = os_store.get_report(report_id)
+    
+    if not report:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    
+    extraction = report.get("extraction", {})
+    claims = extraction.get("claims", [])
+    
+    # Add review status to claims
+    review_info = report.get("review", {})
+    decisions = review_info.get("decisions", {})
+    
+    for claim in claims:
+        technique_id = claim.get("technique_id")
+        if technique_id and technique_id in decisions:
+            claim["review_action"] = decisions[technique_id].get("action")
+            claim["review_notes"] = decisions[technique_id].get("notes")
+    
+    return {
+        "report_id": report_id,
+        "total_claims": len(claims),
+        "claims": claims,
+        "review_status": report.get("status", "pending_review")
+    }
+
+
+# ============================================================================
+# SECTION 5: ATTRIBUTION & FLOW
+# ============================================================================
+
+@router.get(
+    "/{report_id}/attribution",
+    summary="Get Attribution Suggestions",
+    description="Get suggested threat actors for a report."
+)
+async def get_attribution_suggestions(
+    report_id: str,
+    os_client: OpenSearch = Depends(get_opensearch_client),
+    neo4j_session: Session = Depends(get_neo4j_session)
+):
+    """Get attribution suggestions based on techniques."""
+    
+    os_store = OpenSearchReportStore(os_client)
+    report = os_store.get_report(report_id)
+    
+    if not report:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    
+    # Get techniques from report
+    extraction = report.get("extraction", {})
+    techniques = extraction.get("techniques", [])
+    
+    if not techniques:
+        return {"suggestions": [], "message": "No techniques to analyze"}
+    
+    # Query Neo4j for groups using these techniques
+    query = """
+        MATCH (g:IntrusionSet)-[:USES]->(t:AttackPattern)
+        WHERE t.stix_id IN $techniques
+        WITH g, COUNT(DISTINCT t) as technique_overlap
+        RETURN g.stix_id as group_id,
+               g.name as group_name,
+               technique_overlap,
+               COLLECT(DISTINCT t.name) as matching_techniques
+        ORDER BY technique_overlap DESC
+        LIMIT 10
+    """
+    
+    result = neo4j_session.run(query, techniques=techniques)
+    
+    suggestions = []
+    for record in result:
+        confidence = min(95, record["technique_overlap"] * 15)
+        suggestions.append({
+            "intrusion_set_id": record["group_id"],
+            "name": record["group_name"],
+            "technique_overlap": record["technique_overlap"],
+            "confidence": confidence,
+            "matching_techniques": record["matching_techniques"][:5]
+        })
+    
+    return {
+        "report_id": report_id,
+        "suggestions": suggestions,
+        "total_techniques": len(techniques)
+    }
+
+
+@router.post(
+    "/{report_id}/attribution",
+    summary="Update Attribution",
+    description="Update threat actor attribution for a report."
+)
+async def update_attribution(
+    report_id: str,
+    attribution: AttributionRequest,
+    os_client: OpenSearch = Depends(get_opensearch_client)
+):
+    """Update attribution for a report."""
+    
+    os_store = OpenSearchReportStore(os_client)
+    report = os_store.get_report(report_id)
+    
+    if not report:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    
+    try:
+        os_store.update_attribution(
+            report_id=report_id,
+            intrusion_sets=attribution.intrusion_sets,
+            malware=attribution.malware,
+            confidence=attribution.confidence,
+            notes=attribution.notes
+        )
+        
+        return {
+            "message": "Attribution updated successfully",
+            "report_id": report_id,
+            "intrusion_sets": len(attribution.intrusion_sets),
+            "malware": len(attribution.malware)
+        }
+    except Exception as e:
+        logger.error(f"Failed to update attribution: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/{report_id}/generate-flow",
+    summary="Generate Attack Flow",
+    description="Generate an attack flow from extracted techniques."
+)
+async def generate_flow_for_report(
+    report_id: str,
+    os_client: OpenSearch = Depends(get_opensearch_client)
+):
+    """Generate attack flow from extraction results."""
+    
+    os_store = OpenSearchReportStore(os_client)
+    report = os_store.get_report(report_id)
+    
+    if not report:
+        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    
+    extraction = report.get("extraction", {})
+    
+    # Check if flow already exists
+    if extraction.get("flow"):
+        return {
+            "message": "Flow already exists",
+            "flow": extraction["flow"]
+        }
+    
+    # Generate flow
+    try:
+        flow_builder = FlowBuilder(
+            neo4j_uri=settings.neo4j_uri,
+            neo4j_user=settings.neo4j_user,
+            neo4j_password=settings.neo4j_password,
+            opensearch_client=os_client
+        )
+        
+        # Build extraction data
+        extraction_data = {
+            "extraction_claims": extraction.get("claims", []),
+            "techniques": extraction.get("techniques", {}),
+            "chunks": [{
+                "claims": extraction.get("claims", []),
+                "entities": {
+                    "threat_actors": extraction.get("threat_actors", []),
+                    "malware": extraction.get("malware", []),
+                    "tools": extraction.get("tools", [])
+                }
+            }]
+        }
+        
+        # Generate flow using stored text
+        flow_result = flow_builder.build_from_extraction(
+            extraction_data=extraction_data,
+            source_id=report_id,
+            use_stored_text=True
+        )
+        
+        if flow_result:
+            # Convert to simpler format
+            flow_data = {
+                "flow_name": flow_result.get("name"),
+                "flow_type": "llm_synthesized" if flow_result.get("llm_synthesized") else "deterministic",
+                "confidence": "high" if flow_result.get("llm_synthesized") else "medium",
+                "steps": [
+                    {
+                        "order": action["order"],
+                        "entity": {
+                            "label": action.get("name"),
+                            "id": action.get("attack_pattern_ref")
+                        },
+                        "description": action.get("description"),
+                        "reason": action.get("reason", "")
+                    }
+                    for action in flow_result.get("actions", [])
+                ],
+                "notes": f"Generated with {len(flow_result.get('actions', []))} steps"
+            }
+            
+            # Update report
+            extraction["flow"] = flow_data
+            update_body = {
+                "doc": {
+                    "extraction": extraction,
+                    "modified": datetime.utcnow().isoformat()
+                }
+            }
+            os_store.client.update(
+                index=os_store.index_name,
+                id=report_id,
+                body=update_body
+            )
+            
+            flow_builder.close()
+            
+            return {
+                "message": "Attack flow generated successfully",
+                "flow": flow_data,
+                "steps_count": len(flow_data.get("steps", []))
+            }
+        else:
+            return {
+                "message": "No attack flow could be generated",
+                "flow": None
+            }
+            
+    except Exception as e:
+        logger.error(f"Failed to generate flow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post(
+    "/attribution/search",
+    summary="Search Attribution Candidates",
+    description="Search for threat actors by name or alias."
+)
+async def search_attribution_candidates(
+    query: str = Query(..., min_length=2),
+    neo4j_session: Session = Depends(get_neo4j_session)
+):
+    """Search for threat actors and malware."""
+    
+    # Search intrusion sets
+    intrusion_query = """
+        MATCH (g:IntrusionSet)
+        WHERE toLower(g.name) CONTAINS toLower($query)
+           OR ANY(alias IN g.aliases WHERE toLower(alias) CONTAINS toLower($query))
+        RETURN g.stix_id as id,
+               g.name as name,
+               g.aliases as aliases,
+               'intrusion-set' as type
+        LIMIT 10
+    """
+    
+    # Search malware
+    malware_query = """
+        MATCH (m:Software)
+        WHERE toLower(m.name) CONTAINS toLower($query)
+           OR ANY(alias IN m.aliases WHERE toLower(alias) CONTAINS toLower($query))
+        RETURN m.stix_id as id,
+               m.name as name,
+               m.aliases as aliases,
+               CASE WHEN m.is_malware THEN 'malware' ELSE 'tool' END as type
+        LIMIT 10
+    """
+    
+    results = []
+    
+    # Get intrusion sets
+    for record in neo4j_session.run(intrusion_query, query=query):
+        results.append(dict(record))
+    
+    # Get malware/tools
+    for record in neo4j_session.run(malware_query, query=query):
+        results.append(dict(record))
+    
+    return {
+        "query": query,
+        "results": results,
+        "total": len(results)
+    }
+
+
+# ============================================================================
+# SECTION 6: CAMPAIGNS
+# ============================================================================
+
+@router.post(
+    "/campaigns/merge",
+    response_model=Dict[str, Any],
+    summary="Merge Campaigns",
+    description="Merge multiple reports into a campaign."
+)
+async def merge_campaigns(request: CampaignMergeRequest):
+    """Merge multiple reports into a single campaign."""
+    
+    campaign_store = CampaignStore(
+        neo4j_uri=settings.neo4j_uri,
+        neo4j_user=settings.neo4j_user,
+        neo4j_password=settings.neo4j_password
+    )
+    
+    try:
+        result = campaign_store.merge_reports_to_campaign(
+            report_ids=request.report_ids,
+            campaign_name=request.campaign_name,
+            campaign_description=request.campaign_description,
+            confidence_threshold=request.confidence_threshold
+        )
+        
+        return result
+    finally:
+        campaign_store.close()
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def load_pdf_text(pdf_path: str) -> str:
+    """Extract text from PDF file."""
+    try:
+        import pdfplumber
+        text_parts = []
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    text_parts.append(text)
+        return "\n\n".join(text_parts)
+    except ImportError:
+        # Fallback to PyPDF2 if pdfplumber not available
+        import PyPDF2
+        text_parts = []
+        with open(pdf_path, 'rb') as f:
+            pdf_reader = PyPDF2.PdfReader(f)
+            for page in pdf_reader.pages:
+                text = page.extract_text()
+                if text:
+                    text_parts.append(text)
+        return "\n".join(text_parts)
+
+
+def evaluate_rubric(extraction_results: Dict[str, Any]) -> Any:
+    """Evaluate extraction quality rubric."""
+    class Rubric:
+        def __init__(self):
+            self.criteria_met = 2 if extraction_results.get("techniques_count", 0) > 0 else 0
+    return Rubric()
+
+
+def generate_rubric_evidence(extraction_results: Dict[str, Any], rubric: Any) -> Dict[str, Any]:
+    """Generate evidence for rubric evaluation."""
+    return {
+        "techniques_found": extraction_results.get("techniques_count", 0),
+        "confidence": "high" if rubric.criteria_met >= 2 else "low"
+    }
+
+
+def create_text_chunks(text: str, chunk_size: int = 3000, overlap: int = 200) -> List[Dict[str, Any]]:
+    """Create overlapping text chunks for storage."""
+    chunks = []
+    for i in range(0, len(text), chunk_size - overlap):
+        chunk_text = text[i:i + chunk_size]
+        chunks.append({
+            "chunk_id": len(chunks),
+            "text": chunk_text,
+            "start_idx": i,
+            "end_idx": min(i + chunk_size, len(text))
+        })
+    return chunks
+
+
+def create_stix_bundle(
+    report_sdo: Dict[str, Any],
+    extraction_results: Dict[str, Any],
+    rubric: Any,
+    rubric_evidence: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Create STIX bundle from extraction results."""
+    bundle = {
+        "type": "bundle",
+        "id": f"bundle--{uuid.uuid4()}",
+        "objects": [report_sdo]
+    }
+    
+    # Add extracted techniques
+    for technique_id, technique_data in extraction_results.get("techniques", {}).items():
+        technique_obj = {
+            "type": "attack-pattern",
+            "id": technique_id,
+            "name": technique_data.get("name", "Unknown"),
+            "x_bj_confidence": technique_data.get("confidence", 50.0)
+        }
+        bundle["objects"].append(technique_obj)
+        report_sdo["object_refs"].append(technique_id)
+    
+    return bundle
+
+
+def validate_bundle_for_upsert(bundle: Dict[str, Any]) -> Tuple[bool, List[str]]:
+    """Validate bundle before upserting."""
+    errors = []
+    
+    if not bundle.get("objects"):
+        errors.append("Bundle has no objects")
+    
+    # Check for report object
+    has_report = any(obj.get("type") == "report" for obj in bundle.get("objects", []))
+    if not has_report:
+        errors.append("Bundle missing report object")
+    
+    return len(errors) == 0, errors

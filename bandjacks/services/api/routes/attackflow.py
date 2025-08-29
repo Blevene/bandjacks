@@ -12,7 +12,7 @@ import httpx
 from bandjacks.services.api.deps import get_neo4j_session
 from bandjacks.services.api.settings import settings
 from bandjacks.llm.attack_flow_validator import AttackFlowValidator
-from bandjacks.llm.attack_flow_generator import AttackFlowGenerator
+from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.llm.attack_flow_simulator import AttackFlowSimulator
 
 
@@ -564,27 +564,33 @@ async def generate_attack_flow(
     """Generate an Attack Flow 2.0 document."""
     
     try:
-        # Initialize generator with Neo4j for technique lookups
-        generator = AttackFlowGenerator(
+        # Initialize flow builder with Neo4j for technique lookups
+        flow_builder = FlowBuilder(
             neo4j_uri=settings.neo4j_uri,
             neo4j_user=settings.neo4j_user,
             neo4j_password=settings.neo4j_password
         )
         
-        # Generate the flow
-        flow_json = generator.generate(
+        # Build internal flow from techniques
+        flow_data = flow_builder.build_from_techniques(
             techniques=request.techniques,
             name=request.name,
             description=request.description,
-            conditions=request.conditions,
-            operators=request.operators,
-            assets=request.assets,
-            sequence=request.sequence,
-            scope=request.scope
+            mode="sequential"  # Use sequential mode for Attack Flow generation
+        )
+        
+        # Export to STIX Attack Flow 2.0 format
+        flow_json = flow_builder.export_to_stix_attack_flow(
+            flow_data=flow_data,
+            scope=request.scope,
+            marking_refs=request.marking_refs if hasattr(request, 'marking_refs') else None
         )
         
         # Validate the generated flow
-        is_valid, errors = generator.validate_generated(flow_json)
+        validator = AttackFlowValidator()
+        is_valid, errors = validator.validate(flow_json)
+        
+        flow_builder.close()
         
         return AttackFlowGenerateResponse(
             flow_json=flow_json,

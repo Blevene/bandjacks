@@ -550,6 +550,96 @@ class FlowDeleteResponse(BaseModel):
 
 
 # ============================================================================
+# SEQUENCE ANALYSIS RESPONSE MODELS
+# ============================================================================
+
+class ValidatedTransition(BaseModel):
+    """A validated technique transition."""
+    from_technique: str = Field(..., description="Source technique STIX ID")
+    from_name: Optional[str] = Field(None, description="Source technique name")
+    to_technique: str = Field(..., description="Target technique STIX ID")
+    to_name: Optional[str] = Field(None, description="Target technique name")
+    confidence: float = Field(..., description="Transition confidence score")
+    verdict: str = Field(..., description="Judge verdict (forward/reverse/bidirectional)")
+    features: Optional[Dict[str, Any]] = Field(None, description="Feature vector used for scoring")
+
+
+class UncertainTransition(BaseModel):
+    """An uncertain technique transition needing review."""
+    from_technique: str = Field(..., description="Source technique STIX ID")
+    to_technique: str = Field(..., description="Target technique STIX ID")
+    transition_confidence: float = Field(..., description="Transition probability")
+    judge_confidence: float = Field(..., description="Judge model confidence")
+    reason: Optional[str] = Field(None, description="Reason for uncertainty")
+
+
+class SequenceProposal(BaseModel):
+    """A proposed attack sequence."""
+    sequence_id: str = Field(..., description="Unique sequence identifier")
+    techniques: List[str] = Field(..., description="Ordered list of technique IDs")
+    technique_names: Optional[List[str]] = Field(None, description="Ordered list of technique names")
+    edges: List[ValidatedTransition] = Field(..., description="Transitions in the sequence")
+    overall_confidence: float = Field(..., description="Overall sequence confidence")
+    validation_status: str = Field(..., description="Validation status")
+    created_at: Optional[str] = Field(None, description="Creation timestamp")
+
+
+class PTGModelInfo(BaseModel):
+    """PTG model information."""
+    model_id: Optional[str] = Field(None, description="Model identifier")
+    techniques_count: int = Field(0, description="Number of techniques in model")
+    transitions_count: int = Field(0, description="Number of transitions in model")
+    parameters: Optional[Dict[str, Any]] = Field(None, description="Model parameters used")
+
+
+class SequenceAnalysisResponse(BaseModel):
+    """Response for sequence analysis."""
+    intrusion_set_id: str = Field(..., description="Intrusion set STIX ID")
+    intrusion_set_name: str = Field(..., description="Intrusion set name")
+    generated_at: str = Field(..., description="Analysis timestamp")
+    
+    # PTG Model
+    ptg_model: PTGModelInfo = Field(..., description="PTG model information")
+    
+    # Validation Results
+    validation_results: Dict[str, Any] = Field(..., description="Validation results")
+    validated_transitions: List[ValidatedTransition] = Field(default_factory=list, description="High confidence transitions")
+    uncertain_transitions: List[UncertainTransition] = Field(default_factory=list, description="Transitions needing review")
+    unknown_count: int = Field(0, description="Number of unknown verdicts")
+    
+    # Sequence Proposals
+    sequence_proposals: List[SequenceProposal] = Field(default_factory=list, description="Generated sequence proposals")
+    
+    # Statistics
+    statistics: Dict[str, Any] = Field(default_factory=dict, description="Analysis statistics")
+    
+    # Report
+    markdown_report: Optional[str] = Field(None, description="Human-readable markdown report")
+    
+    trace_id: Optional[str] = Field(None, description="Request trace ID")
+
+
+class SequenceReportResponse(BaseModel):
+    """Response for sequence analysis report."""
+    intrusion_set_id: str = Field(..., description="Intrusion set STIX ID")
+    intrusion_set_name: str = Field(..., description="Intrusion set name")
+    report: str = Field(..., description="Markdown formatted report")
+    generated_at: str = Field(..., description="Report generation timestamp")
+    statistics: Dict[str, Any] = Field(default_factory=dict, description="Analysis statistics")
+    trace_id: Optional[str] = Field(None, description="Request trace ID")
+
+
+class SequenceListResponse(BaseModel):
+    """Response for listing analyzed sequences."""
+    sequences: List[Dict[str, Any]] = Field(..., description="List of analyzed intrusion sets")
+    total: int = Field(..., description="Total number of analyzed sets")
+    page: int = Field(1, description="Current page number")
+    page_size: int = Field(20, description="Items per page")
+    filters_applied: Optional[Dict[str, Any]] = Field(None, description="Applied filters")
+    trace_id: Optional[str] = Field(None, description="Request trace ID")
+
+
+# ============================================================================
 # DEFENSE ENDPOINT RESPONSE MODELS
 # ============================================================================
 

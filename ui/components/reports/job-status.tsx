@@ -52,7 +52,7 @@ interface JobStatus {
   error?: string;
 }
 
-const STAGE_ICONS: Record<string, JSX.Element> = {
+const STAGE_ICONS: Record<string, React.ReactElement> = {
   "Extracting techniques": <FileSearch className="h-4 w-4" />,
   "Evaluating campaign": <Target className="h-4 w-4" />,
   "Creating STIX bundle": <GitBranch className="h-4 w-4" />,

@@ -259,6 +259,179 @@ class OpenSearchIndexManager:
         self.client.indices.create(index=index_name, body=mapping)
         print(f"Created index: {index_name}")
     
+    def create_reports_index(self):
+        """Create index for ingested reports with review data."""
+        index_name = "bandjacks_reports"
+        
+        if self.client.indices.exists(index=index_name):
+            print(f"Index {index_name} already exists")
+            return
+        
+        mapping = {
+            "settings": {
+                "index": {
+                    "knn": True,
+                    "knn.algo_param.ef_search": 100
+                }
+            },
+            "mappings": {
+                "properties": {
+                    # Report identification
+                    "report_id": {"type": "keyword"},
+                    "job_id": {"type": "keyword"},
+                    "name": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                    "description": {"type": "text"},
+                    
+                    # Full text content
+                    "raw_text": {"type": "text", "index": True},  # Full report text for search
+                    "text_chunks": {  # Array of text chunks for retrieval
+                        "type": "nested",
+                        "properties": {
+                            "chunk_id": {"type": "integer"},
+                            "text": {"type": "text"},
+                            "start_idx": {"type": "integer"},
+                            "end_idx": {"type": "integer"}
+                        }
+                    },
+                    
+                    # Embeddings for semantic search
+                    "text_embedding": {  # Full document embedding
+                        "type": "knn_vector",
+                        "dimension": 768,
+                        "method": {
+                            "name": "hnsw",
+                            "space_type": "cosinesimil",
+                            "engine": "nmslib",
+                            "parameters": {
+                                "ef_construction": 128,
+                                "m": 24
+                            }
+                        }
+                    },
+                    "chunk_embeddings": {  # Array of chunk embeddings
+                        "type": "nested",
+                        "properties": {
+                            "chunk_id": {"type": "integer"},
+                            "embedding": {
+                                "type": "knn_vector",
+                                "dimension": 768,
+                                "method": {
+                                    "name": "hnsw",
+                                    "space_type": "cosinesimil",
+                                    "engine": "nmslib",
+                                    "parameters": {
+                                        "ef_construction": 128,
+                                        "m": 24
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    
+                    # Timestamps
+                    "created": {"type": "date"},
+                    "modified": {"type": "date"},
+                    "published": {"type": "date"},
+                    "ingested_at": {"type": "date"},
+                    
+                    # Status tracking
+                    "status": {"type": "keyword"},  # pending_review, reviewed, approved
+                    "extraction_status": {"type": "keyword"},  # pending, processing, completed, failed
+                    
+                    # Extraction results
+                    "extraction": {
+                        "type": "object",
+                        "properties": {
+                            "techniques_count": {"type": "integer"},
+                            "claims_count": {"type": "integer"},
+                            "confidence_avg": {"type": "float"},
+                            "metrics": {"type": "object", "enabled": False},  # Store as unindexed JSON
+                            "bundle": {"type": "object", "enabled": False},  # STIX bundle stored as JSON
+                            "claims": {"type": "object", "enabled": False}  # Claims stored as JSON
+                        }
+                    },
+                    
+                    # Review data
+                    "review": {
+                        "type": "object",
+                        "properties": {
+                            "reviewer_id": {"type": "keyword"},
+                            "reviewed_at": {"type": "date"},
+                            "approved_count": {"type": "integer"},
+                            "rejected_count": {"type": "integer"},
+                            "edited_count": {"type": "integer"},
+                            "decisions": {"type": "object", "enabled": False},  # Store as unindexed JSON
+                            "notes": {"type": "text"}
+                        }
+                    },
+                    
+                    # Approval data
+                    "approval": {
+                        "type": "object",
+                        "properties": {
+                            "approver_id": {"type": "keyword"},
+                            "approved_at": {"type": "date"},
+                            "upserted": {"type": "boolean"},
+                            "upserted_at": {"type": "date"}
+                        }
+                    },
+                    
+                    # Campaign and flow associations
+                    "campaign": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "keyword"},
+                            "name": {"type": "text"},
+                            "provisional": {"type": "boolean"}
+                        }
+                    },
+                    "flow": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "keyword"},
+                            "generated": {"type": "boolean"},
+                            "generated_at": {"type": "date"},
+                            "episode_type": {"type": "keyword"},
+                            "actions_count": {"type": "integer"},
+                            "edges_count": {"type": "integer"},
+                            "flow_type": {"type": "keyword"}
+                        }
+                    },
+                    
+                    # Attribution information
+                    "attribution": {
+                        "type": "object",
+                        "properties": {
+                            "intrusion_sets": {"type": "keyword"},  # Array of intrusion set STIX IDs
+                            "malware": {"type": "keyword"},  # Array of malware/tool STIX IDs
+                            "confidence": {"type": "float"},
+                            "notes": {"type": "text"},
+                            "updated_at": {"type": "date"}
+                        }
+                    },
+                    
+                    # Source information
+                    "source": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "keyword"},  # file, url, inline
+                            "filename": {"type": "text"},
+                            "url": {"type": "keyword"},
+                            "content_size": {"type": "long"}
+                        }
+                    },
+                    
+                    # For search
+                    "techniques": {"type": "keyword"},  # Array of technique IDs
+                    "actors": {"type": "keyword"},  # Array of actor names
+                    "software": {"type": "keyword"}  # Array of software names
+                }
+            }
+        }
+        
+        self.client.indices.create(index=index_name, body=mapping)
+        print(f"Created index: {index_name}")
+    
     def initialize_indexes(self):
         """Initialize all required indexes."""
         self.create_attack_pattern_index()
@@ -267,6 +440,7 @@ class OpenSearchIndexManager:
         self.create_detection_strategies_index()
         self.create_analytics_index()
         self.create_log_sources_index()
+        self.create_reports_index()
         print("OpenSearch indexes initialized successfully")
 
 

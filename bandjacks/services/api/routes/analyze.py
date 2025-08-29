@@ -287,6 +287,15 @@ async def plan_interdiction(
                 except:
                     pass  # Skip if alternative fails
         
+        # Extract technique IDs from selected nodes
+        selected_techniques = [node.technique_id for node in plan.selected_nodes]
+        
+        # Check for critical techniques (if any nodes are marked as critical)
+        critical_techniques = [
+            node.technique_id for node in plan.selected_nodes 
+            if node.is_dominator or node.criticality_score > 0.8
+        ]
+        
         # Build recommendations based on analysis
         recommendations = []
         
@@ -315,15 +324,6 @@ async def plan_interdiction(
             recommendations.append(
                 f"Consider {best_alt['strategy']} strategy for {((best_alt['impact']/plan.expected_impact - 1) * 100):.0f}% better impact"
             )
-        
-        # Extract technique IDs from selected nodes
-        selected_techniques = [node.technique_id for node in plan.selected_nodes]
-        
-        # Check for critical techniques (if any nodes are marked as critical)
-        critical_techniques = [
-            node.technique_id for node in plan.selected_nodes 
-            if node.is_dominator or node.criticality_score > 0.8
-        ]
         
         return InterdictionResponse(
             model_id=request.model_id,

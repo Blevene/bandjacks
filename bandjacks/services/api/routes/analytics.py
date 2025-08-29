@@ -8,6 +8,9 @@ from pydantic import BaseModel, Field
 from neo4j import GraphDatabase
 
 from ....config import get_settings
+from bandjacks.analytics.cooccurrence import (
+    CooccurrenceAnalyzer, CooccurrenceMetrics, TechniqueBundle, ActorProfile
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/analytics", tags=["analytics"])
@@ -921,3 +924,510 @@ async def get_conditional_cooccurrence(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         driver.close()
+
+
+# =====================
+# Advanced Co-occurrence Analytics
+# =====================
+
+class ActorCooccurrenceRequest(BaseModel):
+    """Request for actor-specific co-occurrence analysis."""
+    intrusion_set_id: str = Field(..., description="STIX ID of the intrusion set")
+    min_support: int = Field(1, ge=1, description="Minimum episode support")
+    metric_filter: str = Field("npmi", description="Metric to sort by: npmi, lift, confidence")
+
+
+class ActorCooccurrenceResponse(BaseModel):
+    """Response for actor-specific co-occurrence."""
+    intrusion_set_id: str
+    intrusion_set_name: Optional[str] = None
+    total_episodes: int
+    total_techniques: int
+    top_pairs: List[Dict[str, Any]]
+    signature_bundles: List[Dict[str, Any]]
+    generated_at: str
+
+
+@router.post("/cooccurrence/actor", response_model=ActorCooccurrenceResponse)
+async def analyze_actor_cooccurrence(request: ActorCooccurrenceRequest) -> ActorCooccurrenceResponse:
+    """
+    Analyze technique co-occurrence for a specific intrusion set.
+    
+    Returns weighted co-occurrence metrics (PMI, NPMI, Lift) to identify
+    meaningful technique relationships while avoiding popularity bias.
+    """
+    analyzer = CooccurrenceAnalyzer(
+        settings.neo4j_uri,
+        settings.neo4j_user,
+        settings.neo4j_password
+    )
+    
+    try:
+        # Get actor name
+        driver = get_neo4j_driver()
+        with driver.session() as session:
+            name_result = session.run(
+                "MATCH (g:IntrusionSet {stix_id: $id}) RETURN g.name as name",
+                id=request.intrusion_set_id
+            )
+            record = name_result.single()
+            actor_name = record["name"] if record else None
+        
+        # Calculate co-occurrence metrics
+        metrics = analyzer.calculate_actor_cooccurrence(
+            request.intrusion_set_id,
+            request.min_support
+        )
+        
+        # Extract bundles
+        bundles = analyzer.extract_technique_bundles(
+            request.intrusion_set_id,
+            min_support=request.min_support,
+            min_size=3,
+            max_size=5
+        )
+        
+        # Format top pairs
+        sort_key = {
+            "npmi": lambda x: x.npmi,
+            "lift": lambda x: x.lift,
+            "confidence": lambda x: max(x.confidence_a_to_b, x.confidence_b_to_a)
+        }.get(request.metric_filter, lambda x: x.npmi)
+        
+        metrics.sort(key=sort_key, reverse=True)
+        top_pairs = []
+        
+        for metric in metrics[:20]:  # Top 20 pairs
+            # Get technique names
+            with driver.session() as session:
+                names_result = session.run("""
+                    MATCH (t1:AttackPattern {stix_id: $t1})
+                    MATCH (t2:AttackPattern {stix_id: $t2})
+                    RETURN t1.name as name1, t2.name as name2
+                """, t1=metric.technique_a, t2=metric.technique_b)
+                names = names_result.single()
+                
+            top_pairs.append({
+                "technique_a": metric.technique_a,
+                "technique_b": metric.technique_b,
+                "name_a": names["name1"] if names else metric.technique_a,
+                "name_b": names["name2"] if names else metric.technique_b,
+                "count": metric.count,
+                "confidence_a_to_b": round(metric.confidence_a_to_b, 3),
+                "confidence_b_to_a": round(metric.confidence_b_to_a, 3),
+                "lift": round(metric.lift, 2),
+                "pmi": round(metric.pmi, 3),
+                "npmi": round(metric.npmi, 3),
+                "jaccard": round(metric.jaccard, 3)
+            })
+        
+        # Format signature bundles
+        signature_bundles = []
+        for bundle in bundles[:10]:  # Top 10 bundles
+            # Get technique names
+            with driver.session() as session:
+                bundle_names_result = session.run("""
+                    MATCH (t:AttackPattern)
+                    WHERE t.stix_id IN $techniques
+                    RETURN t.stix_id as id, t.name as name
+                """, techniques=bundle.techniques)
+                
+                tech_names = {r["id"]: r["name"] for r in bundle_names_result}
+                
+            signature_bundles.append({
+                "techniques": bundle.techniques,
+                "technique_names": [tech_names.get(t, t) for t in bundle.techniques],
+                "support": bundle.support,
+                "confidence": round(bundle.confidence, 3),
+                "lift": round(bundle.lift, 2),
+                "tactics": bundle.tactics
+            })
+        
+        # Get total statistics
+        total_techniques = len(set(
+            tech for m in metrics 
+            for tech in [m.technique_a, m.technique_b]
+        ))
+        
+        driver.close()
+        
+        return ActorCooccurrenceResponse(
+            intrusion_set_id=request.intrusion_set_id,
+            intrusion_set_name=actor_name,
+            total_episodes=metrics[0].total_episodes if metrics else 0,
+            total_techniques=total_techniques,
+            top_pairs=top_pairs,
+            signature_bundles=signature_bundles,
+            generated_at=datetime.utcnow().isoformat()
+        )
+        
+    except Exception as e:
+        logger.error(f"Actor co-occurrence analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        analyzer.close()
+
+
+class BundleExtractionRequest(BaseModel):
+    """Request for technique bundle extraction."""
+    intrusion_set_id: Optional[str] = Field(None, description="Optional actor filter")
+    min_support: int = Field(3, ge=1, description="Minimum episode support")
+    min_size: int = Field(3, ge=2, description="Minimum bundle size")
+    max_size: int = Field(5, le=10, description="Maximum bundle size")
+
+
+class BundleExtractionResponse(BaseModel):
+    """Response for technique bundles."""
+    bundles: List[Dict[str, Any]]
+    total_bundles: int
+    coverage_stats: Dict[str, Any]
+    generated_at: str
+
+
+@router.post("/cooccurrence/bundles", response_model=BundleExtractionResponse)
+async def extract_technique_bundles(request: BundleExtractionRequest) -> BundleExtractionResponse:
+    """
+    Extract frequently co-occurring technique bundles using frequent itemset mining.
+    
+    Identifies technique combinations that appear together frequently,
+    useful for detection engineering and coverage planning.
+    """
+    analyzer = CooccurrenceAnalyzer(
+        settings.neo4j_uri,
+        settings.neo4j_user,
+        settings.neo4j_password
+    )
+    
+    try:
+        # Extract bundles
+        bundles = analyzer.extract_technique_bundles(
+            request.intrusion_set_id,
+            request.min_support,
+            request.min_size,
+            request.max_size
+        )
+        
+        # Get technique names and coverage info
+        driver = get_neo4j_driver()
+        formatted_bundles = []
+        all_techniques = set()
+        
+        for bundle in bundles[:50]:  # Top 50 bundles
+            all_techniques.update(bundle.techniques)
+            
+            with driver.session() as session:
+                # Get technique names
+                names_result = session.run("""
+                    MATCH (t:AttackPattern)
+                    WHERE t.stix_id IN $techniques
+                    RETURN t.stix_id as id, t.name as name
+                """, techniques=bundle.techniques)
+                tech_names = {r["id"]: r["name"] for r in names_result}
+                
+                # Check detection coverage
+                coverage_result = session.run("""
+                    MATCH (t:AttackPattern)
+                    WHERE t.stix_id IN $techniques
+                    OPTIONAL MATCH (t)<-[:DETECTS]-(d:DetectionStrategy)
+                    RETURN count(DISTINCT t) as total,
+                           count(DISTINCT CASE WHEN d IS NOT NULL THEN t END) as covered
+                """, techniques=bundle.techniques)
+                coverage = coverage_result.single()
+                
+            coverage_pct = 0
+            if coverage and coverage["total"] > 0:
+                coverage_pct = (coverage["covered"] / coverage["total"]) * 100
+                
+            formatted_bundles.append({
+                "techniques": bundle.techniques,
+                "technique_names": [tech_names.get(t, t) for t in bundle.techniques],
+                "size": len(bundle.techniques),
+                "support": bundle.support,
+                "confidence": round(bundle.confidence, 3),
+                "lift": round(bundle.lift, 2),
+                "tactics": bundle.tactics,
+                "detection_coverage": round(coverage_pct, 1),
+                "gap_count": coverage["total"] - coverage["covered"] if coverage else 0
+            })
+        
+        # Calculate overall coverage stats
+        with driver.session() as session:
+            coverage_stats_result = session.run("""
+                MATCH (t:AttackPattern)
+                WHERE t.stix_id IN $techniques
+                OPTIONAL MATCH (t)<-[:DETECTS]-(d:DetectionStrategy)
+                WITH count(DISTINCT t) as total,
+                     count(DISTINCT CASE WHEN d IS NOT NULL THEN t END) as covered
+                RETURN total, covered,
+                       round(100.0 * covered / total, 2) as coverage_percentage
+            """, techniques=list(all_techniques))
+            coverage_stats = dict(coverage_stats_result.single() or {})
+        
+        driver.close()
+        
+        return BundleExtractionResponse(
+            bundles=formatted_bundles,
+            total_bundles=len(bundles),
+            coverage_stats=coverage_stats,
+            generated_at=datetime.utcnow().isoformat()
+        )
+        
+    except Exception as e:
+        logger.error(f"Bundle extraction failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        analyzer.close()
+
+
+class ActorSimilarityRequest(BaseModel):
+    """Request for actor similarity analysis."""
+    min_similarity: float = Field(0.3, ge=0, le=1, description="Minimum similarity threshold")
+    include_profiles: bool = Field(False, description="Include full actor profiles")
+
+
+class ActorSimilarityResponse(BaseModel):
+    """Response for actor similarity."""
+    similarities: List[Dict[str, Any]]
+    actor_profiles: Optional[List[Dict[str, Any]]] = None
+    total_actors: int
+    generated_at: str
+
+
+@router.post("/similarity/actors", response_model=ActorSimilarityResponse)
+async def calculate_actor_similarity(request: ActorSimilarityRequest) -> ActorSimilarityResponse:
+    """
+    Calculate actor similarity based on technique TF-IDF profiles.
+    
+    Identifies actors with similar TTPs for attribution assistance
+    and hunting pivots.
+    """
+    analyzer = CooccurrenceAnalyzer(
+        settings.neo4j_uri,
+        settings.neo4j_user,
+        settings.neo4j_password
+    )
+    
+    try:
+        # Build actor profiles
+        profiles = analyzer.build_actor_profiles()
+        
+        # Calculate similarities
+        similarities = analyzer.calculate_actor_similarity(
+            profiles,
+            request.min_similarity
+        )
+        
+        # Format similarities with actor names
+        driver = get_neo4j_driver()
+        formatted_similarities = []
+        
+        for actor1_id, actor2_id, similarity in similarities:
+            with driver.session() as session:
+                names_result = session.run("""
+                    MATCH (g1:IntrusionSet {stix_id: $id1})
+                    MATCH (g2:IntrusionSet {stix_id: $id2})
+                    RETURN g1.name as name1, g2.name as name2
+                """, id1=actor1_id, id2=actor2_id)
+                names = names_result.single()
+                
+            formatted_similarities.append({
+                "actor1_id": actor1_id,
+                "actor2_id": actor2_id,
+                "actor1_name": names["name1"] if names else actor1_id,
+                "actor2_name": names["name2"] if names else actor2_id,
+                "similarity": round(similarity, 3),
+                "similarity_percent": round(similarity * 100, 1)
+            })
+        
+        # Format profiles if requested
+        formatted_profiles = None
+        if request.include_profiles:
+            formatted_profiles = []
+            for profile in profiles:
+                formatted_profiles.append({
+                    "intrusion_set_id": profile.intrusion_set_id,
+                    "intrusion_set_name": profile.intrusion_set_name,
+                    "technique_count": len(profile.techniques),
+                    "total_episodes": profile.total_episodes,
+                    "dominant_tactics": profile.dominant_tactics,
+                    "signature_techniques": profile.signature_techniques[:10]
+                })
+        
+        driver.close()
+        
+        return ActorSimilarityResponse(
+            similarities=formatted_similarities,
+            actor_profiles=formatted_profiles,
+            total_actors=len(profiles),
+            generated_at=datetime.utcnow().isoformat()
+        )
+        
+    except Exception as e:
+        logger.error(f"Actor similarity analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        analyzer.close()
+
+
+class BridgingTechniquesResponse(BaseModel):
+    """Response for bridging techniques."""
+    techniques: List[Dict[str, Any]]
+    total_techniques: int
+    generated_at: str
+
+
+@router.get("/cooccurrence/bridging", response_model=BridgingTechniquesResponse)
+async def identify_bridging_techniques(
+    min_actors: int = Query(3, ge=2, description="Minimum actors using the technique")
+) -> BridgingTechniquesResponse:
+    """
+    Identify techniques that bridge multiple actors (high betweenness).
+    
+    These techniques are worth prioritizing for detection as they
+    enable multiple threat actors.
+    """
+    analyzer = CooccurrenceAnalyzer(
+        settings.neo4j_uri,
+        settings.neo4j_user,
+        settings.neo4j_password
+    )
+    
+    try:
+        # Get bridging techniques
+        bridging = analyzer.identify_bridging_techniques(min_actors)
+        
+        # Format with technique names
+        driver = get_neo4j_driver()
+        formatted_techniques = []
+        
+        for tech_id, actor_count, avg_importance in bridging[:50]:  # Top 50
+            with driver.session() as session:
+                # Get technique details
+                tech_result = session.run("""
+                    MATCH (t:AttackPattern {stix_id: $id})
+                    OPTIONAL MATCH (t)-[:HAS_TACTIC]->(tac:Tactic)
+                    RETURN t.name as name, 
+                           collect(DISTINCT tac.shortname) as tactics
+                """, id=tech_id)
+                tech_data = tech_result.single()
+                
+                # Get actors using this technique
+                actors_result = session.run("""
+                    MATCH (g:IntrusionSet)<-[:ATTRIBUTED_TO]-(e:AttackEpisode)
+                    MATCH (e)-[:CONTAINS]->(a:AttackAction {attack_pattern_ref: $tech})
+                    RETURN DISTINCT g.name as actor_name, g.stix_id as actor_id
+                    LIMIT 10
+                """, tech=tech_id)
+                actors = [{"id": r["actor_id"], "name": r["actor_name"]} 
+                         for r in actors_result]
+                
+            formatted_techniques.append({
+                "technique_id": tech_id,
+                "technique_name": tech_data["name"] if tech_data else tech_id,
+                "actor_count": actor_count,
+                "avg_importance": round(avg_importance, 2),
+                "tactics": tech_data["tactics"] if tech_data else [],
+                "actors_sample": actors
+            })
+        
+        driver.close()
+        
+        return BridgingTechniquesResponse(
+            techniques=formatted_techniques,
+            total_techniques=len(bridging),
+            generated_at=datetime.utcnow().isoformat()
+        )
+        
+    except Exception as e:
+        logger.error(f"Bridging techniques analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        analyzer.close()
+
+
+class GlobalCooccurrenceRequest(BaseModel):
+    """Request for global co-occurrence analysis."""
+    min_support: int = Field(2, ge=1, description="Minimum episode support")
+    min_episodes_per_pair: int = Field(2, ge=1, description="Minimum episodes for a pair")
+    limit: int = Field(100, ge=10, le=500, description="Maximum pairs to return")
+
+
+class GlobalCooccurrenceResponse(BaseModel):
+    """Response for global co-occurrence."""
+    pairs: List[Dict[str, Any]]
+    total_pairs: int
+    episode_count: int
+    technique_count: int
+    generated_at: str
+
+
+@router.post("/cooccurrence/global", response_model=GlobalCooccurrenceResponse)
+async def analyze_global_cooccurrence(request: GlobalCooccurrenceRequest) -> GlobalCooccurrenceResponse:
+    """
+    Calculate global co-occurrence metrics across all episodes.
+    
+    Uses PMI/NPMI to identify meaningful technique relationships
+    while avoiding popularity bias.
+    """
+    analyzer = CooccurrenceAnalyzer(
+        settings.neo4j_uri,
+        settings.neo4j_user,
+        settings.neo4j_password
+    )
+    
+    try:
+        # Calculate global metrics
+        metrics = analyzer.calculate_global_cooccurrence(
+            request.min_support,
+            request.min_episodes_per_pair
+        )
+        
+        # Format top pairs
+        driver = get_neo4j_driver()
+        formatted_pairs = []
+        all_techniques = set()
+        
+        for metric in metrics[:request.limit]:
+            all_techniques.add(metric.technique_a)
+            all_techniques.add(metric.technique_b)
+            
+            # Get technique names
+            with driver.session() as session:
+                names_result = session.run("""
+                    MATCH (t1:AttackPattern {stix_id: $t1})
+                    MATCH (t2:AttackPattern {stix_id: $t2})
+                    RETURN t1.name as name1, t2.name as name2
+                """, t1=metric.technique_a, t2=metric.technique_b)
+                names = names_result.single()
+                
+            formatted_pairs.append({
+                "technique_a": metric.technique_a,
+                "technique_b": metric.technique_b,
+                "name_a": names["name1"] if names else metric.technique_a,
+                "name_b": names["name2"] if names else metric.technique_b,
+                "count": metric.count,
+                "support_a": metric.support_a,
+                "support_b": metric.support_b,
+                "confidence_a_to_b": round(metric.confidence_a_to_b, 3),
+                "confidence_b_to_a": round(metric.confidence_b_to_a, 3),
+                "lift": round(metric.lift, 2),
+                "pmi": round(metric.pmi, 3),
+                "npmi": round(metric.npmi, 3),
+                "jaccard": round(metric.jaccard, 3)
+            })
+        
+        driver.close()
+        
+        return GlobalCooccurrenceResponse(
+            pairs=formatted_pairs,
+            total_pairs=len(metrics),
+            episode_count=metrics[0].total_episodes if metrics else 0,
+            technique_count=len(all_techniques),
+            generated_at=datetime.utcnow().isoformat()
+        )
+        
+    except Exception as e:
+        logger.error(f"Global co-occurrence analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        analyzer.close()
