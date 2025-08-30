@@ -61,6 +61,10 @@ class FlowBuilder:
             if stored_text:
                 report_text = stored_text
         
+        # Extract primary entity for attribution
+        primary_entity = extraction_data.get("primary_entity")
+        entities = extraction_data.get("entities", {})
+        
         # Use LLM synthesis with full context
         llm_flow = self._synthesize_attack_flow(
             extraction_result=extraction_data,
@@ -70,10 +74,22 @@ class FlowBuilder:
         
         if not llm_flow:
             # Fallback to deterministic if LLM synthesis fails
-            return self._build_deterministic(extraction_data, source_id)
+            flow_result = self._build_deterministic(extraction_data, source_id)
+        else:
+            # Convert LLM flow format to episode/action format
+            flow_result = self._convert_to_episode(llm_flow, source_id, llm_synthesized=True)
         
-        # Convert LLM flow format to episode/action format
-        return self._convert_to_episode(llm_flow, source_id, llm_synthesized=True)
+        # Add entity attribution to the flow
+        if primary_entity and isinstance(primary_entity, dict) and flow_result:
+            flow_result["primary_entity"] = primary_entity
+            flow_result["attributed_to"] = primary_entity.get("name")
+            flow_result["attribution_type"] = primary_entity.get("type")
+            flow_result["attribution_confidence"] = primary_entity.get("confidence", 70)
+            
+            # Add all extracted entities for reference
+            flow_result["entities"] = entities
+        
+        return flow_result
     
     def build_from_bundle(self, bundle: Dict[str, Any], source_id: Optional[str] = None) -> Dict[str, Any]:
         """

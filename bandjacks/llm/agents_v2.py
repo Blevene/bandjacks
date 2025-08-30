@@ -425,8 +425,8 @@ class MapperAgent:
                 # Direct JSON parsing
                 resp = json.loads(cleaned)
             except Exception as e:
-                print(f"[DEBUG] Failed to parse JSON from MapperAgent: {e}")
-                print(f"[DEBUG] Raw response: {repr(raw[:500])}")
+                logger.error(f"Failed to parse JSON from MapperAgent: {e}")
+                logger.debug(f"Raw response: {repr(raw[:500]) if raw else 'None'}")
                 continue
             choice = resp.get("selected") or resp.get("proposed") or {}
             ev = resp.get("evidence") or {}
@@ -819,7 +819,7 @@ class AssemblerAgent:
                 flowb = FlowBuilder(config["neo4j_uri"], config["neo4j_user"], config["neo4j_password"])
                 flow = flowb.build_from_bundle(bundle)
             except Exception as e:
-                print(f"Flow building failed: {e}")
+                logger.error(f"Flow building failed: {e}", exc_info=True)
                 flow = {}
         else:
             flow = {}

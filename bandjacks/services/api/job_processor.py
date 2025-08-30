@@ -426,12 +426,12 @@ class JobProcessor:
                 "confidence_threshold": 60 if text_length > 100_000 else 50
             }
             
-            # Create chunked extractor with dynamic limits
+            # Create chunked extractor with optimized parameters
             extractor = ChunkedExtractor(
-                chunk_size=3000,
-                overlap=200,
+                chunk_size=4000,  # Larger chunks for better context
+                overlap=150,      # Less overlap
                 max_chunks=max_chunks,
-                parallel_workers=3
+                parallel_workers=1  # Sequential to avoid rate limits
             )
             
             # Progress callback for chunked extraction
@@ -542,6 +542,29 @@ class JobProcessor:
             })
         else:
             logger.warning("No attack flow generated")
+        
+        # Create entity nodes and relationships in Neo4j
+        self.job_store.update(job_id, {
+            "progress": 85,
+            "message": "Creating entity relationships..."
+        })
+        
+        # Get extracted entities
+        entities = pipeline_results.get("entities", {})
+        primary_entity = pipeline_results.get("primary_entity")
+        
+        if entities or primary_entity:
+            try:
+                self._create_entity_graph(
+                    entities=entities,
+                    primary_entity=primary_entity,
+                    techniques=extraction_results.get("techniques", {}),
+                    report_id=report_sdo["id"],
+                    flow_data=flow_data
+                )
+                logger.info(f"Created entity graph for report {report_sdo['id']}")
+            except Exception as e:
+                logger.error(f"Failed to create entity graph: {e}")
                 
         # Save to OpenSearch
         self.job_store.update(job_id, {
@@ -621,6 +644,159 @@ class JobProcessor:
             
         return bundle
         
+    def _create_entity_graph(
+        self,
+        entities: Dict[str, Any],
+        primary_entity: Optional[Dict[str, Any]],
+        techniques: Dict[str, Any],
+        report_id: str,
+        flow_data: Optional[Dict[str, Any]] = None
+    ):
+        """
+        Create entity nodes and relationships in Neo4j.
+        
+        Creates:
+        - Entity nodes (Software, IntrusionSet, etc.)
+        - USES relationships (Entity -> AttackPattern)
+        - EXTRACTED_FROM relationships (AttackPattern -> Report)
+        - ATTRIBUTED_TO relationships (AttackEpisode -> Entity)
+        """
+        from bandjacks.llm.entity_resolver import EntityResolver
+        from neo4j import GraphDatabase
+        
+        # Initialize entity resolver
+        resolver = EntityResolver(
+            neo4j_uri=settings.neo4j_uri,
+            neo4j_user=settings.neo4j_user,
+            neo4j_password=settings.neo4j_password
+        )
+        
+        driver = GraphDatabase.driver(
+            settings.neo4j_uri,
+            auth=(settings.neo4j_user, settings.neo4j_password)
+        )
+        
+        try:
+            with driver.session() as session:
+                # Handle primary entity first
+                primary_entity_id = None
+                if primary_entity and isinstance(primary_entity, dict):
+                    primary_entity_id = resolver.resolve_or_create(
+                        entity=primary_entity,
+                        entity_type=primary_entity.get("type", "malware"),
+                        source_id=report_id
+                    )
+                    logger.info(f"Primary entity: {primary_entity.get('name')} -> {primary_entity_id}")
+                
+                # Process other entities
+                entity_ids = []
+                
+                # Process malware
+                for malware in entities.get("malware", []):
+                    if isinstance(malware, dict):
+                        entity_id = resolver.resolve_or_create(
+                            entity=malware,
+                            entity_type="malware",
+                            source_id=report_id
+                        )
+                        if entity_id:
+                            entity_ids.append(entity_id)
+                
+                # Process software/tools
+                for software in entities.get("software", []):
+                    if isinstance(software, dict):
+                        entity_id = resolver.resolve_or_create(
+                            entity=software,
+                            entity_type="software",
+                            source_id=report_id
+                        )
+                        if entity_id:
+                            entity_ids.append(entity_id)
+                
+                # Process threat actors
+                for actor in entities.get("threat_actors", []):
+                    if isinstance(actor, dict):
+                        entity_id = resolver.resolve_or_create(
+                            entity=actor,
+                            entity_type="threat_actor",
+                            source_id=report_id
+                        )
+                        if entity_id:
+                            entity_ids.append(entity_id)
+                
+                # Use primary entity if no others found
+                if primary_entity_id and not entity_ids:
+                    entity_ids = [primary_entity_id]
+                
+                # Create USES relationships from entities to techniques
+                for entity_id in entity_ids:
+                    for tech_id in techniques.keys():
+                        # Ensure technique ID is in STIX format
+                        if not tech_id.startswith("attack-pattern--"):
+                            # Query for STIX ID from external ID
+                            result = session.run(
+                                "MATCH (t:AttackPattern) WHERE t.external_id = $ext_id "
+                                "RETURN t.stix_id as stix_id LIMIT 1",
+                                ext_id=tech_id
+                            )
+                            record = result.single()
+                            if record:
+                                tech_stix_id = record["stix_id"]
+                            else:
+                                continue
+                        else:
+                            tech_stix_id = tech_id
+                        
+                        # Create USES relationship
+                        session.run("""
+                            MATCH (e {stix_id: $entity_id})
+                            MATCH (t:AttackPattern {stix_id: $tech_id})
+                            MERGE (e)-[:USES]->(t)
+                        """, entity_id=entity_id, tech_id=tech_stix_id)
+                        
+                        logger.debug(f"Created USES: {entity_id} -> {tech_stix_id}")
+                
+                # Create EXTRACTED_FROM relationships from techniques to report
+                session.run("""
+                    MERGE (r:Report {stix_id: $report_id})
+                    ON CREATE SET r.name = $report_name,
+                                  r.created = $created,
+                                  r.type = 'report'
+                """, report_id=report_id, 
+                    report_name=f"Extracted Report {datetime.utcnow().strftime('%Y-%m-%d')}",
+                    created=datetime.utcnow().isoformat() + "Z")
+                
+                for tech_id, tech_data in techniques.items():
+                    if not tech_id.startswith("attack-pattern--"):
+                        continue
+                    
+                    session.run("""
+                        MATCH (t:AttackPattern {stix_id: $tech_id})
+                        MATCH (r:Report {stix_id: $report_id})
+                        MERGE (t)-[:EXTRACTED_FROM {
+                            confidence: $confidence,
+                            evidence: $evidence
+                        }]->(r)
+                    """, tech_id=tech_id, report_id=report_id,
+                        confidence=tech_data.get("confidence", 50),
+                        evidence=str(tech_data.get("evidence", []))[:500])
+                
+                # If we have a flow, create ATTRIBUTED_TO relationship
+                if flow_data and primary_entity_id:
+                    episode_id = flow_data.get("episode_id")
+                    if episode_id:
+                        session.run("""
+                            MATCH (e:AttackEpisode {episode_id: $episode_id})
+                            MATCH (entity {stix_id: $entity_id})
+                            MERGE (e)-[:ATTRIBUTED_TO]->(entity)
+                        """, episode_id=episode_id, entity_id=primary_entity_id)
+                        
+                        logger.info(f"Created ATTRIBUTED_TO: {episode_id} -> {primary_entity_id}")
+                
+        finally:
+            resolver.close()
+            driver.close()
+    
     def _create_text_chunks(
         self, 
         text: str, 

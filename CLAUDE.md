@@ -47,9 +47,10 @@ uv run pytest             # Run tests
 
 # Start services 
 # For development (with hot reload):
-uv run uvicorn bandjacks.services.api.main:app --reload --host 0.0.0.0 --port 8000
-# For production (with multiple workers):
-# uv run uvicorn bandjacks.services.api.main:app --workers 4 --host 0.0.0.0 --port 8000
+# IMPORTANT: Always use 4 workers for proper async job handling and concurrency
+uv run uvicorn bandjacks.services.api.main:app --workers 4 --host 0.0.0.0 --port 8000
+# For development with auto-reload (single worker only):
+# uv run uvicorn bandjacks.services.api.main:app --reload --host 0.0.0.0 --port 8000
 cd ui && npm run dev      # Frontend (Next.js) on port 3000
 
 # Development tasks

@@ -7,27 +7,12 @@ from typing import Any, Dict, List
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.tools import list_subtechniques
+from bandjacks.llm.json_utils import parse_json_with_fallback, validate_and_ensure_claims
 
 logger = logging.getLogger(__name__)
 
 
-def cleanup_json(json_str: str) -> str:
-    """Clean up common JSON formatting errors from LLM responses."""
-    # Remove extra quotes after closing braces/brackets
-    json_str = re.sub(r'\}"\s*,', '},', json_str)
-    json_str = re.sub(r'\]"\s*,', '],', json_str)
-    json_str = re.sub(r'\}"\s*\]', '}]', json_str)
-    json_str = re.sub(r'\}"\s*\}', '}}', json_str)
-    
-    # Remove trailing commas before closing braces/brackets
-    json_str = re.sub(r',\s*\}', '}', json_str)
-    json_str = re.sub(r',\s*\]', ']', json_str)
-    
-    # Fix missing commas between objects (careful pattern)
-    json_str = re.sub(r'\}\s*\{', '},{', json_str)
-    json_str = re.sub(r'\]\s*\[', '],[', json_str)
-    
-    return json_str
+# cleanup_json moved to json_utils.py for shared use
 
 
 class BatchMapperAgent:
@@ -103,6 +88,9 @@ class BatchMapperAgent:
             logger.debug(f"Batch {batch_start}-{batch_end-1} completed: {batch_claims} claims added")
         
         logger.info(f"BatchMapperAgent: Added {total_added_claims} total claims (now {len(mem.claims)} claims)")
+        
+        # Validate that we have claims if techniques were found
+        validate_and_ensure_claims(mem, "BatchMapperAgent")
     
     def _process_batch(self, spans_data: List[Dict], mem: WorkingMemory, config: Dict[str, Any]) -> int:
         """Process a single batch of spans."""
@@ -111,15 +99,16 @@ class BatchMapperAgent:
             {
                 "role": "system",
                 "content": (
-                    "You are a cybersecurity analyst that outputs JSON. "
-                    "Analyze multiple text spans and extract ALL ATT&CK techniques mentioned or implied.\n\n"
-                    "For EACH span, extract ALL techniques that are:\n"
-                    "1. Explicitly mentioned by ID (e.g., T1055, T1566.001)\n"
-                    "2. Described by behavior matching a technique\n"
-                    "3. Present in the candidate list and relevant\n\n"
-                    "You must output a JSON array with MULTIPLE techniques per span if applicable:\n"
-                    "[{\"span_id\":int, \"techniques\":[{\"external_id\":str,\"name\":str,\"evidence\":{\"quotes\":[str],\"line_refs\":[int]},\"confidence\":int}]}]\n\n"
-                    "Extract every valid technique. Include explicit IDs even if not in candidates. Output ONLY valid JSON."
+                    "You are a cybersecurity analyst. Extract ATT&CK technique IDs from text spans.\n\n"
+                    "Output a simple JSON list:\n"
+                    "[{\"span\":0,\"tid\":\"T1055\",\"conf\":80}]\n\n"
+                    "Rules:\n"
+                    "- span: span index (0-based)\n"
+                    "- tid: technique ID (e.g., T1055, T1566.001)\n"
+                    "- conf: confidence score (0-100)\n"
+                    "- Extract ALL techniques you find\n"
+                    "- Include explicit IDs and behaviors that match techniques\n"
+                    "- Output ONLY the JSON array, nothing else"
                 )
             },
             {
@@ -129,120 +118,136 @@ class BatchMapperAgent:
         ]
         
         # Single LLM call for this batch with structured output
-        logger.debug(f"  Calling LLM with batch of {len(spans_data)} spans")
+        logger.info(f"BatchMapper LLM request: batch of {len(spans_data)} spans")
         client = LLMClient()
         try:
-            # Use response_format to enforce JSON output, reasonable tokens for 5 spans
+            # Call LLM - temporarily without response_format to debug
             response = client.call(
                 messages,
-                response_format={"type": "json_object"},
-                max_tokens=16000  # Doubled limit to prevent truncation
+                # response_format={"type": "json_object"},  # TEMPORARILY DISABLED FOR DEBUGGING
+                max_tokens=4000  # Reduced - simpler format needs fewer tokens
             )
             content = response.get("content", "")
-            logger.debug(f"  LLM response received, length: {len(content)}")
             
-            # With structured output, we should get valid JSON directly
-            content = content.strip()
+            # Log response
+            logger.info(f"BatchMapper LLM response: {len(content)} chars")
+            logger.debug(f"BatchMapper raw response preview: {content[:500]}...")
+            
             if not content:
-                logger.warning("Empty response from LLM for batch")
+                logger.error("Empty response from LLM for batch technique extraction")
                 return 0
             
+            # Parse the simplified JSON array
             try:
-                # Direct JSON parsing - no need for markdown extraction
-                results = json.loads(content)
-            except json.JSONDecodeError as e:
-                logger.warning(f"Initial JSON parse failed: {e}")
-                logger.debug(f"Attempting to clean up malformed JSON...")
+                # Store original content for fallback
+                original_content = content
                 
-                # Try cleaning up common JSON errors
-                cleaned_content = cleanup_json(content)
-                try:
-                    results = json.loads(cleaned_content)
-                    logger.info("Successfully parsed JSON after cleanup")
-                except json.JSONDecodeError as e2:
-                    logger.error(f"Failed to parse JSON even after cleanup: {e2}")
-                    logger.debug(f"Original response: {content[:500]}")
-                    logger.debug(f"Cleaned response: {cleaned_content[:500]}")
-                    return 0
+                # Strip markdown wrapper if present
+                if '```' in content:
+                    if '```json' in content:
+                        content = content.split('```json')[1].split('```')[0].strip()
+                    elif content.strip().startswith('```'):
+                        content = content.split('```')[1].split('```')[0].strip()
+                    logger.debug(f"Stripped markdown wrapper, new length: {len(content)}")
+                
+                # Handle both array and object responses
+                if content.strip().startswith('['):
+                    # Direct array response
+                    results = json.loads(content)
+                else:
+                    # Wrapped in object - try to extract array
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict):
+                        # Look for any key that contains a list
+                        for key in parsed:
+                            if isinstance(parsed[key], list):
+                                results = parsed[key]
+                                break
+                        else:
+                            results = []
+                    else:
+                        results = []
+                
+                if not isinstance(results, list):
+                    logger.error(f"Expected list, got {type(results)}")
+                    results = []
+                    
+                logger.info(f"Successfully parsed {len(results)} technique extractions")
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON parse error in technique extraction: {e}")
+                logger.debug(f"Failed content preview: {content[:200] if content else 'Empty'}")
+                
+                # Try fallback parsing with original content
+                parsed = parse_json_with_fallback(
+                    original_content,  # Use original content, not modified
+                    expected_structure=[],
+                    max_retries=2
+                )
+                results = parsed if isinstance(parsed, list) else []
             
-            # Process results
+            # Process simplified results
             added_claims = 0
+            
             if isinstance(results, list):
-                logger.debug(f"Processing {len(results)} results from LLM")
-                for result in results:
-                    span_id = result.get("span_id")
-                    if span_id is None or span_id >= len(mem.spans):
+                logger.debug(f"Processing {len(results)} technique items from LLM")
+                
+                for item in results:
+                    if not isinstance(item, dict):
+                        logger.warning(f"Skipping non-dict item: {type(item)}")
                         continue
                     
-                    # Handle new format with multiple techniques per span
-                    techniques = result.get("techniques", [])
+                    # Extract from simplified format
+                    span_id = item.get("span", -1)
+                    technique_id = item.get("tid", "")
+                    confidence = item.get("conf", 50)
                     
-                    # Fallback to old format if needed
-                    if not techniques and result.get("technique"):
-                        techniques = [{
-                            "external_id": result["technique"].get("external_id"),
-                            "name": result["technique"].get("name"),
-                            "evidence": result.get("evidence", {}),
-                            "confidence": result.get("confidence", 60)
-                        }]
+                    if not technique_id:
+                        logger.debug(f"Skipping item without technique ID: {item}")
+                        continue
                     
-                    for tech in techniques:
-                        if not tech.get("external_id"):
-                            continue
-                            
-                        evidence = tech.get("evidence", {})
-                        
-                        # Validate evidence before adding claim
-                        quotes = evidence.get("quotes", [])
-                        line_refs = evidence.get("line_refs", [])
-                        if not quotes:
-                            logger.debug(f"  Skipping {tech.get('external_id')}: no quotes")
-                            continue
-                        if not line_refs:
-                            logger.debug(f"  Warning: {tech.get('external_id')} has no line_refs, using span refs")
-                            line_refs = mem.spans[span_id].get("line_refs", [])
-                        
-                        # Check for sub-technique preference
-                        choice_id = tech.get("external_id", "")
-                        if choice_id and "." not in choice_id:
-                            subs = list_subtechniques(choice_id)
-                            if isinstance(subs, list) and subs:
-                                for s in subs:
-                                    nm = (s.get("name", "") or "").lower()
-                                    if nm and any(nm in (q or "").lower() for q in evidence.get("quotes", [])):
-                                        tech["external_id"] = s.get("external_id", choice_id)
-                                        tech["name"] = s.get("name", tech.get("name", ""))
-                                        break
-                        
-                        # Handle confidence conversion (might be string like "high" or number)
-                        confidence = tech.get("confidence", 60)
-                        if isinstance(confidence, str):
-                            confidence_map = {
-                                "very high": 95, "veryhigh": 95,
-                                "high": 85,
-                                "medium": 60, "moderate": 60,
-                                "low": 40,
-                                "very low": 20, "verylow": 20
+                    if span_id < 0 or span_id >= len(mem.spans):
+                        logger.warning(f"Invalid span ID {span_id} for technique {technique_id}")
+                        continue
+                    
+                    # Get span text and line refs for evidence
+                    span_data = mem.spans[span_id]
+                    span_text = span_data.get("text", "")[:500]
+                    line_refs = span_data.get("line_refs", [])
+                    
+                    # Create simplified claim
+                    claim = {
+                        "external_id": technique_id,
+                        "name": technique_id,  # Will be enriched from candidates
+                        "quotes": [span_text] if span_text else [],
+                        "line_refs": line_refs,
+                        "confidence": confidence,
+                        "span_idx": span_id,
+                        "evidence_score": confidence,
+                        "source": "batch_mapper"
+                    }
+                    
+                    # Try to enrich with candidate metadata if available
+                    for cand in mem.candidates.get(span_id, []):
+                        if cand.get("external_id") == technique_id:
+                            claim["name"] = cand.get("name", technique_id)
+                            claim["technique_meta"] = {
+                                "name": cand.get("name", ""),
+                                "description": cand.get("description", ""),
+                                "tactic": cand.get("tactic", ""),
+                                "platforms": cand.get("platforms", []),
+                                "subtechnique_of": cand.get("subtechnique_of"),
                             }
-                            confidence = confidence_map.get(confidence.lower(), 60)
-                        else:
-                            try:
-                                confidence = int(confidence)
-                            except (ValueError, TypeError):
-                                confidence = 60
-                        
-                        mem.claims.append({
-                            "span_idx": span_id,
-                            "external_id": tech["external_id"],
-                            "name": tech.get("name", ""),
-                            "quotes": quotes,
-                            "line_refs": line_refs,
-                            "confidence": confidence,
-                            "source": "batch_mapper"
-                        })
-                        added_claims += 1
-                        logger.debug(f"  Added claim: {tech['external_id']} with {len(quotes)} quotes")
+                            break
+                    
+                    mem.claims.append(claim)
+                    added_claims += 1
+                    
+                    logger.debug(f"Added claim: span={span_id}, technique={technique_id}, conf={confidence}")
+            else:
+                logger.warning(f"Results is not a list after parsing: {type(results)}")
             
+            logger.info(f"BatchMapperAgent: Batch added {added_claims} claims")
             return added_claims
                         
         except Exception as e:

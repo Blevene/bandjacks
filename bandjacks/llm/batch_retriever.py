@@ -34,10 +34,10 @@ class BatchRetrieverAgent:
             config: Configuration with top_k parameter
         """
         logger.info(f"[BatchRetrieverAgent] Starting with {len(mem.spans)} spans")
-        print(f"[BatchRetrieverAgent] Starting with {len(mem.spans)} spans")
+        logger.debug(f"[BatchRetrieverAgent] Starting with {len(mem.spans)} spans")
         if not mem.spans:
             logger.info("[BatchRetrieverAgent] No spans to process")
-            print("[BatchRetrieverAgent] No spans to process")
+            logger.debug("[BatchRetrieverAgent] No spans to process")
             return
             
         top_k = int(config.get("top_k", 8))
@@ -46,7 +46,7 @@ class BatchRetrieverAgent:
         span_texts = [self._hinted_query(span["text"]) for span in mem.spans]
         
         logger.info(f"[BatchRetriever] Processing {len(span_texts)} spans in batch")
-        print(f"[BatchRetriever] Processing {len(span_texts)} spans in batch")
+        logger.debug(f"[BatchRetriever] Processing {len(span_texts)} spans in batch")
         
         # Batch encode all texts at once
         import time
@@ -54,7 +54,7 @@ class BatchRetrieverAgent:
         vectors = batch_encode(span_texts)
         encode_time = time.time() - start_time
         logger.info(f"[BatchRetriever] Batch encoding took {encode_time:.2f}s for {len(span_texts)} texts")
-        print(f"[BatchRetriever] Batch encoding took {encode_time:.2f}s for {len(span_texts)} texts")
+        logger.debug(f"[BatchRetriever] Batch encoding took {encode_time:.2f}s for {len(span_texts)} texts")
         
         # Get OpenSearch client
         from bandjacks.services.api.settings import settings
@@ -87,7 +87,7 @@ class BatchRetrieverAgent:
             })
         
         if not msearch_body:
-            print("[BatchRetriever] No valid vectors to search")
+            logger.debug("[BatchRetriever] No valid vectors to search")
             return
             
         try:
@@ -96,7 +96,7 @@ class BatchRetrieverAgent:
             response = client.msearch(body=msearch_body)
             search_time = time.time() - search_start
             logger.info(f"[BatchRetriever] msearch took {search_time:.2f}s for {len(valid_indices)} queries")
-            print(f"[BatchRetriever] msearch took {search_time:.2f}s for {len(valid_indices)} queries")
+            logger.debug(f"[BatchRetriever] msearch took {search_time:.2f}s for {len(valid_indices)} queries")
             
             # Process results
             for idx, i in enumerate(valid_indices):
@@ -105,7 +105,7 @@ class BatchRetrieverAgent:
                     
                 search_result = response["responses"][idx]
                 if "error" in search_result:
-                    print(f"[BatchRetriever] Error for span {i}: {search_result['error']}")
+                    logger.debug(f"[BatchRetriever] Error for span {i}: {search_result['error']}")
                     continue
                 
                 # Initialize candidates list for this span
@@ -153,12 +153,12 @@ class BatchRetrieverAgent:
                     if added >= top_k:
                         break
                         
-            print(f"[BatchRetriever] Added candidates for {len(valid_indices)} spans")
+            logger.debug(f"[BatchRetriever] Added candidates for {len(valid_indices)} spans")
             
         except Exception as e:
-            print(f"[BatchRetriever] Error in batch search: {e}")
+            logger.debug(f"[BatchRetriever] Error in batch search: {e}")
             # Fallback to sequential retriever
-            print("[BatchRetriever] Falling back to sequential retrieval")
+            logger.debug("[BatchRetriever] Falling back to sequential retrieval")
             from bandjacks.llm.agents_v2 import RetrieverAgent
             RetrieverAgent().run(mem, config)
     

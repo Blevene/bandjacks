@@ -23,6 +23,7 @@ from bandjacks.llm.agents_v2 import (
 )
 from bandjacks.llm.mapper_optimized import BatchMapperAgent
 from bandjacks.llm.batch_retriever import BatchRetrieverAgent
+from bandjacks.llm.entity_extractor import EntityExtractionAgent
 from bandjacks.llm.tracker import ExtractionTracker
 from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.loaders.embedder import encode
@@ -101,7 +102,9 @@ class ExtractionPipeline:
             "extraction_duration_ms": (time.time() - tracker.started_at) * 1000 if hasattr(tracker, 'started_at') else 0,
             "spans_found": tracker.spans_total,
             "techniques_extracted": len(extraction_result.get("techniques", {})),
-            "confidence_avg": self._calculate_avg_confidence(extraction_result)
+            "confidence_avg": self._calculate_avg_confidence(extraction_result),
+            "entity_extraction_status": extraction_result.get("entities", {}).get("extraction_status", "unknown"),
+            "extraction_errors": extraction_result.get("extraction_errors", [])
         }
         
         # Add techniques_count at top level for API compatibility
@@ -122,6 +125,10 @@ class ExtractionPipeline:
         
         This is the core extraction logic, using the agent chain.
         """
+        start_time = time.time()
+        logger.info(f"Starting extraction pipeline: text_length={len(report_text)}")
+        logger.debug(f"Config: {config}")
+        
         # Preprocess text
         processed_text = self._preprocess_text(report_text)
         
@@ -132,6 +139,14 @@ class ExtractionPipeline:
         )
         
         # Run agent pipeline
+        
+        # NEW: Extract entities first (malware, threat actors, etc.)
+        tracker.set_stage("EntityExtraction")
+        if progress_callback:
+            progress_callback(30, "Extracting threat entities...")
+        EntityExtractionAgent().run(mem, config)
+        logger.info(f"Extracted entities: primary={mem.entities.get('primary_entity', {}).get('name')}")
+        
         tracker.set_stage("SpanFinder")
         if progress_callback:
             progress_callback(35, "Finding technique spans in text...")
@@ -203,9 +218,13 @@ class ExtractionPipeline:
         return {
             "techniques": mem.techniques,
             "claims": mem.claims,
+            "entities": getattr(mem, "entities", {}),  # Full entity extraction results
             "threat_actors": getattr(mem, "threat_actors", []),
             "malware": getattr(mem, "malware", []),
-            "tools": getattr(mem, "tools", []),
+            "software": getattr(mem, "software", []),
+            "tools": getattr(mem, "tools", []),  # Kept for backward compatibility
+            "campaigns": getattr(mem, "campaigns", []),
+            "primary_entity": getattr(mem, "entities", {}).get("primary_entity"),
             "spans": [{"text": s.get("text", ""), "line_refs": s.get("line_refs", [])} 
                      for s in mem.spans],
             "extraction_metrics": {
