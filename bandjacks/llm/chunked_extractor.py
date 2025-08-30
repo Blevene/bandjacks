@@ -6,7 +6,7 @@ import time
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 import concurrent.futures
-from bandjacks.llm.agentic_v2_optimized import run_agentic_v2_optimized
+from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 from bandjacks.llm.tracker import ExtractionTracker
 # Removed hardcoded threat actor and malware extraction - handled by proper entity recognition
 
@@ -29,10 +29,10 @@ class ChunkedExtractor:
     
     def __init__(
         self,
-        chunk_size: int = 3000,
-        overlap: int = 200,
-        max_chunks: int = 10,
-        parallel_workers: int = 3
+        chunk_size: int = 4000,
+        overlap: int = 150,
+        max_chunks: int = 8,
+        parallel_workers: int = 1
     ):
         """
         Initialize chunked extractor.
@@ -103,14 +103,16 @@ class ChunkedExtractor:
                 next_start = chunk_end - self.overlap
                 overlap_end = chunk_end - next_start
             
-            chunks.append(DocumentChunk(
+            chunk = DocumentChunk(
                 text=chunk_text,
                 start_idx=chunk_start,
                 end_idx=chunk_end,
                 chunk_id=chunk_id,
                 overlap_start=overlap_start,
                 overlap_end=overlap_end
-            ))
+            )
+            chunks.append(chunk)
+            logger.debug(f"Created chunk {chunk_id}: chars={len(chunk_text)}, boundaries=({chunk_start}, {chunk_end}), preview={chunk_text[:100]}...")
             
             # Move to next chunk position
             current_pos = chunk_end - self.overlap
@@ -146,8 +148,8 @@ class ChunkedExtractor:
                 tracker = ExtractionTracker()
                 result = self.process_chunk(chunk, config, tracker)
                 
-                # If we got results, return them
-                if result.get("claims") or result.get("techniques"):
+                # If we got results, return them (check for key existence, not truthiness)
+                if "claims" in result or "techniques" in result:
                     return result
                     
                 # If empty but no error, might be legitimately empty
@@ -174,6 +176,7 @@ class ChunkedExtractor:
             "chunk_boundaries": (chunk.start_idx, chunk.end_idx),
             "claims": [],
             "techniques": {},
+            "entities": {},  # Empty entities for failed chunks
             "error": f"Failed after {max_retries} attempts: {last_error}",
             "failed": True
         }
@@ -195,22 +198,24 @@ class ChunkedExtractor:
         Returns:
             Extraction results for the chunk
         """
-        # Create chunk-specific config, preserving dynamic spans from parent config
+        # Create chunk-specific config
         chunk_config = config.copy()
         
-        # Use parent's max_spans if provided (dynamic), otherwise default
-        spans_for_chunk = config.get("max_spans", 10)  # Dynamic spans per chunk
+        # Adjust spans per chunk based on text richness
+        spans_for_chunk = config.get("max_spans", 8)  # Reduced default
         
         chunk_config.update({
-            "use_batch_mapper": config.get("use_batch_mapper", True),
-            "use_batch_retriever": config.get("use_batch_retriever", True),
-            "disable_discovery": config.get("disable_discovery", False),  # Enable discovery by default
-            "disable_targeted_extraction": config.get("disable_targeted_extraction", True),
-            "skip_verification": config.get("skip_verification", True),
-            "max_spans": spans_for_chunk,  # Use dynamic spans from parent
-            "span_score_threshold": config.get("span_score_threshold", 0.85),
-            "confidence_threshold": config.get("confidence_threshold", 50),
-            "max_tool_iterations": 2,  # Reduce iterations for speed
+            "use_batch_mapper": True,  # Always use batch for efficiency
+            "use_batch_retriever": True,
+            "disable_discovery": True,  # Disable discovery to reduce LLM calls
+            "disable_targeted_extraction": True,
+            "skip_verification": True,  # Skip verification for speed
+            "max_spans": spans_for_chunk,
+            "span_score_threshold": 0.9,  # Higher threshold for better quality
+            "confidence_threshold": 60,  # Higher confidence threshold
+            "max_tool_iterations": 1,  # Single iteration only
+            "batch_size": 3,  # Smaller batches for reliability
+            "max_batch_spans": 15,  # Limit total spans in batch mode
         })
         
         # Add chunk context to help with deduplication
@@ -222,10 +227,9 @@ class ChunkedExtractor:
         
         # Run extraction on chunk
         try:
-            result = run_agentic_v2_optimized(
+            result = run_extraction_pipeline(
                 report_text=chunk_text,
-                config=chunk_config,
-                tracker=tracker
+                config=chunk_config
             )
             
             # Ensure result has required fields
@@ -252,6 +256,7 @@ class ChunkedExtractor:
                 "chunk_boundaries": (chunk.start_idx, chunk.end_idx),
                 "claims": [],
                 "techniques": {},
+                "entities": {},  # Empty entities for failed chunks
                 "error": str(e),
                 "failed": True
             }
@@ -270,7 +275,14 @@ class ChunkedExtractor:
             "claims": [],
             "techniques": {},
             "chunks_processed": len(chunk_results),
-            "metrics": {}
+            "metrics": {},
+            "entities": {
+                "primary_entity": None,
+                "malware": [],
+                "software": [],
+                "threat_actors": [],
+                "campaigns": []
+            }
         }
         
         # Track seen techniques to avoid duplicates
@@ -285,7 +297,8 @@ class ChunkedExtractor:
             
             # Process claims from this chunk
             for claim in result.get("claims", []):
-                tech_id = claim.get("technique_id", "")
+                # Handle both field names for compatibility
+                tech_id = claim.get("technique_id") or claim.get("external_id", "")
                 if not tech_id:
                     continue
                 
@@ -328,14 +341,64 @@ class ChunkedExtractor:
         
         # Build techniques dict for compatibility
         for claim in merged["claims"]:
-            tech_id = claim.get("technique_id", "")
+            # Handle both field names
+            tech_id = claim.get("technique_id") or claim.get("external_id", "")
             if tech_id:
                 merged["techniques"][tech_id] = {
-                    "name": claim.get("technique_name", tech_id),
+                    "name": claim.get("technique_name") or claim.get("name", tech_id),
                     "confidence": claim.get("confidence", 50),
-                    "evidence": claim.get("evidence", {}).get("quotes", []),
-                    "line_refs": claim.get("evidence", {}).get("line_refs", [])
+                    "evidence": claim.get("evidence", {}).get("quotes", claim.get("quotes", [])),
+                    "line_refs": claim.get("evidence", {}).get("line_refs", claim.get("line_refs", []))
                 }
+        
+        # Merge entities from all chunks
+        seen_entities = {
+            "malware": {},
+            "software": {},
+            "threat_actors": {},
+            "campaigns": {}
+        }
+        
+        primary_entity_candidates = []
+        
+        for result in chunk_results:
+            chunk_entities = result.get("entities", {})
+            
+            # Collect primary entity candidates
+            if chunk_entities.get("primary_entity"):
+                primary_entity_candidates.append(chunk_entities["primary_entity"])
+            
+            # Merge entity lists
+            for entity_type in ["malware", "software", "threat_actors", "campaigns"]:
+                for entity in chunk_entities.get(entity_type, []):
+                    # Skip if entity is not a dict (malformed data)
+                    if not isinstance(entity, dict):
+                        continue
+                    entity_name = entity.get("name", "")
+                    if entity_name and entity_name not in seen_entities[entity_type]:
+                        seen_entities[entity_type][entity_name] = entity
+        
+        # Choose primary entity (prefer malware, then threat actors)
+        if primary_entity_candidates:
+            # Prefer malware as primary entity (ensure they are dicts)
+            malware_candidates = [e for e in primary_entity_candidates 
+                                 if isinstance(e, dict) and e.get("type") == "malware"]
+            if malware_candidates:
+                merged["entities"]["primary_entity"] = malware_candidates[0]
+            else:
+                # Use first valid dict candidate
+                valid_candidates = [e for e in primary_entity_candidates if isinstance(e, dict)]
+                if valid_candidates:
+                    merged["entities"]["primary_entity"] = valid_candidates[0]
+        
+        # Convert entity dicts to lists
+        for entity_type in ["malware", "software", "threat_actors", "campaigns"]:
+            merged["entities"][entity_type] = list(seen_entities[entity_type].values())
+        
+        # Log entity extraction results
+        if merged["entities"]["primary_entity"]:
+            logger.info(f"Primary entity: {merged['entities']['primary_entity'].get('name')} "
+                       f"({merged['entities']['primary_entity'].get('type')})")
         
         # Aggregate metrics
         total_time = sum(r.get("metrics", {}).get("dur_sec", 0) for r in chunk_results)
@@ -386,8 +449,9 @@ class ChunkedExtractor:
         # Process chunks
         chunk_results = []
         
-        if parallel and len(chunks) > 1:
+        if parallel and len(chunks) > 1 and self.parallel_workers > 1:
             # Process chunks in parallel
+            logger.info(f"Processing {len(chunks)} chunks in parallel with {self.parallel_workers} workers")
             with concurrent.futures.ThreadPoolExecutor(max_workers=self.parallel_workers) as executor:
                 # Create individual trackers for each chunk
                 futures = []
@@ -398,34 +462,47 @@ class ChunkedExtractor:
                 
                 # Collect results as they complete
                 completed = 0
-                for future, chunk_id in futures:
+                chunk_results = [None] * len(chunks)  # Preserve order
+                
+                # Create mapping of future to chunk info
+                future_to_info = {future: (chunk_id, idx) 
+                                 for idx, (future, chunk_id) in enumerate(futures)}
+                
+                # Use as_completed for better async handling
+                for future in concurrent.futures.as_completed(future_to_info, timeout=300):
+                    chunk_id, idx = future_to_info[future]
                     try:
-                        result = future.result(timeout=60)  # 1 minute timeout per chunk
-                        chunk_results.append(result)
+                        result = future.result()  # No timeout here, as_completed handles it
+                        chunk_results[idx] = result
                         completed += 1
                         
-                        # Update progress
+                        # Log and update progress
+                        logger.info(f"Chunk {chunk_id} complete: {len(result.get('claims', []))} claims, {len(result.get('techniques', {}))} techniques")
                         if progress_callback:
-                            progress_pct = 35 + int((completed / len(chunks)) * 30)  # 35-65% for extraction
+                            progress_pct = 35 + int((completed / len(chunks)) * 30)
                             progress_callback(progress_pct, f"Processed chunk {completed}/{len(chunks)}")
-                        
-                        logger.info(f"Chunk {chunk_id} complete: {len(result.get('claims', []))} claims")
+                            
                     except Exception as e:
-                        logger.error(f"Chunk {chunk_id} failed: {e}")
-                        completed += 1
-                        chunk_results.append({
+                        logger.error(f"Chunk {chunk_id} failed: {type(e).__name__}: {str(e) or 'No error message'}")
+                        chunk_results[idx] = {
                             "chunk_id": chunk_id,
                             "claims": [],
                             "techniques": {},
-                            "error": str(e),
+                            "entities": {},
+                            "error": f"{type(e).__name__}: {str(e)}",
                             "failed": True
-                        })
-                        
+                        }
+                        completed += 1
                         if progress_callback:
                             progress_pct = 35 + int((completed / len(chunks)) * 30)
                             progress_callback(progress_pct, f"Chunk {completed}/{len(chunks)} (failed)")
+                
+                # Filter out None values in case of catastrophic failure
+                chunk_results = [r for r in chunk_results if r is not None]
         else:
             # Process chunks sequentially
+            reason = "single chunk" if len(chunks) == 1 else f"single worker (parallel_workers={self.parallel_workers})"
+            logger.info(f"Processing {len(chunks)} chunks sequentially ({reason})")
             for i, chunk in enumerate(chunks):
                 # Use retry version for better resilience
                 result = self.process_chunk_with_retry(chunk, config)
@@ -441,10 +518,6 @@ class ChunkedExtractor:
         # Merge results
         merged = self.merge_results(chunk_results)
         logger.info(f"Extraction complete: {len(merged['techniques'])} unique techniques from {len(chunks)} chunks")
-        
-        # Threat actors and malware extraction removed - should be handled by proper entity recognition
-        merged["threat_actors"] = []
-        merged["malware"] = []
         
         return merged
 

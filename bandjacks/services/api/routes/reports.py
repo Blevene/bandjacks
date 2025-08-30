@@ -1069,9 +1069,19 @@ async def generate_flow_for_report(
         )
         
         # Build extraction data
+        # Convert claims to techniques dict
+        techniques = {}
+        for claim in extraction.get("claims", []):
+            techniques[claim["technique_id"]] = {
+                "technique_id": claim["technique_id"],
+                "technique_name": claim["technique_name"],
+                "confidence": claim["confidence"],
+                "evidence": claim["evidence"]
+            }
+        
         extraction_data = {
             "extraction_claims": extraction.get("claims", []),
-            "techniques": extraction.get("techniques", {}),
+            "techniques": techniques,
             "chunks": [{
                 "claims": extraction.get("claims", []),
                 "entities": {

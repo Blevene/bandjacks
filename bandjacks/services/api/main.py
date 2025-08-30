@@ -1,11 +1,75 @@
 """Main FastAPI application."""
 
+import os
 import logging
+import logging.config
+import logging.handlers
 import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from bandjacks.services.api.settings import settings
+
+# Configure logging before anything else
+LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+LOG_FILE = os.getenv('LOG_FILE', 'extraction_pipeline.log')
+
+LOGGING_CONFIG = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'detailed': {
+            'format': '%(asctime)s [%(processName)s:%(threadName)s] %(name)s %(levelname)s: %(message)s'
+        },
+        'simple': {
+            'format': '%(levelname)s: %(message)s'
+        }
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'level': LOG_LEVEL,
+            'formatter': 'detailed',
+            'stream': 'ext://sys.stdout'
+        },
+        'file': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'level': 'DEBUG',  # Always capture DEBUG in file
+            'formatter': 'detailed',
+            'filename': LOG_FILE,
+            'maxBytes': 10485760,  # 10MB
+            'backupCount': 5
+        }
+    },
+    'loggers': {
+        'bandjacks.llm': {
+            'level': 'DEBUG',
+            'handlers': ['console', 'file'],
+            'propagate': False
+        },
+        'bandjacks.services.api': {
+            'level': 'DEBUG' if LOG_LEVEL == 'DEBUG' else 'INFO',
+            'handlers': ['console', 'file'],
+            'propagate': False
+        },
+        'bandjacks.llm.client': {
+            'level': 'DEBUG',
+            'handlers': ['console', 'file'],
+            'propagate': False
+        },
+        'bandjacks.llm.chunked_extractor': {
+            'level': 'DEBUG',
+            'handlers': ['console', 'file'],
+            'propagate': False
+        }
+    },
+    'root': {
+        'level': LOG_LEVEL,
+        'handlers': ['console']
+    }
+}
+
+logging.config.dictConfig(LOGGING_CONFIG)
 from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, sequence, simulate, analyze
 from bandjacks.services.api.middleware import TracingMiddleware
 from bandjacks.services.api.middleware.error_handler import ErrorHandlerMiddleware
@@ -19,6 +83,7 @@ from bandjacks.llm.cache import get_cache_stats, clear_cache
 from bandjacks.monitoring.compliance_metrics import get_compliance_report, get_compliance_metrics
 
 logger = logging.getLogger(__name__)
+logger.info(f"Logging configured: level={LOG_LEVEL}, file={LOG_FILE}")
 
 app = FastAPI(
     title="Bandjacks API",
