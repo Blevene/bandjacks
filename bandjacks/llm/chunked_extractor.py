@@ -371,12 +371,19 @@ class ChunkedExtractor:
             # Merge entity lists
             for entity_type in ["malware", "software", "threat_actors", "campaigns"]:
                 for entity in chunk_entities.get(entity_type, []):
-                    # Skip if entity is not a dict (malformed data)
-                    if not isinstance(entity, dict):
+                    # Handle both string and dict entities
+                    if isinstance(entity, str):
+                        # Convert string to dict format
+                        entity_name = entity
+                        entity_dict = {"name": entity, "type": entity_type.rstrip("s")}  # Remove plural
+                    elif isinstance(entity, dict):
+                        entity_name = entity.get("name", "")
+                        entity_dict = entity
+                    else:
                         continue
-                    entity_name = entity.get("name", "")
+                    
                     if entity_name and entity_name not in seen_entities[entity_type]:
-                        seen_entities[entity_type][entity_name] = entity
+                        seen_entities[entity_type][entity_name] = entity_dict
         
         # Choose primary entity (prefer malware, then threat actors)
         if primary_entity_candidates:

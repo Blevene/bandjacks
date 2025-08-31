@@ -469,11 +469,7 @@ class JobProcessor:
                 "techniques": extraction_results.get("techniques", {}),
                 "chunks": [{
                     "claims": extraction_results.get("claims", []),
-                    "entities": {
-                        "threat_actors": extraction_results.get("threat_actors", []),
-                        "malware": extraction_results.get("malware", []),
-                        "tools": []
-                    }
+                    "entities": extraction_results.get("entities", {})
                 }]
             }
             
@@ -504,10 +500,7 @@ class JobProcessor:
                 "techniques": extraction_results.get("techniques", {}),
                 "technique_count": len(extraction_results.get("techniques", {})),
                 "claims": extraction_results.get("claims", []),
-                "entities": {
-                    "threat_actors": extraction_results.get("threat_actors", []),
-                    "malware": extraction_results.get("malware", [])
-                },
+                "entities": extraction_results.get("entities", {}),
                 "flow": flow_data,
                 "evidence_map": {},
                 "requires_manual_review": True,
@@ -519,6 +512,7 @@ class JobProcessor:
             "techniques": pipeline_results.get("techniques", {}),
             "techniques_count": pipeline_results.get("technique_count", 0),
             "claims": pipeline_results.get("claims", []),
+            "entities": pipeline_results.get("entities", {}),
             "threat_actors": pipeline_results.get("entities", {}).get("threat_actors", []),
             "malware": pipeline_results.get("entities", {}).get("malware", []),
             "tools": pipeline_results.get("entities", {}).get("tools", [])
@@ -586,6 +580,7 @@ class JobProcessor:
                 "claims_count": len(claims),
                 "bundle_preview": bundle,
                 "extraction_claims": claims,
+                "entities": extraction_results.get("entities", {}),
                 "flow": flow_data,
                 "review_package": {
                     "evidence_map": pipeline_results.get("evidence_map", {}),

@@ -247,7 +247,8 @@ async def ingest_report(request: IngestRequest):
                 "techniques_count": extraction_results.get("techniques_count", 0),
                 "claims_count": len(extraction_results.get("claims", [])),
                 "bundle_preview": bundle,
-                "extraction_claims": extraction_results.get("claims", [])
+                "extraction_claims": extraction_results.get("claims", []),
+                "entities": extraction_results.get("entities", {})
             },
             source_info=source_info,
             raw_text=text_content,

@@ -99,6 +99,7 @@ class OpenSearchReportStore:
                 "metrics": extraction_result.get("extraction_metrics", {}),
                 "bundle": extraction_result.get("bundle_preview", {}),
                 "claims": extraction_result.get("extraction_claims", []),
+                "entities": extraction_result.get("entities", {}),  # Include extracted entities
                 "flow": extraction_result.get("flow")  # Include flow if generated
             },
             "techniques": techniques,

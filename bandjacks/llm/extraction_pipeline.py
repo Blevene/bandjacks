@@ -215,16 +215,34 @@ class ExtractionPipeline:
         AssemblerAgent().run(mem, config)
         
         # Format result
+        # Build proper entities structure for chunked_extractor
+        entities_struct = {
+            "malware": getattr(mem, "malware", []),
+            "software": getattr(mem, "software", []),
+            "threat_actors": getattr(mem, "threat_actors", []),
+            "campaigns": getattr(mem, "campaigns", []),
+            "primary_entity": None
+        }
+        
+        # Extract primary entity if available
+        raw_entities = getattr(mem, "entities", {})
+        if isinstance(raw_entities, dict) and "entities" in raw_entities:
+            # Find primary entity from the extracted entities
+            for entity in raw_entities.get("entities", []):
+                if isinstance(entity, dict) and entity.get("type") == "malware":
+                    entities_struct["primary_entity"] = entity
+                    break
+        
         return {
             "techniques": mem.techniques,
             "claims": mem.claims,
-            "entities": getattr(mem, "entities", {}),  # Full entity extraction results
+            "entities": entities_struct,  # Properly structured entities
             "threat_actors": getattr(mem, "threat_actors", []),
             "malware": getattr(mem, "malware", []),
             "software": getattr(mem, "software", []),
             "tools": getattr(mem, "tools", []),  # Kept for backward compatibility
             "campaigns": getattr(mem, "campaigns", []),
-            "primary_entity": getattr(mem, "entities", {}).get("primary_entity"),
+            "primary_entity": entities_struct.get("primary_entity"),
             "spans": [{"text": s.get("text", ""), "line_refs": s.get("line_refs", [])} 
                      for s in mem.spans],
             "extraction_metrics": {
