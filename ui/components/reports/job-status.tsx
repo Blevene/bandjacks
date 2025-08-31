@@ -41,7 +41,7 @@ interface JobStatus {
     report_id: string;
     techniques_count: number;
     claims_count: number;
-    campaign_created: boolean;
+    flow_generated: boolean;
     bundle_size: number;
     extraction_metrics?: {
       total_chunks?: number;
@@ -296,7 +296,7 @@ export function JobStatus({
                   <div>Techniques: {job.result.techniques_count}</div>
                   <div>Claims: {job.result.claims_count}</div>
                   <div>Bundle Size: {job.result.bundle_size} objects</div>
-                  <div>Campaign: {job.result.campaign_created ? "Created" : "Not created"}</div>
+                  <div>Flow: {job.result.flow_generated ? "Generated" : "Not generated"}</div>
                 </div>
                 {autoRedirect && (
                   <p className="text-xs text-muted-foreground">Redirecting to report...</p>

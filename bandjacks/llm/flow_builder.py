@@ -464,19 +464,25 @@ class FlowBuilder:
         flow_id = f"flow--{uuid.uuid4()}"
         episode_id = f"episode--{uuid.uuid4()}"
         
-        # Extract flow metadata
+        # Extract flow metadata (support multiple formats)
         flow_meta = llm_flow.get("flow", {}).get("properties", {})
-        flow_name = flow_meta.get("name", "Unnamed Flow")
+        flow_name = (llm_flow.get("attack_flow_name") or 
+                    llm_flow.get("flow_name") or 
+                    flow_meta.get("name", "Unnamed Flow"))
         flow_description = flow_meta.get("description", "")
         
-        # Convert steps to actions
+        # Convert steps to actions (support 'steps', 'attack_steps', or 'attack_flow')
         actions = []
-        for step in llm_flow.get("steps", []):
+        steps = (llm_flow.get("steps") or 
+                llm_flow.get("attack_steps") or 
+                llm_flow.get("attack_flow", []))
+        for step in steps:
             action_id = f"action--{uuid.uuid4()}"
             
             # Extract entity info
             entity = step.get("entity", {})
-            technique_id = entity.get("pk", "unknown")
+            # Support both 'pk' and 'id' fields
+            technique_id = entity.get("pk") or entity.get("id", "unknown")
             
             # Try to get full STIX ID if it's just a technique number
             if technique_id.startswith("T") and not technique_id.startswith("attack-pattern--"):
@@ -557,17 +563,45 @@ class FlowBuilder:
         if "chunks" in extraction_data:
             for chunk in extraction_data["chunks"]:
                 for claim in chunk.get("claims", []):
-                    for mapping in claim.get("mappings", []):
-                        tech_id = mapping.get("stix_id") or mapping.get("external_id")
+                    # Handle claims with mappings (old format)
+                    if "mappings" in claim:
+                        for mapping in claim.get("mappings", []):
+                            tech_id = mapping.get("stix_id") or mapping.get("external_id")
+                            if tech_id and tech_id not in seen_techniques:
+                                steps.append({
+                                    "technique_id": tech_id,
+                                    "name": mapping.get("name", "Unknown"),
+                                    "description": claim.get("span", {}).get("text", ""),
+                                    "confidence": mapping.get("confidence", 50.0),
+                                    "evidence": [claim.get("span", {})]
+                                })
+                                seen_techniques.add(tech_id)
+                    # Handle claims with direct external_id (new format)
+                    elif "external_id" in claim or "technique_id" in claim:
+                        tech_id = claim.get("external_id") or claim.get("technique_id")
                         if tech_id and tech_id not in seen_techniques:
                             steps.append({
                                 "technique_id": tech_id,
-                                "name": mapping.get("name", "Unknown"),
-                                "description": claim.get("span", {}).get("text", ""),
-                                "confidence": mapping.get("confidence", 50.0),
-                                "evidence": [claim.get("span", {})]
+                                "name": claim.get("name", tech_id),
+                                "description": " ".join(claim.get("quotes", [])),
+                                "confidence": claim.get("confidence", 50.0),
+                                "evidence": [{"text": " ".join(claim.get("quotes", [])), "line_refs": claim.get("line_refs", [])}]
                             })
                             seen_techniques.add(tech_id)
+        
+        # Also process techniques from extraction_result directly
+        if "techniques" in extraction_data and not steps:
+            techniques = extraction_data["techniques"]
+            for tech_id, tech_data in techniques.items():
+                if tech_id not in seen_techniques:
+                    steps.append({
+                        "technique_id": tech_id,
+                        "name": tech_data.get("name", tech_id),
+                        "description": tech_data.get("description", ""),
+                        "confidence": tech_data.get("confidence", 50.0),
+                        "evidence": tech_data.get("evidence", [])
+                    })
+                    seen_techniques.add(tech_id)
         
         if not steps:
             raise ValueError("No techniques found in extraction data")
@@ -1236,7 +1270,8 @@ class FlowBuilder:
             
             response = self.llm_client.call(
                 messages=messages,
-                tools=None  # No tools needed for flow generation
+                tools=None,  # No tools needed for flow generation
+                max_tokens=12000  # Increased for complex flows with many techniques
             )
             
             # Parse and validate response
@@ -1290,9 +1325,55 @@ class FlowBuilder:
         if "extraction_claims" in extraction_result:
             cti_data["claims"].extend(extraction_result["extraction_claims"])
         
+        # Add techniques from extraction result
+        if "techniques" in extraction_result:
+            techniques = extraction_result["techniques"]
+            for tech_id, tech_data in techniques.items():
+                cti_data["entities"]["techniques"].append({
+                    "id": tech_id,
+                    "name": tech_data.get("name", tech_id),
+                    "confidence": tech_data.get("confidence", 0)
+                })
+        
+        # Add top-level entities if present
+        if "threat_actors" in extraction_result:
+            cti_data["entities"]["threat_actors"].extend(extraction_result["threat_actors"])
+        if "malware" in extraction_result:
+            cti_data["entities"]["malware"].extend(extraction_result["malware"])
+        if "tools" in extraction_result:
+            cti_data["entities"]["tools"].extend(extraction_result["tools"])
+        if "campaigns" in extraction_result:
+            cti_data["entities"]["campaigns"].extend(extraction_result["campaigns"])
+        
         # Remove duplicates from entities
         for key in cti_data["entities"]:
-            cti_data["entities"][key] = list(set(cti_data["entities"][key]))
+            if key == "techniques":
+                # For techniques, deduplicate by ID
+                seen = set()
+                unique_techniques = []
+                for tech in cti_data["entities"]["techniques"]:
+                    tech_id = tech.get("id") if isinstance(tech, dict) else tech
+                    if tech_id not in seen:
+                        seen.add(tech_id)
+                        unique_techniques.append(tech)
+                cti_data["entities"]["techniques"] = unique_techniques
+            else:
+                # For other entities, check if all items are strings
+                items = cti_data["entities"][key]
+                if items:
+                    if all(isinstance(item, str) for item in items):
+                        # All strings, can use set for deduplication
+                        cti_data["entities"][key] = list(set(items))
+                    else:
+                        # Mixed types or dicts, deduplicate carefully
+                        seen = set()
+                        unique = []
+                        for item in items:
+                            item_key = str(item) if not isinstance(item, str) else item
+                            if item_key not in seen:
+                                seen.add(item_key)
+                                unique.append(item)
+                        cti_data["entities"][key] = unique
         
         return cti_data
     
@@ -1392,7 +1473,26 @@ Output as JSON matching the attack flow schema."""
         if "entities" in cti_data:
             for key in entities.keys():
                 if key in cti_data["entities"]:
-                    entities[key] = list(set(cti_data["entities"][key]))
+                    items = cti_data["entities"][key]
+                    if key == "techniques":
+                        # Handle techniques as dicts - extract formatted strings
+                        seen = set()
+                        for tech in items:
+                            if isinstance(tech, dict):
+                                tech_str = f"{tech.get('id', '')}: {tech.get('name', '')}"
+                            else:
+                                tech_str = str(tech)
+                            if tech_str not in seen:
+                                seen.add(tech_str)
+                                entities[key].append(tech_str)
+                    else:
+                        # For other entities, handle both strings and dicts
+                        seen = set()
+                        for item in items:
+                            item_str = str(item) if not isinstance(item, str) else item
+                            if item_str not in seen:
+                                seen.add(item_str)
+                                entities[key].append(item_str)
         
         # From claims
         if "claims" in cti_data:
@@ -1467,8 +1567,14 @@ Output as JSON matching the attack flow schema."""
                     }
                 }
             
+            # Normalize steps field (handle 'steps', 'attack_steps', or 'attack_flow')
             if "steps" not in flow:
-                flow["steps"] = []
+                if "attack_steps" in flow:
+                    flow["steps"] = flow["attack_steps"]
+                elif "attack_flow" in flow:
+                    flow["steps"] = flow["attack_flow"]
+                else:
+                    flow["steps"] = []
             
             # Add missing step fields
             for i, step in enumerate(flow["steps"]):
@@ -1506,11 +1612,26 @@ Output as JSON matching the attack flow schema."""
         valid_techniques = set()
         valid_tools = set()
         
+        # Get techniques from entities
+        if "entities" in cti_data and "techniques" in cti_data["entities"]:
+            for tech in cti_data["entities"]["techniques"]:
+                if isinstance(tech, dict):
+                    valid_techniques.add(tech.get("id", ""))
+                else:
+                    valid_techniques.add(str(tech))
+        
+        # Get techniques from claims (both old and new format)
         if "claims" in cti_data:
             for claim in cti_data["claims"]:
+                # Old format with mappings
                 for mapping in claim.get("mappings", []):
                     if mapping.get("external_id"):
                         valid_techniques.add(mapping["external_id"])
+                # New format with direct external_id
+                if claim.get("external_id"):
+                    valid_techniques.add(claim["external_id"])
+                if claim.get("technique_id"):
+                    valid_techniques.add(claim["technique_id"])
                 if claim.get("tool"):
                     valid_tools.add(claim["tool"])
         

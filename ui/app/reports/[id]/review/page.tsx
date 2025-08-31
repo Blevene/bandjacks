@@ -5,486 +5,407 @@ import { useParams, useRouter } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
-import { Loader2, Check, X, Edit2, Save, AlertCircle, ChevronLeft, CheckCircle } from "lucide-react";
-import { cn } from "@/lib/utils";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { 
+  Loader2, 
+  Check, 
+  X, 
+  Edit2, 
+  Save, 
+  AlertCircle, 
+  ChevronLeft, 
+  CheckCircle,
+  Shield,
+  TrendingUp,
+  Eye,
+  EyeOff
+} from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
-import { typedApi } from "@/lib/api-client";
-
-interface TechniqueClaim {
-  technique_id: string;
-  technique_name: string;
-  confidence: number;
-  evidence: {
-    quotes: string[];
-    line_refs: number[];
-  };
-  review_action?: "approve" | "reject" | "edit";
-  review_notes?: string;
-}
-
-interface ReviewData {
-  report_id: string;
-  review_status: string;
-  total_techniques: number;
-  reviewed_count: number;
-  approved_count: number;
-  rejected_count: number;
-  edited_count: number;
-  extraction_claims: TechniqueClaim[];
-}
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import type { Report, TechniqueClaim, ClaimReviewDecision } from "@/lib/report-types";
+import { getConfidenceColor, getConfidenceBadgeVariant, isExtractionComplete } from "@/lib/report-types";
+import { TechniqueClaims } from "@/components/reports/technique-claims";
 
 export default function ReportReviewPage() {
   const params = useParams();
   const router = useRouter();
-  const { toast } = useToast();
   const reportId = params.id as string;
-
+  const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [reviewData, setReviewData] = useState<ReviewData | null>(null);
-  const [techniqueActions, setTechniqueActions] = useState<Record<string, {
-    action: "approve" | "reject" | "edit";
-    notes?: string;
-  }>>({});
-  const [editingNotes, setEditingNotes] = useState<string | null>(null);
-  const [notes, setNotes] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const [reviewDecisions, setReviewDecisions] = useState<Record<number, ClaimReviewDecision>>({});
+  const [reviewNotes, setReviewNotes] = useState("");
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editingClaim, setEditingClaim] = useState<{ index: number; claim: TechniqueClaim } | null>(null);
+  const [editedTechniqueId, setEditedTechniqueId] = useState("");
+  const [editedConfidence, setEditedConfidence] = useState(0);
+  const { toast } = useToast();
 
   useEffect(() => {
     if (reportId) {
-      fetchReviewData();
+      fetchReport();
     }
   }, [reportId]);
 
-  const fetchReviewData = async () => {
+  const fetchReport = async () => {
     try {
-      const data = await typedApi.reports.getReviewStatus(reportId);
-      
-      // Transform backend response to match expected structure
-      const transformedData: ReviewData = {
-        report_id: data.report_id,
-        review_status: data.review_status || "pending",
-        total_techniques: data.total_claims || 0,
-        reviewed_count: 0,
-        approved_count: 0,
-        rejected_count: 0,
-        edited_count: 0,
-        extraction_claims: (data.claims || []).map((claim: any) => ({
-          technique_id: claim.technique_id,
-          technique_name: claim.technique_name,
-          confidence: claim.confidence,
-          evidence: claim.evidence,
-          review_action: claim.review_action,
-          review_notes: claim.review_notes
-        }))
-      };
-      
-      setReviewData(transformedData);
-      
-      // Initialize actions from existing review data
-      if (transformedData.extraction_claims) {
-        const actions: typeof techniqueActions = {};
-        transformedData.extraction_claims.forEach((claim: TechniqueClaim) => {
-          if (claim.review_action) {
-            actions[claim.technique_id] = {
-              action: claim.review_action,
-              notes: claim.review_notes
-            };
-            if (claim.review_notes) {
-              setNotes(prev => ({ ...prev, [claim.technique_id]: claim.review_notes || "" }));
-            }
-          }
-        });
-        setTechniqueActions(actions);
+      const response = await fetch(`http://localhost:8000/v1/reports/${reportId}`);
+      if (!response.ok) {
+        throw new Error(`Failed to fetch report: ${response.statusText}`);
       }
-    } catch (error) {
-      console.error("Error fetching review data:", error);
+      const data = await response.json();
+      setReport(data);
+
+      // Initialize review decisions from existing review data
+      if (data.review?.decisions) {
+        const decisions: Record<number, ClaimReviewDecision> = {};
+        Object.entries(data.review.decisions).forEach(([techId, decision]: [string, any]) => {
+          // Map existing decisions to claim indices
+          data.extraction?.claims?.forEach((claim: TechniqueClaim, idx: number) => {
+            if (claim.external_id === techId) {
+              decisions[idx] = {
+                claim_index: idx,
+                technique_id: techId,
+                action: decision.action,
+                edited_technique_id: decision.edited_mapping,
+                confidence_adjustment: decision.confidence,
+                notes: decision.notes
+              };
+            }
+          });
+        });
+        setReviewDecisions(decisions);
+      }
+    } catch (error: any) {
+      console.error("Error fetching report:", error);
       toast({
-        title: "Error",
-        description: "Failed to load review data",
+        title: "Error loading report",
+        description: error.message || "Failed to load report for review",
         variant: "destructive",
       });
+      setTimeout(() => router.push("/reports"), 2000);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleAction = (techniqueId: string, action: "approve" | "reject" | "edit") => {
-    setTechniqueActions(prev => ({
-      ...prev,
-      [techniqueId]: {
-        action,
-        notes: notes[techniqueId]
+  const handleReviewAction = (claimIndex: number, action: 'approve' | 'reject' | 'edit') => {
+    if (action === 'edit') {
+      const claim = report?.extraction?.claims[claimIndex];
+      if (claim) {
+        setEditingClaim({ index: claimIndex, claim });
+        setEditedTechniqueId(claim.external_id);
+        setEditedConfidence(claim.confidence);
+        setEditDialogOpen(true);
       }
-    }));
+    } else {
+      setReviewDecisions(prev => ({
+        ...prev,
+        [claimIndex]: {
+          claim_index: claimIndex,
+          technique_id: report?.extraction?.claims[claimIndex]?.external_id || '',
+          action: action,
+          notes: ''
+        }
+      }));
+    }
   };
 
-  const handleNotesChange = (techniqueId: string, value: string) => {
-    setNotes(prev => ({ ...prev, [techniqueId]: value }));
-  };
-
-  const handleBulkAction = (action: "approve" | "reject") => {
-    if (!reviewData || !reviewData.extraction_claims) return;
-    
-    const newActions: typeof techniqueActions = {};
-    reviewData.extraction_claims.forEach(claim => {
-      newActions[claim.technique_id] = { action };
-    });
-    setTechniqueActions(newActions);
+  const handleEditSave = () => {
+    if (editingClaim) {
+      setReviewDecisions(prev => ({
+        ...prev,
+        [editingClaim.index]: {
+          claim_index: editingClaim.index,
+          technique_id: editingClaim.claim.external_id,
+          action: 'edit',
+          edited_technique_id: editedTechniqueId !== editingClaim.claim.external_id ? editedTechniqueId : undefined,
+          confidence_adjustment: editedConfidence !== editingClaim.claim.confidence ? editedConfidence : undefined,
+          notes: ''
+        }
+      }));
+      setEditDialogOpen(false);
+      setEditingClaim(null);
+    }
   };
 
   const handleSubmitReview = async () => {
-    if (!reviewData) return;
-    
-    setSubmitting(true);
-    try {
-      const techniqueActionsList = Object.entries(techniqueActions).map(([id, data]) => ({
-        technique_id: id,
-        action: data.action,
-        notes: notes[id],
-      }));
+    if (!report || !isExtractionComplete(report)) return;
 
-      await typedApi.reports.submitReview(reportId, {
-        reviewer_id: "current-user", // TODO: Get from auth context
-        technique_actions: techniqueActionsList,
-        overall_notes: "",
+    setSaving(true);
+    try {
+      const response = await fetch(`http://localhost:8000/v1/reports/${reportId}/review`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          reviewer_id: 'user-001', // TODO: Get from auth context
+          decisions: Object.values(reviewDecisions),
+          notes: reviewNotes
+        })
       });
+
+      if (!response.ok) {
+        throw new Error('Failed to submit review');
+      }
 
       toast({
-        title: "Review Submitted",
-        description: "Your review has been saved successfully",
+        title: "Review submitted",
+        description: `Successfully reviewed ${Object.keys(reviewDecisions).length} claims`,
       });
 
-      // Refresh data
-      await fetchReviewData();
-    } catch (error) {
+      router.push(`/reports/${reportId}`);
+    } catch (error: any) {
       console.error("Error submitting review:", error);
       toast({
-        title: "Error",
-        description: "Failed to submit review",
+        title: "Error submitting review",
+        description: error.message || "Failed to save review decisions",
         variant: "destructive",
       });
     } finally {
-      setSubmitting(false);
+      setSaving(false);
     }
-  };
-
-  const handleApprove = async () => {
-    if (!reviewData) return;
-    
-    setSubmitting(true);
-    try {
-      const result = await typedApi.reports.approveReport(reportId, {
-        reviewer_id: "current-user", // TODO: Get from auth context
-        upsert_to_graph: true,
-      });
-      
-      toast({
-        title: "Report Approved",
-        description: `${result.approved_techniques} techniques have been added to the graph`,
-      });
-
-      // Navigate back to report detail
-      router.push(`/reports/${reportId}`);
-    } catch (error) {
-      console.error("Error approving report:", error);
-      toast({
-        title: "Error",
-        description: "Failed to approve report",
-        variant: "destructive",
-      });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const getConfidenceBadge = (confidence: number) => {
-    const variant = confidence >= 80 ? "default" : confidence >= 50 ? "secondary" : "destructive";
-    const color = confidence >= 80 ? "text-green-600" : confidence >= 50 ? "text-yellow-600" : "text-red-600";
-    
-    return (
-      <Badge variant={variant} className={cn("font-mono", color)}>
-        {confidence}%
-      </Badge>
-    );
-  };
-
-  const getActionButton = (techniqueId: string, action: "approve" | "reject" | "edit") => {
-    const currentAction = techniqueActions[techniqueId]?.action;
-    const isActive = currentAction === action;
-    
-    const icons = {
-      approve: <Check className="h-4 w-4" />,
-      reject: <X className="h-4 w-4" />,
-      edit: <Edit2 className="h-4 w-4" />,
-    };
-    
-    const colors = {
-      approve: "hover:bg-green-100 data-[active=true]:bg-green-500 data-[active=true]:text-white",
-      reject: "hover:bg-red-100 data-[active=true]:bg-red-500 data-[active=true]:text-white",
-      edit: "hover:bg-blue-100 data-[active=true]:bg-blue-500 data-[active=true]:text-white",
-    };
-    
-    return (
-      <Button
-        size="sm"
-        variant="outline"
-        onClick={() => handleAction(techniqueId, action)}
-        data-active={isActive}
-        className={cn("h-8 w-8 p-0", colors[action])}
-      >
-        {icons[action]}
-      </Button>
-    );
   };
 
   if (loading) {
     return (
-      <div className="container mx-auto py-8">
-        <div className="flex items-center justify-center h-64">
-          <Loader2 className="h-8 w-8 animate-spin" />
-        </div>
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
       </div>
     );
   }
 
-  if (!reviewData) {
+  if (!report || !isExtractionComplete(report)) {
     return (
-      <div className="container mx-auto py-8">
-        <Card>
-          <CardContent className="py-8">
-            <div className="text-center">
-              <AlertCircle className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-              <p className="text-muted-foreground">No review data available</p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  const approvedCount = Object.values(techniqueActions).filter(a => a.action === "approve").length;
-  const rejectedCount = Object.values(techniqueActions).filter(a => a.action === "reject").length;
-  const editedCount = Object.values(techniqueActions).filter(a => a.action === "edit").length;
-
-  return (
-    <div className="container mx-auto py-8">
-      <div className="mb-6">
+      <div className="text-center py-12">
+        <AlertCircle className="h-12 w-12 text-yellow-500 mx-auto mb-4" />
+        <p className="text-lg font-medium">No extraction to review</p>
+        <p className="text-sm text-muted-foreground mt-2">
+          This report doesn't have extraction results to review
+        </p>
         <Button
-          variant="ghost"
-          size="sm"
+          className="mt-4"
           onClick={() => router.push(`/reports/${reportId}`)}
-          className="mb-4"
         >
           <ChevronLeft className="h-4 w-4 mr-1" />
           Back to Report
         </Button>
-        
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold mb-2">Review Extraction Results</h1>
-            <p className="text-muted-foreground">
-              Review and approve extracted techniques before adding to the knowledge graph
-            </p>
-          </div>
-          
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              onClick={() => handleBulkAction("approve")}
-              disabled={submitting}
-            >
-              Approve All
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => handleBulkAction("reject")}
-              disabled={submitting}
-            >
-              Reject All
-            </Button>
-          </div>
+      </div>
+    );
+  }
+
+  const extraction = report.extraction!;
+  const reviewedCount = Object.keys(reviewDecisions).length;
+  const approvedCount = Object.values(reviewDecisions).filter(d => d.action === 'approve').length;
+  const rejectedCount = Object.values(reviewDecisions).filter(d => d.action === 'reject').length;
+  const editedCount = Object.values(reviewDecisions).filter(d => d.action === 'edit').length;
+
+  return (
+    <div className="space-y-6 max-w-7xl mx-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => router.push(`/reports/${reportId}`)}
+            className="mb-2"
+          >
+            <ChevronLeft className="h-4 w-4 mr-1" />
+            Back to Report
+          </Button>
+          <h1 className="text-3xl font-bold tracking-tight">
+            Review Extraction Results
+          </h1>
+          <p className="text-muted-foreground mt-2">
+            {report.name}
+          </p>
+        </div>
+        <div className="text-right">
+          <Badge variant={report.status === 'pending_review' ? 'secondary' : 'default'}>
+            {report.status.replace('_', ' ').toUpperCase()}
+          </Badge>
         </div>
       </div>
 
-      <div className="grid gap-6 mb-6 md:grid-cols-4">
-        <Card>
-          <CardHeader className="pb-3">
-            <CardDescription>Total Techniques</CardDescription>
-            <CardTitle className="text-2xl">{reviewData.total_techniques || 0}</CardTitle>
-          </CardHeader>
-        </Card>
-        
-        <Card>
-          <CardHeader className="pb-3">
-            <CardDescription>Approved</CardDescription>
-            <CardTitle className="text-2xl text-green-600">{approvedCount}</CardTitle>
-          </CardHeader>
-        </Card>
-        
-        <Card>
-          <CardHeader className="pb-3">
-            <CardDescription>Rejected</CardDescription>
-            <CardTitle className="text-2xl text-red-600">{rejectedCount}</CardTitle>
-          </CardHeader>
-        </Card>
-        
-        <Card>
-          <CardHeader className="pb-3">
-            <CardDescription>Edited</CardDescription>
-            <CardTitle className="text-2xl text-blue-600">{editedCount}</CardTitle>
-          </CardHeader>
-        </Card>
-      </div>
-
+      {/* Review Progress */}
       <Card>
         <CardHeader>
-          <CardTitle>Extracted Techniques</CardTitle>
+          <CardTitle>Review Progress</CardTitle>
           <CardDescription>
-            Review each technique extraction with evidence and confidence scores
+            Track your review decisions across all extracted claims
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-[150px]">Technique ID</TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead className="w-[100px]">Confidence</TableHead>
-                <TableHead>Evidence</TableHead>
-                <TableHead className="w-[150px]">Actions</TableHead>
-                <TableHead className="w-[200px]">Notes</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {(reviewData.extraction_claims || []).map((claim) => (
-                <TableRow key={claim.technique_id}>
-                  <TableCell className="font-mono text-sm">{claim.technique_id}</TableCell>
-                  <TableCell>{claim.technique_name}</TableCell>
-                  <TableCell>{getConfidenceBadge(claim.confidence)}</TableCell>
-                  <TableCell>
-                    <TooltipProvider>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <div className="max-w-[300px] truncate text-sm text-muted-foreground cursor-pointer">
-                            {claim.evidence.quotes[0]}
-                          </div>
-                        </TooltipTrigger>
-                        <TooltipContent className="max-w-[500px]">
-                          <div className="space-y-2">
-                            {claim.evidence.quotes.map((quote, idx) => (
-                              <div key={idx}>
-                                <p className="text-sm">{quote}</p>
-                                <p className="text-xs text-muted-foreground">
-                                  Line {claim.evidence.line_refs[idx]}
-                                </p>
-                              </div>
-                            ))}
-                          </div>
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-1">
-                      {getActionButton(claim.technique_id, "approve")}
-                      {getActionButton(claim.technique_id, "reject")}
-                      {getActionButton(claim.technique_id, "edit")}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    {editingNotes === claim.technique_id ? (
-                      <div className="flex gap-1">
-                        <Textarea
-                          value={notes[claim.technique_id] || ""}
-                          onChange={(e) => handleNotesChange(claim.technique_id, e.target.value)}
-                          className="h-8 text-sm resize-none"
-                          placeholder="Add notes..."
-                        />
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => setEditingNotes(null)}
-                          className="h-8 w-8 p-0"
-                        >
-                          <Save className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    ) : (
-                      <div 
-                        className="text-sm text-muted-foreground cursor-pointer hover:text-foreground"
-                        onClick={() => setEditingNotes(claim.technique_id)}
-                      >
-                        {notes[claim.technique_id] || "Click to add notes..."}
-                      </div>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <div className="grid grid-cols-5 gap-4 text-center">
+            <div>
+              <p className="text-2xl font-bold">{extraction.claims_count}</p>
+              <p className="text-xs text-muted-foreground">Total Claims</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold">{reviewedCount}</p>
+              <p className="text-xs text-muted-foreground">Reviewed</p>
+              <div className="mt-1 w-full bg-secondary rounded-full h-2">
+                <div 
+                  className="bg-primary h-2 rounded-full transition-all"
+                  style={{ width: `${(reviewedCount / extraction.claims_count) * 100}%` }}
+                />
+              </div>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-green-500">{approvedCount}</p>
+              <p className="text-xs text-muted-foreground">Approved</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-red-500">{rejectedCount}</p>
+              <p className="text-xs text-muted-foreground">Rejected</p>
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-yellow-500">{editedCount}</p>
+              <p className="text-xs text-muted-foreground">Edited</p>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
-      <div className="mt-6 flex justify-between">
-        <Button
-          variant="outline"
-          onClick={() => router.push(`/reports/${reportId}`)}
-        >
-          Cancel
-        </Button>
-        
+      {/* Claims Review Interface */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Technique Claims</CardTitle>
+          <CardDescription>
+            Review each claim and its supporting evidence
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <TechniqueClaims
+            claims={extraction.claims}
+            reviewMode={true}
+            onReviewAction={handleReviewAction}
+            reviewedClaims={new Set(Object.keys(reviewDecisions).map(k => parseInt(k)))}
+          />
+        </CardContent>
+      </Card>
+
+      {/* Review Notes */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Review Notes</CardTitle>
+          <CardDescription>
+            Add any additional notes about this review
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Textarea
+            placeholder="Enter any additional notes about your review decisions..."
+            value={reviewNotes}
+            onChange={(e) => setReviewNotes(e.target.value)}
+            className="min-h-[100px]"
+          />
+        </CardContent>
+      </Card>
+
+      {/* Submit Actions */}
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-muted-foreground">
+          {reviewedCount > 0 ? (
+            <span>
+              {reviewedCount} of {extraction.claims_count} claims reviewed
+            </span>
+          ) : (
+            <span>No claims reviewed yet</span>
+          )}
+        </div>
         <div className="flex gap-2">
           <Button
             variant="outline"
-            onClick={handleSubmitReview}
-            disabled={submitting || Object.keys(techniqueActions).length === 0}
+            onClick={() => router.push(`/reports/${reportId}`)}
           >
-            {submitting ? (
+            Cancel
+          </Button>
+          <Button
+            onClick={handleSubmitReview}
+            disabled={reviewedCount === 0 || saving}
+          >
+            {saving ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 Saving...
               </>
             ) : (
               <>
-                <Save className="h-4 w-4 mr-2" />
-                Save Review
-              </>
-            )}
-          </Button>
-          
-          <Button
-            onClick={handleApprove}
-            disabled={submitting || approvedCount === 0}
-          >
-            {submitting ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Approving...
-              </>
-            ) : (
-              <>
                 <CheckCircle className="h-4 w-4 mr-2" />
-                Approve & Add to Graph ({approvedCount})
+                Submit Review ({reviewedCount})
               </>
             )}
           </Button>
         </div>
       </div>
+
+      {/* Edit Dialog */}
+      <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Technique Mapping</DialogTitle>
+            <DialogDescription>
+              Adjust the technique ID or confidence score for this claim
+            </DialogDescription>
+          </DialogHeader>
+          {editingClaim && (
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="technique-id">Technique ID</Label>
+                <Input
+                  id="technique-id"
+                  value={editedTechniqueId}
+                  onChange={(e) => setEditedTechniqueId(e.target.value)}
+                  placeholder="e.g., T1055.001"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  Current: {editingClaim.claim.external_id}
+                </p>
+              </div>
+              <div>
+                <Label htmlFor="confidence">Confidence Score</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    id="confidence"
+                    type="number"
+                    min="0"
+                    max="100"
+                    value={editedConfidence}
+                    onChange={(e) => setEditedConfidence(parseInt(e.target.value))}
+                  />
+                  <span className="text-sm text-muted-foreground">%</span>
+                </div>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Current: {editingClaim.claim.confidence}%
+                </p>
+              </div>
+              <div>
+                <Label>Evidence Preview</Label>
+                <ScrollArea className="h-[100px] w-full rounded-md border p-2">
+                  <p className="text-sm italic">
+                    "{editingClaim.claim.quotes[0]}"
+                  </p>
+                </ScrollArea>
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleEditSave}>
+              Save Changes
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

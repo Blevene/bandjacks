@@ -24,19 +24,8 @@ import {
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: Home },
-  { name: "Catalog", href: "/catalog", icon: Database },
-  { name: "Ingest", href: "/ingest", icon: Upload },
   { name: "Reports", href: "/reports", icon: FileText },
-  { name: "Campaigns", href: "/campaigns", icon: Target },
-  { name: "Search", href: "/search", icon: Search },
-  { name: "Techniques", href: "/techniques", icon: Layers },
-  { name: "Detections", href: "/detections/strategies", icon: Shield },
-  { name: "Flows", href: "/flows", icon: GitBranch },
-  { name: "Sequences", href: "/sequences", icon: TrendingUp },
-  { name: "Simulation", href: "/simulation", icon: Brain },
-  { name: "Review Queue", href: "/review/queue", icon: CheckSquare },
-  { name: "Feedback", href: "/feedback", icon: MessageSquare },
-  { name: "AL Analytics", href: "/analytics/active-learning", icon: Activity },
+  { name: "New Report", href: "/reports/new", icon: Upload },
 ];
 
 export function Navigation() {
