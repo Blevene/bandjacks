@@ -203,9 +203,71 @@ class OpenSearchReportStore:
             "extraction": {...},
             "entities": {...},
             "flow": {...},
-            "timestamp": datetime.now()
+            "timestamp": datetime.now(),
+            "status": "extracted"  # Pending review
         }
         opensearch.index(index_name, doc)
+```
+
+### Stage 7: Unified Review Process
+
+After extraction, reports enter the unified review system where human analysts validate and refine the extractions.
+
+```python
+# routes/unified_review.py → submit_unified_review()
+Review Process:
+1. Load report with all extraction data
+2. Convert to unified ReviewableItem format
+3. Present single interface for all item types
+4. Collect decisions (approve/reject/edit)
+5. Apply decisions atomically
+6. Update OpenSearch and Neo4j
+7. Mark report as "reviewed"
+```
+
+#### Review Item Types
+
+The unified review system handles three types of extracted items:
+
+- **Entities**: Threat actors, malware, campaigns, tools
+- **Techniques**: MITRE ATT&CK technique claims with evidence
+- **Flow Steps**: Attack sequence steps with temporal ordering
+
+#### Review Decisions
+
+Each item can receive one of three decisions:
+- **Approve**: Accept extraction as correct
+- **Reject**: Mark as incorrect or irrelevant  
+- **Edit**: Modify extraction details (name, confidence, etc.)
+
+#### Atomic Updates
+
+All review decisions are applied atomically:
+- Update extraction data in OpenSearch
+- Create approved entities as Neo4j nodes
+- Link approved techniques to report node
+- Store review metadata and statistics
+
+```python
+# Example review submission
+{
+    "decisions": [
+        {
+            "item_id": "entity-malware-0",
+            "action": "approve",
+            "timestamp": "2025-08-31T10:30:00Z"
+        },
+        {
+            "item_id": "technique-5", 
+            "action": "edit",
+            "edited_value": {
+                "name": "Spear Phishing Attachment",
+                "external_id": "T1566.001"
+            },
+            "confidence_adjustment": 85
+        }
+    ]
+}
 ```
 
 ## Core Components
@@ -361,7 +423,39 @@ Query:
             "llm_calls": 5,
             "cache_hits": 2
         }
-    }
+    },
+    
+    "unified_review": {
+        "reviewer_id": "reviewer-001",
+        "reviewed_at": "2025-08-31T11:30:00Z",
+        "global_notes": "Review completed. High confidence extractions overall.",
+        "statistics": {
+            "total_reviewed": 25,
+            "approved": 18,
+            "rejected": 4,
+            "edited": 3
+        },
+        "decisions": [
+            {
+                "item_id": "entity-malware-0",
+                "action": "approve",
+                "timestamp": "2025-08-31T11:25:00Z"
+            },
+            {
+                "item_id": "technique-5",
+                "action": "edit",
+                "edited_value": {
+                    "name": "Spear Phishing Attachment",
+                    "external_id": "T1566.001"
+                },
+                "confidence_adjustment": 85,
+                "notes": "Corrected technique ID",
+                "timestamp": "2025-08-31T11:27:00Z"
+            }
+        ]
+    },
+    
+    "status": "reviewed"  # extracted -> reviewed
 }
 ```
 
@@ -532,6 +626,37 @@ curl -X POST http://localhost:8000/v1/reports/ingest_file_async \
 curl http://localhost:8000/v1/reports/jobs/job-abc123/status
 ```
 
+### Submit Review
+
+```bash
+curl -X POST http://localhost:8000/v1/reports/report-123/unified-review \
+  -H "Content-Type: application/json" \
+  -d '{
+    "report_id": "report-123",
+    "reviewer_id": "reviewer-001",
+    "decisions": [
+      {
+        "item_id": "entity-malware-0",
+        "action": "approve",
+        "timestamp": "2025-08-31T11:00:00Z"
+      },
+      {
+        "item_id": "technique-5",
+        "action": "edit",
+        "edited_value": {
+          "name": "Spear Phishing Attachment",
+          "external_id": "T1566.001"
+        },
+        "confidence_adjustment": 85,
+        "notes": "Corrected technique ID",
+        "timestamp": "2025-08-31T11:01:00Z"
+      }
+    ],
+    "global_notes": "Review completed successfully",
+    "review_timestamp": "2025-08-31T11:05:00Z"
+  }'
+```
+
 ### Frontend Integration
 
 ```typescript
@@ -545,6 +670,26 @@ if (useAsync) {
 } else {
   const result = await api.reports.ingestUpload(file, config);
 }
+
+// After extraction, handle review process
+const navigateToReview = (reportId: string) => {
+  router.push(`/reports/${reportId}/review`);
+};
+
+// Submit unified review
+const submitReview = async (reportId: string, decisions: ReviewDecision[]) => {
+  const response = await api.reports.submitUnifiedReview(reportId, {
+    report_id: reportId,
+    reviewer_id: getCurrentUserId(),
+    decisions,
+    review_timestamp: new Date().toISOString()
+  });
+  
+  if (response.success) {
+    // Navigate to report detail
+    router.push(`/reports/${reportId}`);
+  }
+};
 ```
 
 ## Monitoring & Debugging
@@ -585,4 +730,15 @@ Response:
 
 ## Conclusion
 
-The Bandjacks report processing pipeline provides a robust, scalable solution for extracting structured threat intelligence from unstructured reports. Its multi-stage architecture, intelligent routing, and comprehensive error handling ensure reliable extraction even from challenging documents. The evidence-based approach with confidence scoring and attack flow generation makes it suitable for production threat intelligence operations.
+The Bandjacks report processing pipeline provides a comprehensive, end-to-end solution for transforming unstructured threat intelligence reports into validated, structured knowledge. The multi-stage architecture progresses from document ingestion through extraction, flow generation, and finally human review validation.
+
+Key strengths of the system:
+
+- **Intelligent Processing**: Smart routing between sync/async based on document size
+- **Evidence-Based**: All extractions linked to source text with line references  
+- **Scalable Architecture**: Handles documents from 2KB to 50KB+ efficiently
+- **Comprehensive Coverage**: Extracts entities, techniques, and attack flows
+- **Quality Assurance**: Unified review system ensures human validation
+- **Production Ready**: Robust error handling, fallback strategies, and monitoring
+
+The unified review system completes the pipeline by providing analysts with a streamlined interface to validate and refine extractions, ensuring high-quality threat intelligence suitable for operational use. This human-in-the-loop approach maintains accuracy while leveraging automation for efficiency.
