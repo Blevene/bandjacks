@@ -29,6 +29,7 @@ import { getConfidenceColor, getConfidenceBadgeVariant, isExtractionComplete } f
 import { TechniqueClaims } from "@/components/reports/technique-claims";
 import { EvidenceViewer } from "@/components/reports/evidence-viewer";
 import { FlowVisualization } from "@/components/reports/flow-visualization";
+import { EntityReview } from "@/components/reports/entity-review";
 
 export default function ReportDetailPage() {
   const params = useParams();
@@ -36,7 +37,7 @@ export default function ReportDetailPage() {
   const reportId = params.id as string;
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<"overview" | "claims" | "evidence" | "flow">("overview");
+  const [activeTab, setActiveTab] = useState<"overview" | "claims" | "entities" | "evidence" | "flow">("overview");
   const { toast } = useToast();
 
   useEffect(() => {
@@ -140,7 +141,7 @@ export default function ReportDetailPage() {
       </div>
 
       {/* Summary Cards */}
-      {hasExtraction && (
+      {hasExtraction && extraction && (
         <div className="grid gap-4 md:grid-cols-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -207,12 +208,20 @@ export default function ReportDetailPage() {
       )}
 
       {/* Main Content */}
-      {hasExtraction ? (
+      {hasExtraction && extraction ? (
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
-          <TabsList className="grid w-full grid-cols-4">
+          <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="claims">
               Claims ({extraction.claims_count})
+            </TabsTrigger>
+            <TabsTrigger value="entities">
+              Entities {extraction.entities && `(${
+                (extraction.entities.malware?.length || 0) +
+                (extraction.entities.software?.length || 0) +
+                (extraction.entities.threat_actors?.length || 0) +
+                (extraction.entities.campaigns?.length || 0)
+              })`}
             </TabsTrigger>
             <TabsTrigger value="evidence">Evidence</TabsTrigger>
             <TabsTrigger value="flow" disabled={!hasFlow}>
@@ -343,6 +352,45 @@ export default function ReportDetailPage() {
             <TechniqueClaims 
               claims={extraction.claims}
               reviewMode={false}
+            />
+          </TabsContent>
+
+          <TabsContent value="entities">
+            <EntityReview
+              entities={extraction.entities}
+              readOnly={report.status === 'approved'}
+              onReviewComplete={async (reviewedEntities) => {
+                try {
+                  // Submit entity review to API
+                  const response = await fetch(`http://localhost:8000/v1/reports/${reportId}/entities/review`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      entities: reviewedEntities,
+                      reviewer_id: 'user-1', // TODO: Get from auth context
+                      timestamp: new Date().toISOString()
+                    })
+                  });
+                  
+                  if (!response.ok) {
+                    throw new Error('Failed to submit entity review');
+                  }
+                  
+                  toast({
+                    title: "Entity review submitted",
+                    description: "Your entity review has been saved successfully.",
+                  });
+                  
+                  // Refresh report to show updated status
+                  fetchReport();
+                } catch (error: any) {
+                  toast({
+                    title: "Error submitting review",
+                    description: error.message || "Failed to save entity review",
+                    variant: "destructive",
+                  });
+                }
+              }}
             />
           </TabsContent>
 

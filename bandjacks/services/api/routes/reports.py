@@ -1308,6 +1308,10 @@ def create_stix_bundle(
         "objects": [report_sdo]
     }
     
+    # Track entity STIX IDs for relationships
+    entity_stix_ids = {}
+    campaign_id = None
+    
     # Add extracted techniques
     for technique_id, technique_data in extraction_results.get("techniques", {}).items():
         technique_obj = {
@@ -1318,6 +1322,133 @@ def create_stix_bundle(
         }
         bundle["objects"].append(technique_obj)
         report_sdo["object_refs"].append(technique_id)
+    
+    # Add extracted entities
+    entities = extraction_results.get("entities", {})
+    
+    # Add malware entities
+    for malware in entities.get("malware", []):
+        if isinstance(malware, dict):
+            malware_id = f"malware--{uuid.uuid4()}"
+            malware_obj = {
+                "type": "malware",
+                "id": malware_id,
+                "spec_version": "2.1",
+                "created": datetime.utcnow().isoformat() + "Z",
+                "modified": datetime.utcnow().isoformat() + "Z",
+                "name": malware.get("name", "Unknown Malware"),
+                "description": malware.get("description", ""),
+                "is_family": False,
+                "x_bj_confidence": malware.get("confidence", 50.0),
+                "x_bj_evidence": malware.get("evidence", [])
+            }
+            if malware.get("aliases"):
+                malware_obj["aliases"] = malware.get("aliases")
+            
+            bundle["objects"].append(malware_obj)
+            report_sdo["object_refs"].append(malware_id)
+            entity_stix_ids[malware.get("name")] = malware_id
+    
+    # Add tool/software entities
+    for software in entities.get("software", []):
+        if isinstance(software, dict):
+            tool_id = f"tool--{uuid.uuid4()}"
+            tool_obj = {
+                "type": "tool",
+                "id": tool_id,
+                "spec_version": "2.1",
+                "created": datetime.utcnow().isoformat() + "Z",
+                "modified": datetime.utcnow().isoformat() + "Z",
+                "name": software.get("name", "Unknown Tool"),
+                "description": software.get("description", ""),
+                "x_bj_confidence": software.get("confidence", 50.0),
+                "x_bj_evidence": software.get("evidence", [])
+            }
+            if software.get("aliases"):
+                tool_obj["aliases"] = software.get("aliases")
+            
+            bundle["objects"].append(tool_obj)
+            report_sdo["object_refs"].append(tool_id)
+            entity_stix_ids[software.get("name")] = tool_id
+    
+    # Add threat actor entities
+    for threat_actor in entities.get("threat_actors", []):
+        if isinstance(threat_actor, dict):
+            intrusion_set_id = f"intrusion-set--{uuid.uuid4()}"
+            intrusion_set_obj = {
+                "type": "intrusion-set",
+                "id": intrusion_set_id,
+                "spec_version": "2.1",
+                "created": datetime.utcnow().isoformat() + "Z",
+                "modified": datetime.utcnow().isoformat() + "Z",
+                "name": threat_actor.get("name", "Unknown Threat Actor"),
+                "description": threat_actor.get("description", ""),
+                "x_bj_confidence": threat_actor.get("confidence", 50.0),
+                "x_bj_evidence": threat_actor.get("evidence", [])
+            }
+            if threat_actor.get("aliases"):
+                intrusion_set_obj["aliases"] = threat_actor.get("aliases")
+            
+            bundle["objects"].append(intrusion_set_obj)
+            report_sdo["object_refs"].append(intrusion_set_id)
+            entity_stix_ids[threat_actor.get("name")] = intrusion_set_id
+    
+    # Add campaign entities
+    for campaign in entities.get("campaigns", []):
+        if isinstance(campaign, dict):
+            campaign_id = f"campaign--{uuid.uuid4()}"
+            campaign_obj = {
+                "type": "campaign",
+                "id": campaign_id,
+                "spec_version": "2.1",
+                "created": datetime.utcnow().isoformat() + "Z",
+                "modified": datetime.utcnow().isoformat() + "Z",
+                "name": campaign.get("name", "Unknown Campaign"),
+                "description": campaign.get("description", ""),
+                "x_bj_status": "provisional",
+                "x_bj_confidence": campaign.get("confidence", 50.0),
+                "x_bj_evidence": campaign.get("evidence", [])
+            }
+            if campaign.get("first_seen"):
+                campaign_obj["first_seen"] = campaign.get("first_seen")
+            if campaign.get("last_seen"):
+                campaign_obj["last_seen"] = campaign.get("last_seen")
+            
+            bundle["objects"].append(campaign_obj)
+            report_sdo["object_refs"].append(campaign_id)
+            entity_stix_ids[campaign.get("name")] = campaign_id
+    
+    # Create relationships between entities and techniques
+    # This is a simplified approach - in production you'd want more sophisticated linking
+    if campaign_id:
+        # Link campaign to all techniques
+        for technique_id in extraction_results.get("techniques", {}).keys():
+            relationship_obj = {
+                "type": "relationship",
+                "id": f"relationship--{uuid.uuid4()}",
+                "spec_version": "2.1",
+                "created": datetime.utcnow().isoformat() + "Z",
+                "modified": datetime.utcnow().isoformat() + "Z",
+                "relationship_type": "uses",
+                "source_ref": campaign_id,
+                "target_ref": technique_id
+            }
+            bundle["objects"].append(relationship_obj)
+        
+        # Link campaign to malware/tools
+        for malware in entities.get("malware", []):
+            if isinstance(malware, dict) and malware.get("name") in entity_stix_ids:
+                relationship_obj = {
+                    "type": "relationship",
+                    "id": f"relationship--{uuid.uuid4()}",
+                    "spec_version": "2.1",
+                    "created": datetime.utcnow().isoformat() + "Z",
+                    "modified": datetime.utcnow().isoformat() + "Z",
+                    "relationship_type": "uses",
+                    "source_ref": campaign_id,
+                    "target_ref": entity_stix_ids[malware.get("name")]
+                }
+                bundle["objects"].append(relationship_obj)
     
     return bundle
 
