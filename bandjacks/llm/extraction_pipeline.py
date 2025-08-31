@@ -216,21 +216,53 @@ class ExtractionPipeline:
         
         # Format result
         # Build proper entities structure for chunked_extractor
+        # Convert simple strings to objects for OpenSearch compatibility and filter out None values
+        def format_entity_list(entity_list):
+            """Convert entities to simple string arrays for OpenSearch compatibility"""
+            if not entity_list:
+                return []
+            formatted = []
+            for entity in entity_list:
+                if entity is not None and entity != "":
+                    if isinstance(entity, str):
+                        formatted.append(entity)
+                    elif isinstance(entity, dict) and "name" in entity:
+                        name = entity["name"]
+                        if isinstance(name, str):
+                            formatted.append(name)
+                        else:
+                            logger.warning(f"Entity name is not string: {type(name)} - {name}")
+                    else:
+                        # Force convert any problematic objects to strings safely
+                        try:
+                            if hasattr(entity, 'name'):
+                                formatted.append(str(entity.name))
+                            else:
+                                # Last resort - convert to string but warn
+                                entity_str = str(entity)
+                                logger.warning(f"Converting entity to string: {entity_str}")
+                                formatted.append(entity_str)
+                        except Exception as e:
+                            logger.error(f"Failed to convert entity to string: {entity} - {e}")
+            return formatted
+        
         entities_struct = {
-            "malware": getattr(mem, "malware", []),
-            "software": getattr(mem, "software", []),
-            "threat_actors": getattr(mem, "threat_actors", []),
-            "campaigns": getattr(mem, "campaigns", []),
+            "malware": format_entity_list(getattr(mem, "malware", [])),
+            "software": format_entity_list(getattr(mem, "software", [])),
+            "threat_actors": format_entity_list(getattr(mem, "threat_actors", [])),
+            "campaigns": format_entity_list(getattr(mem, "campaigns", [])),
+            "targets": format_entity_list(getattr(mem, "targets", [])),
             "primary_entity": None
         }
         
-        # Extract primary entity if available
+        # Extract primary entity if available (convert to string name for OpenSearch compatibility)
         raw_entities = getattr(mem, "entities", {})
         if isinstance(raw_entities, dict) and "entities" in raw_entities:
             # Find primary entity from the extracted entities
             for entity in raw_entities.get("entities", []):
                 if isinstance(entity, dict) and entity.get("type") == "malware":
-                    entities_struct["primary_entity"] = entity
+                    # Store just the name as string for OpenSearch compatibility
+                    entities_struct["primary_entity"] = entity.get("name", "")
                     break
         
         return {

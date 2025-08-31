@@ -44,8 +44,52 @@ interface EntityReviewProps {
   readOnly?: boolean;
 }
 
+// Helper function to transform string arrays to Entity objects
+const transformEntities = (rawEntities: any): ExtractedEntities => {
+  if (!rawEntities) return {};
+
+  const transformed: ExtractedEntities = {};
+  
+  const entityTypeMap = {
+    'malware': 'malware' as const,
+    'software': 'software' as const,
+    'threat_actors': 'threat_actor' as const,
+    'campaigns': 'campaign' as const,
+    'tools': 'tool' as const,
+  };
+
+  Object.entries(rawEntities).forEach(([key, value]) => {
+    if (Array.isArray(value) && key !== 'primary_entity') {
+      const entityType = entityTypeMap[key as keyof typeof entityTypeMap];
+      if (entityType) {
+        transformed[key as keyof ExtractedEntities] = value.map((item: any) => {
+          // If it's already an Entity object, return as-is
+          if (typeof item === 'object' && item.name) {
+            return item;
+          }
+          // If it's a string, transform to Entity object
+          if (typeof item === 'string') {
+            return {
+              name: item,
+              type: entityType,
+              verified: false,
+              review_status: 'pending' as const,
+            };
+          }
+          return item;
+        });
+      }
+    } else {
+      // Handle primary_entity and other non-array fields
+      transformed[key as keyof ExtractedEntities] = value;
+    }
+  });
+
+  return transformed;
+};
+
 export function EntityReview({ entities, onReviewComplete, readOnly = false }: EntityReviewProps) {
-  const [reviewedEntities, setReviewedEntities] = useState<ExtractedEntities>(entities || {});
+  const [reviewedEntities, setReviewedEntities] = useState<ExtractedEntities>(transformEntities(entities));
   const [editingEntity, setEditingEntity] = useState<{ type: string; index: number; entity: Entity } | null>(null);
   const [activeTab, setActiveTab] = useState<string>("malware");
 
@@ -299,7 +343,7 @@ export function EntityReview({ entities, onReviewComplete, readOnly = false }: E
           <div className="flex justify-end gap-2 pt-4">
             <Button
               variant="outline"
-              onClick={() => setReviewedEntities(entities || {})}
+              onClick={() => setReviewedEntities(transformEntities(entities))}
             >
               Reset
             </Button>

@@ -18,6 +18,7 @@ The project is in **active development** with core extraction and modeling capab
 - **Attack Flow Generation**: LLM-based sequence synthesis with probabilistic edges
 - **Graph Modeling**: Neo4j-based knowledge graph with STIX 2.1 objects
 - **Frontend Interface**: React UI for report upload and job tracking
+- **Unified Review System**: Comprehensive human-in-the-loop validation interface
 - **Optimized Pipeline**: Chunked processing for large documents (no timeouts)
 
 ## Architecture Overview
@@ -275,6 +276,86 @@ python -m bandjacks.cli.batch_extract --chunk-size 4000 --max-chunks 15 ./report
 
 **Performance**: Successfully processes full threat reports (15KB PDFs) in ~30-60 seconds with 12+ techniques extracted.
 
+## Unified Review System
+
+After extraction, reports enter a comprehensive review system where human analysts validate all extracted items in a single interface:
+
+### **Review Architecture**
+- **Single Interface**: Combined review of entities, techniques, and flow steps
+- **Universal Item Model**: All extractions converted to `ReviewableItem` format
+- **Atomic Operations**: All decisions saved together in single transaction
+- **Evidence-Based**: Direct links to source text with line references
+
+### **Key Components**
+```typescript
+// Frontend Components (ui/components/reports/)
+- unified-review.tsx        // Main review interface with tabs
+- review-item-card.tsx      // Universal item card component
+- review-progress.tsx       // Visual progress tracking
+- review-utils.ts          // State management utilities
+
+// Backend API
+POST /v1/reports/{id}/unified-review  // Submit all review decisions
+```
+
+### **Review Workflow**
+```typescript
+// Convert extractions to reviewable format
+const reviewableItems = [
+  ...entitiesToReviewableItems(report.extraction.entities),
+  ...claimsToReviewableItems(report.extraction.claims),  
+  ...flowStepsToReviewableItems(report.extraction.flow.steps)
+];
+
+// Collect decisions
+const decisions = reviewableItems.map(item => ({
+  item_id: item.id,           // "entity-malware-0", "technique-5", "flow-step-123"
+  action: "approve|reject|edit",
+  edited_value?: {...},       // Modified item data
+  confidence_adjustment?: number,
+  notes?: string
+}));
+
+// Submit atomically
+await api.submitUnifiedReview(reportId, { decisions, globalNotes });
+```
+
+### **Features**
+- **Keyboard Shortcuts**: A/R/E for approve/reject/edit, Space for navigation
+- **Bulk Operations**: Select and approve/reject multiple items
+- **Smart Filtering**: Filter by type, status, confidence level
+- **Progress Tracking**: Real-time completion status
+- **Evidence Expansion**: Click to view supporting text and line references
+
+### **Review Item Types**
+1. **Entities** (`entity-{category}-{index}`)
+   - Threat actors, malware, campaigns, tools
+   - Edit names, descriptions, confidence scores
+   
+2. **Techniques** (`technique-{index}`) 
+   - MITRE ATT&CK technique claims
+   - Verify technique IDs and evidence quality
+   
+3. **Flow Steps** (`flow-{step_id}`)
+   - Attack sequence steps with temporal ordering
+   - Validate technique assignments and sequence logic
+
+### **Backend Processing**
+```python
+# routes/unified_review.py
+- Parse decisions by item ID pattern
+- Apply changes to report extraction data
+- Update OpenSearch document with review metadata
+- Create approved entities as Neo4j nodes
+- Link approved techniques to report
+- Return statistics (approved/rejected/edited counts)
+```
+
+### **Documentation**
+- `docs/UNIFIED_REVIEW_SYSTEM.md` - Technical architecture
+- `docs/UNIFIED_REVIEW_USER_GUIDE.md` - User guide for analysts
+- `docs/UNIFIED_REVIEW_API.md` - API documentation
+
 ## API Endpoints (v1)
 
 All endpoints under `/v1` with OpenAPI spec:
@@ -296,7 +377,13 @@ All endpoints under `/v1` with OpenAPI spec:
 - `GET /v1/defense/overlay/{flow_id}` - D3FEND techniques per step
 - `POST /v1/defense/mincut` - Compute minimal defensive set
 
-**Review & Feedback**
+**Reports & Review**
+- `POST /v1/reports/ingest` - Synchronous report extraction
+- `POST /v1/reports/ingest_async` - Asynchronous report extraction  
+- `GET /v1/reports/jobs/{job_id}/status` - Job status polling
+- `POST /v1/reports/{id}/unified-review` - Submit unified review decisions
+
+**Review & Feedback (Legacy)**
 - `POST /v1/review/mapping` - Accept/edit/reject object mappings
 - `POST /v1/review/flowedge` - Review flow edge decisions
 - `GET /v1/analytics/coverage` - Coverage gap analysis
@@ -334,6 +421,13 @@ BLOB_BASE=s3://world-model/
   - Smart sync/async routing based on content size
   - Real-time job progress tracking with stage indicators
   - Auto-redirect to report details on completion
+
+- **Unified Review Interface** (`/reports/{id}/review`):
+  - Single interface for entities, techniques, and flow steps
+  - Tabbed navigation with filtering and search
+  - Keyboard shortcuts for efficient review (A/R/E)
+  - Bulk operations and progress tracking
+  - Evidence expansion with source line references
 
 - **Job Status Component**:
   - Adaptive polling (2s → 5s → 10s intervals)

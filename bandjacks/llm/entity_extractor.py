@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Dict, Any, List, Optional
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.memory import WorkingMemory
@@ -11,64 +12,58 @@ logger = logging.getLogger(__name__)
 
 
 ENTITY_EXTRACTION_SYSTEM_PROMPT = """
-You are a cyber threat intelligence analyst. Extract entity names from the text.
+You are an expert cyber threat intelligence analyst specializing in entity extraction.
 
-Entity types:
-- malware: Malicious software (trojans, ransomware, stealers, etc.)
-- tool: Legitimate tools used in attacks (PowerShell, Mimikatz, etc.)  
-- actor: Threat actors or groups (APT28, Lazarus, etc.)
-- campaign: Named operations (SolarWinds, NotPetya, etc.)
+Your task is to identify and extract ALL named entities from threat intelligence reports.
 
-OUTPUT ONLY THIS JSON FORMAT:
+Entity types to extract:
+- group: Threat actor groups, APT groups, intrusion sets (e.g., APT29, Lazarus Group, Cozy Bear, FIN7)
+- tool: ANY software used in attacks - both malicious and legitimate:
+  * Malware: viruses, trojans, backdoors, ransomware, stealers (e.g., SUNBURST, Emotet, DarkCloud Stealer)
+  * Legitimate tools: software abused by attackers (e.g., Mimikatz, Cobalt Strike, PowerShell, PsExec)
+- target: Targeted organizations, sectors, or entities (e.g., SolarWinds, Microsoft, healthcare sector)
+- campaign: Named operations or attack campaigns (e.g., Operation Aurora, SolarWinds supply chain attack)
+
+Key extraction rules:
+1. Extract EVERY unique named entity you find
+2. For tools: Include BOTH malware AND legitimate software used in attacks
+3. Include all aliases and alternate names as separate entities
+4. Look everywhere: title, summary, body text, conclusions
+5. Common patterns to look for:
+   - Group indicators: APT, FIN, UNC, DEV, TAG, TA, G followed by numbers
+   - Malware indicators: names ending in "bot", "RAT", "stealer", "ransomware", "backdoor"
+   - Tool indicators: software names mentioned in attack context
+   - Target indicators: company names, sectors, industries mentioned as victims
+   - Campaign indicators: "Operation", "Campaign", named attacks
+
+OUTPUT FORMAT - Return ONLY valid JSON:
 {
   "entities": [
-    {"name": "entity name", "type": "malware|tool|actor|campaign"}
+    {"name": "APT29", "type": "group"},
+    {"name": "Cozy Bear", "type": "group"},
+    {"name": "SUNBURST", "type": "tool"},
+    {"name": "Cobalt Strike", "type": "tool"},
+    {"name": "SolarWinds", "type": "target"}
   ]
 }
-
-Guidelines:
-- Extract ALL entity names you find
-- The document title often contains the main threat
-- Just output names and types, nothing else
-- Keep the JSON structure simple and flat
-
-Output ONLY valid JSON, no additional text.
 """
 
 
 USER_PROMPT_TEMPLATE = """
-You are an expert CTI information extractor.
+Extract all cyber threat entities from this report.
 
-TASK: From the given cyber threat report text, extract entities of types:
-- malware, tool, intrusion-set (threat actor), campaign
-- plus the primary threat from title/filename as type "title-primary"
+Find ALL:
+- Groups: threat actors, APT groups, intrusion sets (APT29, Lazarus, Cozy Bear)
+- Tools: ANY software - both malware (SUNBURST, DarkCloud) AND legitimate tools (Mimikatz, PowerShell)
+- Targets: victim organizations, sectors, or entities
+- Campaigns: named operations or attack campaigns
 
-Follow these rules:
-- Extract only explicitly referenced threats/actors/campaigns/tools.
-- Avoid generic platforms/vendors unless clearly used offensively.
-- Canonicalize to normalized_name; merge duplicates and collect aliases.
-- Provide evidence_snippet and exact character offsets for each source occurrence.
-- Include confidence (0.0–1.0) with a brief rationale in notes (optional).
+Remember: Tools include BOTH malicious software AND legitimate software used in attacks.
 
-TITLE/FILENAME HANDLING:
-- Derive a single "title-primary" if possible from the title/filename.
-- Strip dates/version markers and generic words (report, analysis, blog).
-- If multiple candidates, choose the most specific named threat/campaign.
-
-ALIASES:
-- Capture aka/also-known-as/tracked-as/formerly/MITRE/GPT/UNC/DEV/TAG labels as aliases.
-
-DISAMBIGUATION:
-- Prefer canonical family/group names; keep stylized casing in `name`.
-- If ambiguous, include with lower confidence and note the reason.
-
-If no entities are found, return [].
-
-TEXT:
+TEXT TO ANALYZE:
 {document_text}
 
-Return only the JSON array.
-"""
+Extract EVERY named entity. Be aggressive and comprehensive - include everything that could be an entity."""
 
 
 class EntityExtractionAgent:
@@ -77,95 +72,120 @@ class EntityExtractionAgent:
     def __init__(self):
         """Initialize the entity extraction agent."""
         self.client = LLMClient()
+        self.chunk_size = 4000  # Size of each chunk for processing
+        self.chunk_overlap = 500  # Overlap between chunks to avoid missing entities at boundaries
     
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
         """
-        Extract entities from document text using LLM.
+        Extract entities from entire document using chunked processing.
         
         Args:
             mem: Working memory containing document text
             config: Configuration options
         """
-        logger.info("Starting entity extraction with LLM")
+        logger.info("Starting chunked entity extraction with LLM")
         
-        # Use first 3000 chars for entity extraction to reduce token usage
-        doc_text = mem.document_text[:3000] if len(mem.document_text) > 3000 else mem.document_text
+        doc_text = mem.document_text
+        doc_length = len(doc_text)
         
-        user_prompt = USER_PROMPT_TEMPLATE.format(document_text=doc_text)
-        
-        messages = [
-            {"role": "system", "content": ENTITY_EXTRACTION_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt}
-        ]
+        # Determine if we need chunking
+        use_chunking = doc_length > self.chunk_size or config.get("force_chunking", False)
         
         try:
-            # Log request details
-            logger.info(f"Entity extraction LLM request: {len(doc_text)} chars")
-            logger.debug(f"Entity extraction prompt preview: {user_prompt[:200]}...")
-            
-            # Call LLM - temporarily without response_format to debug
-            response = self.client.call(
-                messages=messages,
-                # response_format={"type": "json_object"},  # TEMPORARILY DISABLED FOR DEBUGGING
-                max_tokens=2000  # Reduced - simple list doesn't need many tokens
-            )
-            
-            content = response.get("content", "")
-            
-            # Log response details
-            logger.info(f"Entity extraction LLM response: {len(content)} chars")
-            logger.debug(f"Entity extraction raw response: {content[:500]}...")
-            
-            if not content:
-                error_msg = "Empty response from LLM for entity extraction"
-                logger.error(error_msg)
-                mem.entities = {"entities": [], "extraction_status": "failed", "error": error_msg}
-                mem.extraction_errors = getattr(mem, 'extraction_errors', [])
-                mem.extraction_errors.append({"stage": "entity_extraction", "error": error_msg})
-                return
-            
-            # Parse JSON response
-            try:
-                entities = json.loads(content)
+            if use_chunking:
+                # Create chunks for processing
+                chunks = self._create_chunks(doc_text)
+                logger.info(f"Processing {len(chunks)} chunks for entity extraction (doc length: {doc_length})")
                 
-                # Validate structure
-                if not isinstance(entities, dict) or "entities" not in entities:
-                    raise ValueError(f"Invalid structure: expected dict with 'entities' key, got {type(entities)}")
+                # Extract entities from each chunk
+                chunk_entities = []
+                for i, chunk in enumerate(chunks):
+                    logger.debug(f"Extracting entities from chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
+                    entities = self._extract_from_chunk(chunk)
+                    chunk_entities.append(entities)
+                    logger.debug(f"Found {len(entities)} entities in chunk {i+1}")
                 
-                if not isinstance(entities["entities"], list):
-                    raise ValueError(f"Invalid entities field: expected list, got {type(entities['entities'])}")
+                # Merge and deduplicate entities from all chunks
+                merged_entities = self._merge_entities(chunk_entities)
+                logger.info(f"Extracted {len(merged_entities)} unique entities from {len(chunks)} chunks")
                 
-                # Log success
-                entity_count = len(entities.get("entities", []))
-                logger.info(f"Successfully extracted {entity_count} entities")
+                entities = {
+                    "entities": merged_entities,
+                    "extraction_status": "success",
+                    "chunks_processed": len(chunks)
+                }
                 
-                # Add extraction status
-                entities["extraction_status"] = "success"
+            else:
+                # For smaller documents, process in one go
+                logger.info(f"Processing document in single pass ({doc_length} chars)")
                 
-            except json.JSONDecodeError as e:
-                error_msg = f"JSON parse error in entity extraction: {e}"
-                logger.error(error_msg)
-                logger.debug(f"Failed to parse: {content}")
+                user_prompt = USER_PROMPT_TEMPLATE.format(document_text=doc_text)
                 
-                # Try fallback parsing
-                entities = parse_json_with_fallback(
-                    content,
-                    expected_structure={"entities": []},
-                    max_retries=2
+                messages = [
+                    {"role": "system", "content": ENTITY_EXTRACTION_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt}
+                ]
+                
+                # Call LLM
+                response = self.client.call(
+                    messages=messages,
+                    max_tokens=2000
                 )
-                entities["extraction_status"] = "partial"
-                entities["error"] = error_msg
                 
-            except ValueError as e:
-                error_msg = f"Invalid entity structure: {e}"
-                logger.error(error_msg)
-                entities = {"entities": [], "extraction_status": "failed", "error": error_msg}
+                content = response.get("content", "")
+                
+                if not content:
+                    error_msg = "Empty response from LLM for entity extraction"
+                    logger.error(error_msg)
+                    mem.entities = {"entities": [], "extraction_status": "failed", "error": error_msg}
+                    mem.extraction_errors = getattr(mem, 'extraction_errors', [])
+                    mem.extraction_errors.append({"stage": "entity_extraction", "error": error_msg})
+                    return
+                
+                # Parse JSON response
+                try:
+                    entities = json.loads(content)
+                    
+                    # Validate structure
+                    if not isinstance(entities, dict) or "entities" not in entities:
+                        raise ValueError(f"Invalid structure: expected dict with 'entities' key")
+                    
+                    if not isinstance(entities["entities"], list):
+                        raise ValueError(f"Invalid entities field: expected list")
+                    
+                    # Add extraction status
+                    entities["extraction_status"] = "success"
+                    
+                except json.JSONDecodeError as e:
+                    error_msg = f"JSON parse error in entity extraction: {e}"
+                    logger.error(error_msg)
+                    
+                    # Try fallback parsing
+                    entities = parse_json_with_fallback(
+                        content,
+                        expected_structure={"entities": []},
+                        max_retries=2
+                    )
+                    entities["extraction_status"] = "partial"
+                    entities["error"] = error_msg
+                
+                except ValueError as e:
+                    error_msg = f"Invalid entity structure: {e}"
+                    logger.error(error_msg)
+                    entities = {"entities": [], "extraction_status": "failed", "error": error_msg}
             
             # Store in working memory
             mem.entities = entities
             
             # Extract entity names for backward compatibility
-            entity_names_by_type = {"malware": [], "tool": [], "actor": [], "campaign": []}
+            # We now map: group->threat_actors, tool->both malware and software, target->new field
+            entity_names_by_type = {
+                "malware": [],
+                "software": [], 
+                "threat_actors": [],
+                "campaigns": [],
+                "targets": []
+            }
             
             for entity in entities.get("entities", []):
                 if isinstance(entity, dict):
@@ -173,20 +193,39 @@ class EntityExtractionAgent:
                     entity_type = entity.get("type", "")
                     
                     if name and entity_type:
-                        if entity_type == "malware":
-                            entity_names_by_type["malware"].append(name)
+                        if entity_type == "group":
+                            # Groups map to threat_actors
+                            entity_names_by_type["threat_actors"].append(name)
                         elif entity_type == "tool":
-                            entity_names_by_type["tool"].append(name)
-                        elif entity_type == "actor":
-                            entity_names_by_type["actor"].append(name)
+                            # Tools can be both malware and legitimate software
+                            # We'll add to both lists and let downstream processing decide
+                            # Check if it looks like malware based on common patterns
+                            malware_indicators = ["rat", "trojan", "backdoor", "stealer", "ransomware", 
+                                                 "bot", "worm", "virus", "malware", "implant", "payload"]
+                            name_lower = name.lower()
+                            
+                            if any(indicator in name_lower for indicator in malware_indicators):
+                                entity_names_by_type["malware"].append(name)
+                            else:
+                                # Could be either - add to both for safety
+                                entity_names_by_type["malware"].append(name)
+                                entity_names_by_type["software"].append(name)
+                        elif entity_type == "target":
+                            entity_names_by_type["targets"].append(name)
                         elif entity_type == "campaign":
-                            entity_names_by_type["campaign"].append(name)
+                            entity_names_by_type["campaigns"].append(name)
+                        # Handle legacy types if LLM still returns them
+                        elif entity_type == "malware":
+                            entity_names_by_type["malware"].append(name)
+                        elif entity_type == "actor":
+                            entity_names_by_type["threat_actors"].append(name)
             
             # Set backward compatibility attributes
-            mem.malware = entity_names_by_type["malware"]
-            mem.software = entity_names_by_type["tool"]  # Map tool -> software
-            mem.threat_actors = entity_names_by_type["actor"]
-            mem.campaigns = entity_names_by_type["campaign"]
+            mem.malware = list(set(entity_names_by_type["malware"]))  # Deduplicate
+            mem.software = list(set(entity_names_by_type["software"]))
+            mem.threat_actors = entity_names_by_type["threat_actors"]
+            mem.campaigns = entity_names_by_type["campaigns"]
+            mem.targets = entity_names_by_type.get("targets", [])
             
             # Log entity breakdown
             logger.info(f"Entity breakdown: {len(mem.malware)} malware, {len(mem.software)} tools, "
@@ -208,6 +247,128 @@ class EntityExtractionAgent:
             mem.software = []
             mem.threat_actors = []
             mem.campaigns = []
+    
+    def _create_chunks(self, text: str, chunk_size: int = None, overlap: int = None) -> List[str]:
+        """
+        Create overlapping chunks from text.
+        
+        Args:
+            text: Full document text
+            chunk_size: Size of each chunk (default: self.chunk_size)
+            overlap: Overlap between chunks (default: self.chunk_overlap)
+            
+        Returns:
+            List of text chunks
+        """
+        if chunk_size is None:
+            chunk_size = self.chunk_size
+        if overlap is None:
+            overlap = self.chunk_overlap
+            
+        chunks = []
+        start = 0
+        text_length = len(text)
+        
+        while start < text_length:
+            end = min(start + chunk_size, text_length)
+            chunk = text[start:end]
+            chunks.append(chunk)
+            
+            # Move start position forward, accounting for overlap
+            start += chunk_size - overlap
+            
+            # Avoid tiny final chunks
+            if text_length - start < overlap and start < text_length:
+                # Append remaining text to last chunk
+                chunks[-1] = text[start - (chunk_size - overlap):]
+                break
+                
+        return chunks
+    
+    def _merge_entities(self, entity_lists: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        """
+        Merge and deduplicate entities from multiple chunks.
+        
+        Args:
+            entity_lists: List of entity lists from different chunks
+            
+        Returns:
+            Merged and deduplicated entity list
+        """
+        # Collect all entities
+        all_entities = []
+        for entities in entity_lists:
+            all_entities.extend(entities)
+        
+        # Deduplicate by (normalized_name, type) tuple
+        seen = set()
+        unique_entities = []
+        
+        for entity in all_entities:
+            if isinstance(entity, dict):
+                name = entity.get("name", "")
+                entity_type = entity.get("type", "")
+                
+                # Normalize name for deduplication (lowercase, strip spaces)
+                normalized = (name.lower().strip(), entity_type)
+                
+                if normalized not in seen and name:
+                    seen.add(normalized)
+                    unique_entities.append(entity)
+        
+        return unique_entities
+    
+    def _extract_from_chunk(self, text_chunk: str) -> List[Dict[str, Any]]:
+        """
+        Extract entities from a single text chunk.
+        
+        Args:
+            text_chunk: Portion of document text
+            
+        Returns:
+            List of extracted entities
+        """
+        user_prompt = USER_PROMPT_TEMPLATE.format(document_text=text_chunk)
+        
+        messages = [
+            {"role": "system", "content": ENTITY_EXTRACTION_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt}
+        ]
+        
+        try:
+            response = self.client.call(
+                messages=messages,
+                max_tokens=2000
+            )
+            
+            content = response.get("content", "")
+            
+            if not content:
+                return []
+            
+            # Parse JSON response
+            try:
+                result = json.loads(content)
+                if isinstance(result, dict) and "entities" in result:
+                    return result["entities"]
+                return []
+                
+            except json.JSONDecodeError:
+                # Try to extract JSON from the response
+                import re
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    try:
+                        result = json.loads(json_match.group(0))
+                        if isinstance(result, dict) and "entities" in result:
+                            return result["entities"]
+                    except:
+                        pass
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error extracting entities from chunk: {e}")
+            return []
     
     def _empty_entities(self) -> Dict[str, Any]:
         """Return empty entities structure."""
