@@ -1,590 +1,588 @@
-# Report Processing Pipeline Documentation
+# Report Processing Pipeline - Complete Documentation
+
+## Table of Contents
+1. [Overview](#overview)
+2. [Entry Points](#entry-points)
+3. [Processing Flow](#processing-flow)
+4. [Core Components](#core-components)
+5. [Configuration Options](#configuration-options)
+6. [Output Structure](#output-structure)
+7. [Storage Architecture](#storage-architecture)
+8. [Error Handling](#error-handling)
 
 ## Overview
 
-The Bandjacks report processing pipeline is a sophisticated system for extracting MITRE ATT&CK techniques from cyber threat intelligence reports. It intelligently routes documents through either synchronous or asynchronous processing based on size, uses advanced NLP and LLM techniques for extraction, and generates attack flows from the identified techniques.
+The Bandjacks report processing pipeline is a sophisticated multi-stage system for extracting MITRE ATT&CK techniques, threat entities, and attack flows from cyber threat intelligence reports. It uses advanced NLP, vector search, and LLM-powered analysis to produce structured, evidence-backed intelligence.
 
-## Architecture
+### Key Features
+- **Smart routing**: Automatic sync/async processing based on content size
+- **Chunked extraction**: Handles large documents (15KB+ PDFs) efficiently
+- **Entity recognition**: Extracts threat actors, malware, campaigns, and tools
+- **Evidence-based claims**: Every technique linked to source text with line references
+- **Attack flow generation**: Temporal sequencing using LLM synthesis
+- **Confidence scoring**: Probabilistic confidence for each extraction
 
-### Processing Modes
+## Entry Points
 
-The system automatically selects the appropriate processing mode based on document size:
-
-| Document Size | Processing Mode | Response Time | Method |
-|--------------|----------------|---------------|---------|
-| < 10KB | Synchronous | 5-10 seconds | Direct extraction pipeline |
-| 10-50KB | Asynchronous | 20-30 seconds | Chunked parallel processing |
-| 50-200KB | Asynchronous | 30-60 seconds | Chunked with dynamic spans |
-| > 200KB | Asynchronous | 60-120 seconds | Maximum chunking strategy |
-
-### System Components
+### 1. Synchronous Endpoints (< 5KB content)
 
 ```
-┌─────────────────┐
-│   API Gateway   │
-│  (FastAPI)      │
-└────────┬────────┘
-         │
-    ┌────┴────┐
-    │         │
-┌───▼───┐ ┌──▼──────────┐
-│ Sync  │ │   Async     │
-│ Path  │ │   Queue     │
-└───┬───┘ └──────┬──────┘
-    │            │
-    │     ┌──────▼──────┐
-    │     │JobProcessor │
-    │     │ (4 workers) │
-    │     └──────┬──────┘
-    │            │
-    └────────────┴──────────┐
-                            │
-                    ┌───────▼────────┐
-                    │  Extraction    │
-                    │   Pipeline     │
-                    └───────┬────────┘
-                            │
-                    ┌───────▼────────┐
-                    │  Agent Chain   │
-                    └───────┬────────┘
-                            │
-                    ┌───────▼────────┐
-                    │  Flow Builder  │
-                    └───────┬────────┘
-                            │
-                    ┌───────▼────────┐
-                    │   Storage      │
-                    │ (OpenSearch/   │
-                    │   Neo4j)       │
-                    └────────────────┘
+POST /v1/reports/ingest
+POST /v1/reports/ingest/upload
 ```
 
-## API Endpoints
-
-### Synchronous Endpoints
-
-#### `POST /v1/reports/ingest`
-Processes text or URL content synchronously.
-
-**Request:**
-```json
+**Request Structure:**
+```python
 {
-  "text": "Report content here...",
-  "name": "APT28 Campaign Report",
-  "use_batch_mapper": true,
-  "skip_verification": false
+    "text": str,              # Raw text content
+    "name": str,              # Report name
+    "use_batch_mapper": bool, # Use optimized batch processing (default: true)
+    "skip_verification": bool,# Skip evidence verification (default: false)
+    "confidence_threshold": float # Min confidence (default: 50.0)
 }
 ```
 
-**Response:**
-```json
+### 2. Asynchronous Endpoints (> 5KB content)
+
+```
+POST /v1/reports/ingest_async
+POST /v1/reports/ingest_file_async
+GET  /v1/reports/jobs/{job_id}/status
+```
+
+**Async Job Response:**
+```python
 {
-  "report_id": "report--abc123",
-  "techniques_count": 15,
-  "provisional": false,
-  "rubric": {"criteria_met": 3},
-  "entities": {...},
-  "extraction_metrics": {...}
+    "job_id": str,
+    "status": "queued|processing|completed|failed",
+    "progress": int,          # 0-100
+    "message": str,           # Current stage
+    "result": {...}           # Final result when completed
 }
 ```
 
-#### `POST /v1/reports/ingest/upload`
-Processes uploaded files synchronously (small files only).
+### 3. File Upload Support
 
-**Form Data:**
-- `file`: PDF/TXT/MD file (< 5KB content)
-- `use_batch_mapper`: boolean
-- `skip_verification`: boolean
+Supported formats:
+- PDF (`.pdf`) - Extracted using pdfplumber
+- Text (`.txt`)
+- Markdown (`.md`, `.markdown`)
 
-### Asynchronous Endpoints
+Size limits:
+- Sync: Max 5KB
+- Async: Max 10MB (configurable)
 
-#### `POST /v1/reports/ingest_file_async`
-Processes large files asynchronously with job tracking.
+## Processing Flow
 
-**Form Data:**
-- `file`: PDF/TXT/MD file (any size)
-- `use_batch_mapper`: boolean (default: true)
-- `skip_verification`: boolean (default: false)
-- `auto_generate_flow`: boolean (default: true)
+### Stage 1: Document Preparation
 
-**Response:**
-```json
+```python
+# routes/reports.py → ingest_report()
+if len(content) > 5000:
+    # Route to async processing
+    job_id = job_processor.submit_job(content)
+else:
+    # Direct sync processing
+    result = run_extraction_pipeline(content)
+```
+
+### Stage 2: Chunking (for large documents)
+
+```python
+# llm/chunked_extractor.py → ChunkedExtractor
+class ChunkedExtractor:
+    chunk_size = 3000      # Characters per chunk
+    overlap = 150          # Overlap between chunks
+    max_chunks = 10        # Maximum chunks to process
+    
+    def process_chunks(text):
+        chunks = create_chunks(text)  # Smart sentence-aware splitting
+        for chunk in chunks:
+            result = extract_from_chunk(chunk)
+            merge_results(result)
+```
+
+### Stage 3: Entity Extraction
+
+```python
+# llm/entity_extractor.py → EntityExtractionAgent
+Extracts:
+- Primary entity (main threat actor/campaign)
+- Threat actors (APT groups)
+- Malware families
+- Software/tools
+- Campaigns
+- Attribution confidence
+```
+
+### Stage 4: Technique Extraction Pipeline
+
+#### 4.1 Span Finding
+```python
+# llm/agents_v2.py → SpanFinderAgent
+- Pattern-based detection (T[0-9]{4}(\.[0-9]{3})?)
+- Tactic keyword matching (persistence, execution, etc.)
+- Behavioral phrase detection
+- Outputs: List of text spans with potential techniques
+```
+
+#### 4.2 Batch Retrieval
+```python
+# llm/batch_retriever.py → BatchRetrieverAgent
+- Vector search using OpenSearch KNN
+- Retrieves top-10 candidate techniques per span
+- Uses embeddings for semantic similarity
+- Caches results for efficiency
+```
+
+#### 4.3 Technique Mapping
+```python
+# llm/mapper_optimized.py → BatchMapperAgent
+- LLM verification of retrieved candidates
+- Batch processes all spans in single call
+- Extracts ALL relevant techniques per span
+- Confidence scoring (0-100)
+```
+
+#### 4.4 Evidence Consolidation
+```python
+# llm/agents_v2.py → ConsolidatorAgent
+- Deduplicates techniques across spans
+- Merges evidence from multiple sources
+- Tracks line references
+- Aggregates confidence scores
+```
+
+### Stage 5: Attack Flow Generation
+
+```python
+# llm/flow_builder.py → FlowBuilder
+def build_from_extraction(extraction_data):
+    # Try LLM synthesis first
+    llm_flow = synthesize_attack_flow(
+        extraction_data,
+        report_text,
+        max_steps=25
+    )
+    
+    if not llm_flow:
+        # Fallback to deterministic ordering
+        flow = build_deterministic_flow()
+    
+    # Generate NEXT edges with probabilities
+    add_probabilistic_edges(flow)
+    return flow
+```
+
+#### Flow Generation Methods:
+
+1. **LLM Synthesis** (Primary)
+   - Analyzes temporal keywords ("first", "then", "finally")
+   - Identifies causal relationships
+   - Produces ordered sequence with reasoning
+
+2. **Deterministic Ordering** (Fallback)
+   - Uses MITRE kill chain progression
+   - Groups by tactics
+   - Orders by confidence scores
+
+3. **Co-occurrence Modeling** (No temporal evidence)
+   - Creates weak edges within tactic groups
+   - Marked as `flow_type="co-occurrence"`
+
+### Stage 6: Storage & Response
+
+```python
+# services/api/opensearch_store.py
+class OpenSearchReportStore:
+    def save_report(report_data):
+        # Index in OpenSearch
+        index_name = "reports"
+        doc = {
+            "report_id": uuid,
+            "extraction": {...},
+            "entities": {...},
+            "flow": {...},
+            "timestamp": datetime.now()
+        }
+        opensearch.index(index_name, doc)
+```
+
+## Core Components
+
+### Agent Classes
+
+| Agent | Purpose | Input | Output |
+|-------|---------|-------|--------|
+| EntityExtractionAgent | Extract threat entities | Full text | Entities dict |
+| SpanFinderAgent | Find technique indicators | Full text | Text spans |
+| BatchRetrieverAgent | Vector search candidates | Spans | Candidate techniques |
+| BatchMapperAgent | LLM verification | Spans + candidates | Verified techniques |
+| ConsolidatorAgent | Merge & deduplicate | All techniques | Final claims list |
+
+### LLM Integration
+
+```python
+# llm/client.py → LLMClient
+Models:
+- Primary: Claude 3.5 Sonnet (extraction, mapping)
+- Fallback: GPT-4 (if Claude unavailable)
+- Cache: SQLite-based response caching
+
+Rate limiting:
+- 5 requests/second per model
+- Automatic retry with exponential backoff
+- Fallback to alternate model on failure
+```
+
+### Vector Search
+
+```python
+# OpenSearch KNN Configuration
+Index: attack_nodes
+Dimensions: 768 (sentence-transformers)
+Algorithm: HNSW
+Similarity: Cosine
+
+Query:
 {
-  "job_id": "job-abc123",
-  "status": "queued",
-  "progress": 0,
-  "message": "File uploaded successfully, queued for processing"
-}
-```
-
-#### `GET /v1/reports/jobs/{job_id}/status`
-Check job processing status.
-
-**Response:**
-```json
-{
-  "job_id": "job-abc123",
-  "status": "processing",
-  "progress": 60,
-  "message": "Processing chunk 3/6",
-  "result": {
-    "techniques_count": 12,
-    "chunks_processed": 3
-  }
-}
-```
-
-## Processing Pipeline
-
-### 1. Document Ingestion
-
-The pipeline begins when a document is uploaded or text is submitted:
-
-```python
-# Entry point for file upload
-async def ingest_file_async(file: UploadFile):
-    # 1. Validate file type (.pdf, .txt, .md)
-    # 2. Save to temporary disk location
-    # 3. Create job in FileJobStore
-    # 4. Return job_id immediately
-```
-
-### 2. Job Processing
-
-Background workers continuously poll for queued jobs:
-
-```python
-class JobProcessor:
-    async def _process_loop(self):
-        while self.running:
-            jobs = self.job_store.get_queued_jobs()
-            for job_id in jobs:
-                await self._process_job(job_id)
-```
-
-Key features:
-- **Retry Logic**: 3 attempts with exponential backoff (10s, 20s, 40s)
-- **Error Recovery**: Handles rate limits, timeouts, and service errors
-- **Progress Tracking**: Real-time updates at each stage
-- **Checkpoint Support**: Can resume from last successful stage
-
-### 3. Text Extraction
-
-PDF documents are converted to text using a two-tier approach:
-
-```python
-async def _extract_pdf_text(self, pdf_path: str) -> str:
-    # Primary: pdfplumber for high-quality extraction
-    # Fallback: PyPDF2 for compatibility
-    return extracted_text
-```
-
-### 4. Processing Strategy Selection
-
-The system dynamically selects processing strategy based on document size:
-
-```python
-def calculate_chunks_and_spans(text_length: int) -> Tuple[int, int, int]:
-    if text_length < 10_000:      # Small docs
-        max_chunks = 5
-        spans_per_chunk = 15
-    elif text_length < 50_000:    # Medium docs
-        max_chunks = 15
-        spans_per_chunk = 12
-    elif text_length < 200_000:   # Large docs
-        max_chunks = 30
-        spans_per_chunk = 10
-    else:                          # Very large docs
-        max_chunks = 50
-        spans_per_chunk = 8
-```
-
-### 5. Extraction Pipeline
-
-#### Direct Pipeline (Small Documents)
-
-For documents under 10KB, the entire text is processed at once:
-
-```python
-run_extraction_pipeline(
-    report_text=text_content,
-    config={
-        "use_batch_mapper": True,
-        "use_batch_retriever": True,
-        "max_spans": 30,
-        "disable_discovery": False,
-        "disable_targeted_extraction": True
+    "knn": {
+        "embedding": {
+            "vector": [0.1, 0.2, ...],
+            "k": 10
+        }
     }
-)
+}
 ```
 
-#### Chunked Pipeline (Large Documents)
+## Configuration Options
 
-For larger documents, text is split into overlapping chunks:
+### Extraction Configuration
 
 ```python
-ChunkedExtractor(
-    chunk_size=3000,      # Characters per chunk
-    overlap=200,          # Overlap between chunks
-    max_chunks=calculated_max,
-    parallel_workers=3
-).extract(text, config)
+{
+    # Chunking
+    "chunk_size": 3000,        # Characters per chunk
+    "max_chunks": 10,          # Max chunks to process
+    "chunk_overlap": 150,      # Overlap between chunks
+    
+    # Extraction
+    "max_spans": 20,           # Max spans per chunk
+    "confidence_threshold": 50.0, # Min confidence (0-100)
+    "use_batch_mapper": true,  # Batch vs sequential
+    "skip_verification": false, # Skip evidence verification
+    
+    # Flow generation
+    "auto_generate_flow": true, # Generate attack flow
+    "max_flow_steps": 25,      # Max steps in flow
+    "flow_confidence_min": 0.3 # Min edge probability
+}
 ```
 
-## Agent Chain
+### Performance Tuning
 
-The extraction pipeline uses a chain of specialized agents:
+| Parameter | Default | Impact |
+|-----------|---------|--------|
+| chunk_size | 3000 | Larger = fewer API calls, less context |
+| max_chunks | 10 | Controls max document size |
+| parallel_workers | 1 | Parallel chunk processing |
+| batch_size | 20 | Spans per LLM call |
+| cache_ttl | 3600 | LLM response cache duration |
 
-### 1. SpanFinderAgent
-**Purpose**: Identify text spans likely containing technique information
+## Output Structure
 
-**Method**:
-- Regex patterns for each MITRE tactic
-- Behavioral pattern matching
-- Score calculation (0.6-2.0)
-- Multi-line context aggregation
-
-**Output**: Ranked list of text spans with confidence scores
-
-### 2. BatchRetrieverAgent
-**Purpose**: Find candidate ATT&CK techniques for each span
-
-**Method**:
-- Groups all spans into single batch
-- OpenSearch msearch for vector similarity
-- Returns top-5 candidates per span
-- 4x faster than sequential retrieval
-
-**Output**: Candidate techniques with similarity scores
-
-### 3. DiscoveryAgent (Optional)
-**Purpose**: Find additional techniques when retrieval confidence is low
-
-**Method**:
-- Direct LLM analysis of spans
-- No tool usage for efficiency
-- Triggered when avg score < 0.7
-
-**Output**: Additional technique suggestions
-
-### 4. BatchMapperAgent
-**Purpose**: Map spans to specific ATT&CK techniques
-
-**Method**:
-- Processes spans in batches of 5
-- Single LLM call per batch
-- Enforced JSON output format
-- 16,000 token limit
-- Extracts multiple techniques per span
-
-**Output**: Technique claims with evidence
-
-### 5. EvidenceVerifierAgent (Optional)
-**Purpose**: Validate evidence quality
-
-**Method**:
-- Checks quote relevance
-- Verifies line references
-- Filters low-quality claims
-
-**Output**: Verified claims only
-
-### 6. ConsolidatorAgent
-**Purpose**: Deduplicate and merge technique claims
-
-**Method**:
-- Groups by technique ID
-- Deduplicates evidence quotes
-- Calibrates confidence scores
-- Keeps top 5 evidence per technique
-
-**Output**: Consolidated technique list
-
-### 7. AssemblerAgent
-**Purpose**: Create STIX bundle
-
-**Method**:
-- Generates STIX 2.1 objects
-- Creates attack-pattern objects
-- Adds provenance metadata
-- Links to report object
-
-**Output**: Complete STIX bundle
-
-## Attack Flow Generation
-
-After extraction, the system generates attack flows:
-
-### LLM-Based Synthesis
+### Extraction Result
 
 ```python
-AttackFlowSynthesizer.synthesize_attack_flow(
-    extraction_result=techniques,
-    report_text=original_text,
-    max_steps=25
-)
+{
+    "report_id": "report--uuid",
+    "name": "Report Name",
+    "status": "completed",
+    
+    "extraction": {
+        "techniques_count": 15,
+        "claims_count": 22,
+        "confidence_avg": 85.5,
+        
+        "claims": [
+            {
+                "external_id": "T1566.001",
+                "name": "Spearphishing Attachment",
+                "quotes": ["sent malicious PDF attachments..."],
+                "line_refs": [45, 46],
+                "confidence": 92.0,
+                "span_idx": 3,
+                "evidence_score": 0.89,
+                "source": "batch_mapper",
+                "source_chunk": 0
+            }
+        ],
+        
+        "entities": {
+            "primary_entity": {
+                "type": "threat-actor",
+                "id": "APT29",
+                "name": "APT29",
+                "confidence": 95.0
+            },
+            "threat_actors": ["APT29"],
+            "malware": ["SUNBURST", "TEARDROP"],
+            "tools": ["Cobalt Strike"],
+            "campaigns": ["SolarWinds"]
+        },
+        
+        "flow": {
+            "flow_type": "sequential",
+            "confidence": 78.5,
+            "steps": [
+                {
+                    "order": 1,
+                    "technique_id": "T1566.001",
+                    "name": "Spearphishing Attachment",
+                    "tactic": "initial-access",
+                    "confidence": 92.0,
+                    "evidence": "Email campaign with attachments"
+                }
+            ],
+            "edges": [
+                {
+                    "from": "T1566.001",
+                    "to": "T1059.001",
+                    "probability": 0.85,
+                    "relationship": "NEXT"
+                }
+            ]
+        },
+        
+        "metrics": {
+            "extraction_time_ms": 8234,
+            "chunks_processed": 3,
+            "spans_analyzed": 47,
+            "llm_calls": 5,
+            "cache_hits": 2
+        }
+    }
+}
 ```
 
-**Capabilities**:
-- Temporal phrase detection ("first", "then", "next")
-- Causal relationship inference
-- Evidence-backed sequencing
-- Up to 25 ordered steps
-
-### Heuristic Ordering
-
-When LLM synthesis fails or isn't applicable:
+### Job Status Response
 
 ```python
-FlowBuilder._order_steps(techniques)
-# Uses kill chain progression:
-# Recon → Initial Access → Execution → Persistence → ...
+{
+    "job_id": "job-abc123",
+    "status": "processing",
+    "progress": 60,
+    "message": "Processing chunk 3/5",
+    "stage": "BatchMapper",
+    "created_at": "2025-08-31T10:00:00Z",
+    "result": null  # Populated when completed
+}
 ```
 
-### Edge Generation
+## Storage Architecture
 
-```python
-FlowBuilder._compute_next_edges(ordered_steps)
-# Creates NEXT edges with probabilities (0.1-1.0)
-# Based on:
-# - Historical patterns in Neo4j
-# - Tactic alignment
-# - Confidence scores
-# - Temporal indicators
+### OpenSearch Indices
+
+```
+reports
+├── report_id (keyword)
+├── name (text)
+├── extraction (object)
+│   ├── claims (nested)
+│   ├── entities (object)
+│   └── flow (object)
+├── created (date)
+└── embeddings (dense_vector)
+
+attack_nodes
+├── stix_id (keyword)
+├── name (text)
+├── description (text)
+├── embedding (dense_vector[768])
+└── kill_chain_phases (keyword)
 ```
 
-## Configuration
+### Neo4j Graph Schema
 
-### Key Parameters
+```cypher
+// Report node
+(r:Report {
+    stix_id: "report--uuid",
+    name: "Report Name",
+    created: datetime
+})
 
-```yaml
-# Chunking
-chunk_size: 3000          # Characters per chunk
-chunk_overlap: 200        # Overlap between chunks
-max_chunks: 10-50         # Based on document size
+// Extraction relationship
+(r)-[:EXTRACTED {
+    confidence: 85.5,
+    technique_count: 15
+}]->(t:AttackPattern)
 
-# Batching
-retriever_batch_size: all # All spans in one call
-mapper_batch_size: 5      # Spans per LLM call
-parallel_chunks: 3        # Concurrent chunk workers
+// Attack flow
+(e:AttackEpisode {
+    episode_id: "episode--uuid",
+    source_ref: "report--uuid"
+})
 
-# Token Limits
-default_max_tokens: 8000
-batch_mapper_tokens: 16000
+(e)-[:CONTAINS]->(a:AttackAction {
+    action_id: "action--uuid",
+    technique_ref: "attack-pattern--uuid"
+})
 
-# Thresholds
-span_score_threshold: 0.85
-confidence_threshold: 50
-discovery_trigger: 0.7
-
-# Timeouts
-job_timeout: 600          # 10 minutes
-chunk_timeout: 60         # 1 minute per chunk
-llm_timeout: 30           # 30 seconds per call
-```
-
-### Environment Variables
-
-```bash
-# Neo4j Configuration
-NEO4J_URI=bolt://neo4j:7687
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=password
-
-# OpenSearch Configuration
-OPENSEARCH_URL=http://opensearch:9200
-OPENSEARCH_INDEX=attack-techniques
-
-# LLM Configuration
-LITELLM_MODEL=gemini/gemini-2.0-flash-exp
-LITELLM_API_KEY=your-api-key
-
-# Worker Configuration
-WORKERS=4                 # Number of uvicorn workers
-POLL_INTERVAL=2          # Job polling interval (seconds)
+(a1)-[:NEXT {probability: 0.85}]->(a2)
 ```
 
 ## Error Handling
 
-### Retry Strategy
+### Retry Logic
 
 ```python
-retryable_errors = ["503", "overloaded", "rate_limit", "timeout", "429"]
-if is_retryable and retry_count < max_retries:
-    wait_time = (2 ** retry_count) * 5  # 10s, 20s, 40s
-    # Re-queue with exponential backoff
+# Automatic retry with exponential backoff
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10)
+)
+def call_llm(prompt):
+    return llm_client.complete(prompt)
 ```
 
-### JSON Response Cleanup
+### Fallback Strategies
+
+1. **LLM Failures**
+   - Primary: Claude 3.5 Sonnet
+   - Fallback: GPT-4
+   - Emergency: Cached similar responses
+
+2. **Extraction Failures**
+   - Chunk too large → Split further
+   - No techniques found → Adjust confidence threshold
+   - Timeout → Process fewer chunks
+
+3. **Flow Generation Failures**
+   - LLM synthesis fails → Use deterministic ordering
+   - No temporal evidence → Generate co-occurrence flow
+   - Invalid flow → Skip flow generation
+
+### Error Response
 
 ```python
-def cleanup_json(json_str: str) -> str:
-    # Remove extra quotes after closing braces
-    json_str = re.sub(r'\}"\s*,', '},', json_str)
-    # Remove trailing commas
-    json_str = re.sub(r',\s*\}', '}', json_str)
-    return json_str
-```
-
-### Graceful Degradation
-
-- Failed chunks don't stop processing
-- Partial results are saved
-- Techniques from successful chunks are retained
-- Error details logged for debugging
-
-## Performance Optimization
-
-### Multi-Worker Architecture
-
-```python
-# Start with 4 workers (no --reload for stability)
-uvicorn bandjacks.services.api.main:app --workers 4
-```
-
-- Each worker has its own embedding model
-- FileJobStore provides persistence across workers
-- Job locking prevents duplicate processing
-
-### Embedding Model Optimization
-
-```python
-# Global model per worker (CPU placement)
-_model = None
-
-def get_model():
-    global _model
-    if _model is None:
-        _model = SentenceTransformer(
-            "sentence-transformers/all-mpnet-base-v2",
-            device='cpu'  # Avoid meta tensor issues
-        )
-    return _model
-```
-
-### Batch Processing Benefits
-
-| Operation | Sequential Time | Batch Time | Improvement |
-|-----------|----------------|------------|-------------|
-| Retrieval (20 spans) | 20 seconds | 5 seconds | 4x faster |
-| Mapping (20 spans) | 20 LLM calls | 4 LLM calls | 5x fewer calls |
-| Chunk processing | Sequential | Parallel (3 workers) | 3x faster |
-
-## Monitoring and Debugging
-
-### Progress Tracking
-
-```python
-# Real-time progress updates
-progress_callback(60, "Processing chunk 3/6")
-```
-
-Progress stages:
-- 0-10%: File upload and validation
-- 10-30%: Text extraction
-- 30-35%: Span finding
-- 35-65%: Technique extraction
-- 65-70%: Consolidation
-- 70-80%: Flow generation
-- 80-90%: Database storage
-- 90-100%: Finalization
-
-### Logging
-
-```python
-# Detailed logging at each stage
-logger.info(f"Processing document of {text_length} characters")
-logger.info(f"Using chunked extraction: {max_chunks} chunks")
-logger.debug(f"Batch {batch_start}-{batch_end}: {claims} claims")
-```
-
-### Metrics Collection
-
-```json
 {
-  "extraction_duration_ms": 45000,
-  "spans_found": 85,
-  "techniques_extracted": 36,
-  "confidence_avg": 78.5,
-  "chunks_processed": 12,
-  "failed_chunks": 1,
-  "total_time_sec": 52.3
+    "error": "Extraction failed",
+    "detail": "Timeout processing chunk 3",
+    "trace_id": "trace-xyz",
+    "suggestions": [
+        "Reduce chunk_size to 2000",
+        "Increase timeout to 120s"
+    ]
 }
 ```
 
-## Best Practices
+## Performance Metrics
 
-### Document Preparation
+### Typical Processing Times
 
-1. **PDF Quality**: Ensure PDFs have extractable text (not scanned images)
-2. **Text Structure**: Well-formatted documents with clear sections extract better
-3. **Explicit References**: Documents with technique IDs (T1055) have higher accuracy
+| Document Size | Chunks | Techniques | Time | Method |
+|--------------|--------|------------|------|---------|
+| 2KB | 1 | 3-5 | 5s | Sync |
+| 5KB | 2 | 8-12 | 10s | Sync |
+| 15KB | 5 | 15-25 | 30s | Async |
+| 50KB | 10 | 30-50 | 60s | Async |
 
-### Configuration Tuning
+### Optimization Tips
 
-1. **Span Limits**: Increase for comprehensive extraction, decrease for speed
-2. **Confidence Thresholds**: Lower for more techniques, higher for precision
-3. **Batch Sizes**: Larger batches are faster but may hit token limits
-4. **Worker Count**: Match CPU cores for optimal parallelism
+1. **For speed**: 
+   - Enable `use_batch_mapper=true`
+   - Reduce `max_chunks` if full coverage not needed
+   - Increase `confidence_threshold` to reduce false positives
 
-### Error Recovery
+2. **For accuracy**:
+   - Decrease `chunk_size` for better context
+   - Disable `skip_verification`
+   - Lower `confidence_threshold` for more coverage
 
-1. **Monitor Job Status**: Poll `/jobs/{job_id}/status` for progress
-2. **Check Logs**: Detailed error information in server logs
-3. **Retry Failed Jobs**: Most errors are transient and resolve on retry
-4. **Partial Results**: Even failed jobs may have useful partial results
+3. **For large documents**:
+   - Use async endpoints
+   - Increase `max_chunks` limit
+   - Enable parallel processing
 
-## Troubleshooting
+## API Examples
 
-### Common Issues
+### Simple Text Extraction
 
-#### 1. Slow Processing
-- **Cause**: Large document with many chunks
-- **Solution**: Increase parallel workers or reduce max_chunks
+```bash
+curl -X POST http://localhost:8000/v1/reports/ingest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "APT29 uses spearphishing emails with malicious attachments...",
+    "name": "APT29 Campaign Report"
+  }'
+```
 
-#### 2. JSON Parse Errors
-- **Cause**: Malformed LLM response
-- **Solution**: Already handled by cleanup_json(), check logs for patterns
+### File Upload with Options
 
-#### 3. Low Technique Count
-- **Cause**: High confidence threshold or few spans
-- **Solution**: Lower thresholds or increase max_spans
+```bash
+curl -X POST http://localhost:8000/v1/reports/ingest_file_async \
+  -F "file=@report.pdf" \
+  -F 'config={"chunk_size": 4000, "confidence_threshold": 70}'
+```
 
-#### 4. Memory Issues
-- **Cause**: Too many workers or large embeddings
-- **Solution**: Reduce workers or use CPU device for embeddings
+### Check Job Status
 
-#### 5. Job Stuck in Queue
-- **Cause**: JobProcessor not running
-- **Solution**: Ensure using `--workers` mode, not `--reload`
+```bash
+curl http://localhost:8000/v1/reports/jobs/job-abc123/status
+```
 
-## Future Enhancements
+### Frontend Integration
 
-### Planned Improvements
+```typescript
+// Smart routing based on size
+const useAsync = file.size > 5000;
 
-1. **Advanced Temporal Parsing**: Use specialized NLP models for temporal relationships
-2. **ML-Based Sequencing**: Train models on historical attack patterns
-3. **Adaptive Chunking**: Dynamic chunk sizes based on content density
-4. **GPU Acceleration**: Support GPU for embeddings and LLM inference
-5. **Streaming Processing**: Real-time extraction as documents upload
-6. **Multi-Language Support**: Extract from non-English reports
+if (useAsync) {
+  const job = await api.reports.ingestFileAsync(file, config);
+  // Poll for status
+  const result = await pollJobStatus(job.job_id);
+} else {
+  const result = await api.reports.ingestUpload(file, config);
+}
+```
 
-### Experimental Features
+## Monitoring & Debugging
 
-1. **Confidence Calibration**: ML model for better confidence scoring
-2. **Evidence Ranking**: Neural ranker for evidence quality
-3. **Cross-Document Correlation**: Link techniques across multiple reports
-4. **Active Learning**: Improve extraction based on user feedback
+### Log Files
+
+```
+extraction_pipeline.log
+├── Agent execution traces
+├── LLM prompts and responses
+├── Chunk processing progress
+└── Error stack traces
+```
+
+### Debug Environment Variables
+
+```bash
+LOG_LEVEL=DEBUG           # Verbose logging
+LOG_FILE=pipeline.log     # Log file location
+LLM_CACHE_ENABLED=false   # Disable caching for testing
+CHUNK_SIZE_OVERRIDE=2000  # Override default chunk size
+```
+
+### Performance Monitoring
+
+```python
+# Access metrics endpoint
+GET /v1/analytics/statistics
+
+Response:
+{
+    "total_reports": 79,
+    "avg_extraction_time_ms": 12500,
+    "avg_techniques_per_report": 18,
+    "cache_hit_rate": 0.65
+}
+```
 
 ## Conclusion
 
-The Bandjacks report processing pipeline represents a state-of-the-art approach to automated threat intelligence extraction. By combining traditional NLP, vector search, and LLM capabilities with intelligent routing and error handling, it achieves both high accuracy and practical performance for real-world CTI analysis.
-
-Key achievements:
-- **36+ techniques** extracted from complex reports
-- **30-60 second** processing for typical threat reports
-- **Resilient** to errors with retry and recovery
-- **Scalable** with parallel processing and chunking
-- **Accurate** with multi-stage verification and consolidation
-
-For questions or issues, please refer to the GitHub repository or contact the development team.
+The Bandjacks report processing pipeline provides a robust, scalable solution for extracting structured threat intelligence from unstructured reports. Its multi-stage architecture, intelligent routing, and comprehensive error handling ensure reliable extraction even from challenging documents. The evidence-based approach with confidence scoring and attack flow generation makes it suitable for production threat intelligence operations.

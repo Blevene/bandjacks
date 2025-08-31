@@ -35,35 +35,13 @@ interface IngestConfig {
 
 interface IngestResult {
   report_id: string;
-  campaign_id?: string;
-  flow_id?: string;
-  provisional: boolean;
-  decisions: {
-    rubric: {
-      time_bounded: boolean;
-      operational_scope: boolean;
-      attribution_present: boolean;
-      multi_step_activity: boolean;
-      criteria_met: number;
-      created_campaign: boolean;
-      reason: string;
-    };
-  };
-  entities: {
-    describes: string[];
-    intrusion_sets: string[];
-    software: string[];
-    attack_patterns: string[];
-  };
-  rejected: any[];
-  warnings: string[];
-  trace_id: string;
-  extraction_metrics: {
-    duration_ms: number;
-    spans_found: number;
-    techniques_extracted: number;
-    confidence_avg: number;
-  };
+  techniques_count: number;
+  claims_count: number;
+  confidence_avg: number;
+  flow_generated: boolean;
+  extraction_time_ms?: number;
+  chunks_processed?: number;
+  trace_id?: string;
 }
 
 export default function NewReportPage() {
@@ -141,15 +119,13 @@ export default function NewReportPage() {
         } else {
           // Use async text ingestion endpoint
           jobResponse = await typedApi.reports.ingestAsync({
-            report_sdo: {
-              type: "report",
-              spec_version: "2.1",
-              name: "Manual Report Entry",
-              description: "Report created from pasted text",
-              published: new Date().toISOString(),
+            text: textContent,
+            name: "Manual Report Entry",
+            config: {
+              chunk_size: 3000,
+              max_chunks: 10,
+              confidence_threshold: config.confidence_threshold,
             },
-            inline_text: textContent,
-            config: config,
           });
         }
 
@@ -195,7 +171,7 @@ export default function NewReportPage() {
             <div className="space-y-1">
               <p>Report processed successfully</p>
               <p className="text-xs">
-                {result.extraction_metrics.techniques_extracted} techniques extracted
+                {result.techniques_count} techniques extracted
               </p>
             </div>
           ),
@@ -435,9 +411,9 @@ export default function NewReportPage() {
               <div className="flex items-start gap-2">
                 <CheckCircle className="h-4 w-4 text-yellow-500 mt-0.5" />
                 <div>
-                  <p className="text-sm font-medium">Campaign Rubric</p>
+                  <p className="text-sm font-medium">Evidence Verification</p>
                   <p className="text-xs text-muted-foreground">
-                    Evaluate 4 criteria to determine campaign creation
+                    Map claims to source text with confidence scores
                   </p>
                 </div>
               </div>
@@ -456,28 +432,28 @@ export default function NewReportPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Campaign Creation Criteria</CardTitle>
+              <CardTitle>Extraction Features</CardTitle>
               <CardDescription>
-                At least 2 criteria must be met
+                What gets extracted from reports
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-2">
               <div className="text-sm space-y-2">
                 <div className="flex items-center gap-2">
                   <Info className="h-4 w-4 text-muted-foreground" />
-                  <span>Time-bounded activity (first/last seen)</span>
+                  <span>MITRE ATT&CK techniques with evidence</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Info className="h-4 w-4 text-muted-foreground" />
-                  <span>Operational scope (multiple techniques)</span>
+                  <span>Confidence scores for each claim</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Info className="h-4 w-4 text-muted-foreground" />
-                  <span>Attribution present (threat actor)</span>
+                  <span>Line references to source text</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Info className="h-4 w-4 text-muted-foreground" />
-                  <span>Multi-step activity (sequenced)</span>
+                  <span>Temporal attack flow sequences</span>
                 </div>
               </div>
             </CardContent>
@@ -509,9 +485,9 @@ export default function NewReportPage() {
           <CardHeader>
             <div className="flex items-center justify-between">
               <div>
-                <CardTitle className="text-green-600">Ingestion Successful</CardTitle>
+                <CardTitle className="text-green-600">Extraction Successful</CardTitle>
                 <CardDescription>
-                  Report processed in {ingestResult.extraction_metrics.duration_ms}ms
+                  Report processed{ingestResult.extraction_time_ms ? ` in ${ingestResult.extraction_time_ms}ms` : ''}
                 </CardDescription>
               </div>
               <CheckCircle className="h-8 w-8 text-green-500" />
@@ -521,78 +497,41 @@ export default function NewReportPage() {
             <div className="grid gap-4 md:grid-cols-3">
               <div>
                 <p className="text-sm font-medium">Techniques</p>
-                <p className="text-2xl font-bold">{ingestResult.entities.attack_patterns.length}</p>
+                <p className="text-2xl font-bold">{ingestResult.techniques_count}</p>
               </div>
               <div>
-                <p className="text-sm font-medium">Threat Actors</p>
-                <p className="text-2xl font-bold">{ingestResult.entities.intrusion_sets.length}</p>
+                <p className="text-sm font-medium">Claims</p>
+                <p className="text-2xl font-bold">{ingestResult.claims_count}</p>
               </div>
               <div>
-                <p className="text-sm font-medium">Tools/Malware</p>
-                <p className="text-2xl font-bold">{ingestResult.entities.software.length}</p>
+                <p className="text-sm font-medium">Confidence</p>
+                <p className="text-2xl font-bold">{Math.round(ingestResult.confidence_avg)}%</p>
               </div>
             </div>
 
-            <div className="space-y-2">
-              <h4 className="text-sm font-medium">Campaign Rubric Evaluation</h4>
-              <div className="grid grid-cols-2 gap-2 text-sm">
-                <div className="flex items-center gap-2">
-                  {getRubricIcon(ingestResult.decisions.rubric.time_bounded)}
-                  <span>Time-bounded</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  {getRubricIcon(ingestResult.decisions.rubric.operational_scope)}
-                  <span>Operational scope</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  {getRubricIcon(ingestResult.decisions.rubric.attribution_present)}
-                  <span>Attribution</span>
-                </div>
-                <div className="flex items-center gap-2">
-                  {getRubricIcon(ingestResult.decisions.rubric.multi_step_activity)}
-                  <span>Multi-step</span>
-                </div>
-              </div>
-              <p className="text-sm text-muted-foreground">
-                {ingestResult.decisions.rubric.reason}
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {ingestResult.campaign_id && (
-                <Badge variant="outline">
-                  <Target className="h-3 w-3 mr-1" />
-                  Campaign Created
-                  {ingestResult.provisional && " (Provisional)"}
-                </Badge>
-              )}
-              {ingestResult.flow_id && (
-                <Badge variant="outline">
-                  <GitBranch className="h-3 w-3 mr-1" />
-                  Flow Generated
-                </Badge>
-              )}
-            </div>
-
-            {ingestResult.warnings.length > 0 && (
-              <div className="space-y-2">
-                <h4 className="text-sm font-medium flex items-center gap-2">
-                  <AlertTriangle className="h-4 w-4 text-yellow-500" />
-                  Warnings
-                </h4>
-                <div className="space-y-1">
-                  {ingestResult.warnings.map((warning, idx) => (
-                    <p key={idx} className="text-xs text-muted-foreground">
-                      {warning}
-                    </p>
-                  ))}
-                </div>
+            {ingestResult.chunks_processed && (
+              <div className="text-sm text-muted-foreground">
+                Processed {ingestResult.chunks_processed} chunks
               </div>
             )}
 
-            <div className="text-xs text-muted-foreground">
-              Trace ID: {ingestResult.trace_id}
+            <div className="flex items-center gap-2">
+              {ingestResult.flow_generated && (
+                <Badge variant="outline">
+                  <GitBranch className="h-3 w-3 mr-1" />
+                  Attack Flow Generated
+                </Badge>
+              )}
+              <Badge variant={ingestResult.confidence_avg >= 80 ? "default" : ingestResult.confidence_avg >= 50 ? "secondary" : "destructive"}>
+                {ingestResult.confidence_avg >= 80 ? "High" : ingestResult.confidence_avg >= 50 ? "Medium" : "Low"} Confidence
+              </Badge>
             </div>
+
+            {ingestResult.trace_id && (
+              <div className="text-xs text-muted-foreground">
+                Trace ID: {ingestResult.trace_id}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
