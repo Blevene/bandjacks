@@ -216,12 +216,7 @@ export default function ReportDetailPage() {
               Claims ({extraction.claims_count})
             </TabsTrigger>
             <TabsTrigger value="entities">
-              Entities {extraction.entities && `(${
-                (extraction.entities.malware?.length || 0) +
-                (extraction.entities.software?.length || 0) +
-                (extraction.entities.threat_actors?.length || 0) +
-                (extraction.entities.campaigns?.length || 0)
-              })`}
+              Entities {extraction.entities && `(${extraction.entities.entities?.length || 0})`}
             </TabsTrigger>
             <TabsTrigger value="evidence">Evidence</TabsTrigger>
             <TabsTrigger value="flow" disabled={!hasFlow}>

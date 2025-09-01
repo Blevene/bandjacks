@@ -1275,11 +1275,16 @@ class FlowBuilder:
             )
             
             # Parse and validate response
+            print(f"[DEBUG] Raw LLM response for flow: {response['content'][:500]}...")
             attack_flow = self._parse_llm_response(response["content"])
             
-            # Validate flow references
             if attack_flow:
+                print(f"[DEBUG] Flow parsed successfully, validating...")
+                # Validate flow references
                 attack_flow = self._validate_flow(attack_flow, cti_data)
+                print(f"[DEBUG] Flow validation complete, returning flow")
+            else:
+                print(f"[ERROR] Flow parsing failed, attack_flow is None")
             
             return attack_flow
             
@@ -1335,7 +1340,7 @@ class FlowBuilder:
                     "confidence": tech_data.get("confidence", 0)
                 })
         
-        # Add top-level entities if present
+        # Add top-level entities if present (legacy format)
         if "threat_actors" in extraction_result:
             cti_data["entities"]["threat_actors"].extend(extraction_result["threat_actors"])
         if "malware" in extraction_result:
@@ -1344,6 +1349,26 @@ class FlowBuilder:
             cti_data["entities"]["tools"].extend(extraction_result["tools"])
         if "campaigns" in extraction_result:
             cti_data["entities"]["campaigns"].extend(extraction_result["campaigns"])
+        
+        # Add structured entities (new format)
+        if "entities" in extraction_result and isinstance(extraction_result["entities"], dict):
+            structured_entities = extraction_result["entities"]
+            if "entities" in structured_entities and isinstance(structured_entities["entities"], list):
+                for entity in structured_entities["entities"]:
+                    if isinstance(entity, dict):
+                        entity_name = entity.get("name", "")
+                        entity_type = entity.get("type", "")
+                        
+                        # Map entity types to CTI data categories
+                        if entity_type == "group":
+                            cti_data["entities"]["threat_actors"].append(entity_name)
+                        elif entity_type == "malware":
+                            cti_data["entities"]["malware"].append(entity_name)
+                        elif entity_type == "tool":
+                            cti_data["entities"]["tools"].append(entity_name)
+                        elif entity_type == "campaign":
+                            cti_data["entities"]["campaigns"].append(entity_name)
+                        # Note: 'target' entities don't have a direct mapping in flow data
         
         # Remove duplicates from entities
         for key in cti_data["entities"]:
@@ -1543,26 +1568,44 @@ Output as JSON matching the attack flow schema."""
             # Try direct parse
             try:
                 flow = json.loads(response)
-            except json.JSONDecodeError:
+                print(f"[DEBUG] Parsed flow directly: {type(flow)} with keys: {flow.keys() if isinstance(flow, dict) else 'not dict'}")
+            except json.JSONDecodeError as e:
+                print(f"[DEBUG] Direct JSON parse failed: {e}")
                 # Extract from code block
                 json_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', response, re.DOTALL)
                 if json_match:
                     flow = json.loads(json_match.group(1))
+                    print(f"[DEBUG] Extracted flow from code block: {type(flow)} with keys: {flow.keys() if isinstance(flow, dict) else 'not dict'}")
                 else:
                     # Try to find JSON object
                     json_match = re.search(r'\{.*\}', response, re.DOTALL)
                     if json_match:
                         flow = json.loads(json_match.group(0))
+                        print(f"[DEBUG] Extracted flow from JSON match: {type(flow)} with keys: {flow.keys() if isinstance(flow, dict) else 'not dict'}")
                     else:
+                        print(f"[ERROR] No JSON found in response: {response[:200]}...")
                         return None
             
-            # Ensure required fields
-            if "flow" not in flow:
+            # Handle direct format (flow_name, steps at top level)
+            if "flow_name" in flow and "steps" in flow:
+                print(f"[DEBUG] Detected direct format with flow_name: {flow.get('flow_name')}")
+                # Convert to expected nested format
+                flow["flow"] = {
+                    "label": "AttackFlow", 
+                    "pk": f"flow-{uuid.uuid4().hex[:8]}",
+                    "properties": {
+                        "name": flow.get("flow_name", "Generated Attack Flow"),
+                        "description": flow.get("description", "LLM-generated attack sequence")
+                    }
+                }
+            elif "flow" not in flow:
+                # Create default flow structure
+                print("[DEBUG] No flow structure found, creating default")
                 flow["flow"] = {
                     "label": "AttackFlow",
                     "pk": f"flow-{uuid.uuid4().hex[:8]}",
                     "properties": {
-                        "name": "Unknown Attack Flow",
+                        "name": flow.get("name", "Unknown Attack Flow"),
                         "description": "Extracted attack sequence"
                     }
                 }
@@ -1576,21 +1619,31 @@ Output as JSON matching the attack flow schema."""
                 else:
                     flow["steps"] = []
             
+            print(f"[DEBUG] Flow has {len(flow.get('steps', []))} steps")
+            
             # Add missing step fields
             for i, step in enumerate(flow["steps"]):
                 if "order" not in step:
                     step["order"] = i + 1
                 if "entity" not in step:
-                    step["entity"] = {"label": "Technique", "pk": "unknown"}
+                    step["entity"] = {"label": "Technique", "id": "unknown"}
+                elif isinstance(step["entity"], dict):
+                    # Ensure entity has either 'pk' or 'id' field
+                    entity = step["entity"]
+                    if "pk" not in entity and "id" not in entity:
+                        entity["id"] = "unknown"
                 if "description" not in step:
                     step["description"] = "Unknown action"
                 if "reason" not in step:
                     step["reason"] = "Sequence position"
             
+            print(f"[DEBUG] Successfully parsed flow with {len(flow['steps'])} steps")
             return flow
             
         except Exception as e:
             print(f"[ERROR] Failed to parse attack flow: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def _validate_flow(

@@ -214,67 +214,13 @@ class ExtractionPipeline:
         tracker.set_stage("Assembler")
         AssemblerAgent().run(mem, config)
         
-        # Format result
-        # Build proper entities structure for chunked_extractor
-        # Convert simple strings to objects for OpenSearch compatibility and filter out None values
-        def format_entity_list(entity_list):
-            """Convert entities to simple string arrays for OpenSearch compatibility"""
-            if not entity_list:
-                return []
-            formatted = []
-            for entity in entity_list:
-                if entity is not None and entity != "":
-                    if isinstance(entity, str):
-                        formatted.append(entity)
-                    elif isinstance(entity, dict) and "name" in entity:
-                        name = entity["name"]
-                        if isinstance(name, str):
-                            formatted.append(name)
-                        else:
-                            logger.warning(f"Entity name is not string: {type(name)} - {name}")
-                    else:
-                        # Force convert any problematic objects to strings safely
-                        try:
-                            if hasattr(entity, 'name'):
-                                formatted.append(str(entity.name))
-                            else:
-                                # Last resort - convert to string but warn
-                                entity_str = str(entity)
-                                logger.warning(f"Converting entity to string: {entity_str}")
-                                formatted.append(entity_str)
-                        except Exception as e:
-                            logger.error(f"Failed to convert entity to string: {entity} - {e}")
-            return formatted
-        
-        entities_struct = {
-            "malware": format_entity_list(getattr(mem, "malware", [])),
-            "software": format_entity_list(getattr(mem, "software", [])),
-            "threat_actors": format_entity_list(getattr(mem, "threat_actors", [])),
-            "campaigns": format_entity_list(getattr(mem, "campaigns", [])),
-            "targets": format_entity_list(getattr(mem, "targets", [])),
-            "primary_entity": None
-        }
-        
-        # Extract primary entity if available (convert to string name for OpenSearch compatibility)
-        raw_entities = getattr(mem, "entities", {})
-        if isinstance(raw_entities, dict) and "entities" in raw_entities:
-            # Find primary entity from the extracted entities
-            for entity in raw_entities.get("entities", []):
-                if isinstance(entity, dict) and entity.get("type") == "malware":
-                    # Store just the name as string for OpenSearch compatibility
-                    entities_struct["primary_entity"] = entity.get("name", "")
-                    break
+        # Extract entities from working memory - they're already in the correct structured format
+        entities_struct = mem.entities
         
         return {
             "techniques": mem.techniques,
             "claims": mem.claims,
-            "entities": entities_struct,  # Properly structured entities
-            "threat_actors": getattr(mem, "threat_actors", []),
-            "malware": getattr(mem, "malware", []),
-            "software": getattr(mem, "software", []),
-            "tools": getattr(mem, "tools", []),  # Kept for backward compatibility
-            "campaigns": getattr(mem, "campaigns", []),
-            "primary_entity": entities_struct.get("primary_entity"),
+            "entities": entities_struct,  # Structured entities format: {"entities": [{"name": str, "type": str}], "extraction_status": str}
             "spans": [{"text": s.get("text", ""), "line_refs": s.get("line_refs", [])} 
                      for s in mem.spans],
             "extraction_metrics": {
@@ -399,21 +345,19 @@ class ExtractionPipeline:
             return None
         
         try:
-            # Prepare extraction data in expected format
+            # Prepare extraction data in expected format  
+            entities_data = extraction_result.get("entities", {"entities": []})
             flow_extraction_data = {
                 "extraction_claims": extraction_result.get("claims", []),
                 "techniques": extraction_result.get("techniques", {}),
                 "chunks": [{
                     "claims": extraction_result.get("claims", []),
-                    "entities": {
-                        "threat_actors": extraction_result.get("threat_actors", []),
-                        "malware": extraction_result.get("malware", []),
-                        "tools": extraction_result.get("tools", [])
-                    }
+                    "entities": entities_data  # Pass structured entities directly
                 }]
             }
             
             # Build flow
+            logger.info(f"Building flow with {len(flow_extraction_data['extraction_claims'])} claims")
             flow_result = self.flow_builder.build_from_extraction(
                 extraction_data=flow_extraction_data,
                 source_id=source_id,
@@ -421,15 +365,21 @@ class ExtractionPipeline:
                 use_stored_text=False
             )
             
+            logger.info(f"Flow build result: {type(flow_result)}, keys: {flow_result.keys() if flow_result else 'None'}")
+            
             if flow_result:
-                return {
-                    "flow_id": flow_result.get("id"),
+                flow_data = {
+                    "flow_id": flow_result.get("flow_id"),
                     "flow_name": flow_result.get("name"),
                     "flow_type": "llm_synthesized" if flow_result.get("llm_synthesized") else "deterministic",
                     "steps": flow_result.get("actions", []),
                     "edges": flow_result.get("edges", []),
                     "confidence": flow_result.get("confidence", 0.5)
                 }
+                logger.info(f"Returning flow data: {flow_data}")
+                return flow_data
+            else:
+                logger.warning("Flow result was None or empty")
                 
         except Exception as e:
             logger.error(f"Failed to build attack flow: {e}")
@@ -454,6 +404,8 @@ class ExtractionPipeline:
         Returns:
             Review package ready for analyst validation
         """
+        logger.info(f"Preparing review package with flow: {flow is not None}, flow_id: {flow.get('flow_id') if flow else 'None'}")
+        
         review_package = {
             "extraction_id": str(uuid.uuid4()),
             "source_id": source_id,
@@ -464,11 +416,7 @@ class ExtractionPipeline:
             "techniques": extraction_result.get("techniques", {}),
             "technique_count": len(extraction_result.get("techniques", {})),
             "claims": extraction_result.get("claims", []),
-            "entities": {
-                "threat_actors": extraction_result.get("threat_actors", []),
-                "malware": extraction_result.get("malware", []),
-                "tools": extraction_result.get("tools", [])
-            },
+            "entities": extraction_result.get("entities", {"entities": [], "extraction_status": "not_attempted"}),
             
             # Evidence mapping for review
             "evidence_map": self._build_evidence_map(extraction_result),
