@@ -18,21 +18,28 @@ Your task is to identify and extract ALL named entities from threat intelligence
 
 Entity types to extract:
 - group: Threat actor groups, APT groups, intrusion sets (e.g., APT29, Lazarus Group, Cozy Bear, FIN7)
-- tool: ANY software used in attacks - both malicious and legitimate:
-  * Malware: viruses, trojans, backdoors, ransomware, stealers (e.g., SUNBURST, Emotet, DarkCloud Stealer)
-  * Legitimate tools: software abused by attackers (e.g., Mimikatz, Cobalt Strike, PowerShell, PsExec)
+- malware: Malicious software created for harmful purposes:
+  * Viruses, trojans, backdoors, ransomware, stealers, rootkits, spyware
+  * Examples: SUNBURST, Emotet, DarkCloud Stealer, TrickBot, Maze ransomware, Cobalt Strike beacon
+- tool: Legitimate software abused or used by attackers:
+  * System administration tools, penetration testing tools, living-off-the-land binaries
+  * Examples: PowerShell, PsExec, Mimikatz, WMI, cmd.exe, rundll32.exe, certutil.exe
 - target: Targeted organizations, sectors, or entities (e.g., SolarWinds, Microsoft, healthcare sector)
 - campaign: Named operations or attack campaigns (e.g., Operation Aurora, SolarWinds supply chain attack)
 
+CRITICAL: Distinguish between malware and tool:
+- MALWARE: Software designed to be malicious (custom trojans, ransomware, backdoors, etc.)
+- TOOL: Legitimate software misused by attackers (system utilities, admin tools, etc.)
+
 Key extraction rules:
 1. Extract EVERY unique named entity you find
-2. For tools: Include BOTH malware AND legitimate software used in attacks
+2. Correctly classify software as "malware" or "tool" based on its intended purpose
 3. Include all aliases and alternate names as separate entities
 4. Look everywhere: title, summary, body text, conclusions
 5. Common patterns to look for:
    - Group indicators: APT, FIN, UNC, DEV, TAG, TA, G followed by numbers
-   - Malware indicators: names ending in "bot", "RAT", "stealer", "ransomware", "backdoor"
-   - Tool indicators: software names mentioned in attack context
+   - Malware indicators: custom names, names ending in "bot", "RAT", "stealer", "ransomware", "backdoor"
+   - Tool indicators: known software names (PowerShell, PsExec, etc.), system utilities
    - Target indicators: company names, sectors, industries mentioned as victims
    - Campaign indicators: "Operation", "Campaign", named attacks
 
@@ -41,8 +48,8 @@ OUTPUT FORMAT - Return ONLY valid JSON:
   "entities": [
     {"name": "APT29", "type": "group"},
     {"name": "Cozy Bear", "type": "group"},
-    {"name": "SUNBURST", "type": "tool"},
-    {"name": "Cobalt Strike", "type": "tool"},
+    {"name": "SUNBURST", "type": "malware"},
+    {"name": "PowerShell", "type": "tool"},
     {"name": "SolarWinds", "type": "target"}
   ]
 }
@@ -54,11 +61,14 @@ Extract all cyber threat entities from this report.
 
 Find ALL:
 - Groups: threat actors, APT groups, intrusion sets (APT29, Lazarus, Cozy Bear)
-- Tools: ANY software - both malware (SUNBURST, DarkCloud) AND legitimate tools (Mimikatz, PowerShell)
+- Malware: malicious software designed for harmful purposes (SUNBURST, Emotet, TrickBot, ransomware)
+- Tools: legitimate software abused by attackers (PowerShell, PsExec, Mimikatz, cmd.exe)
 - Targets: victim organizations, sectors, or entities
 - Campaigns: named operations or attack campaigns
 
-Remember: Tools include BOTH malicious software AND legitimate software used in attacks.
+IMPORTANT: Distinguish between malware and tools:
+- Use "malware" for malicious software created to harm (trojans, backdoors, ransomware, etc.)
+- Use "tool" for legitimate software misused in attacks (system utilities, admin tools, etc.)
 
 TEXT TO ANALYZE:
 {document_text}
@@ -174,62 +184,12 @@ class EntityExtractionAgent:
                     logger.error(error_msg)
                     entities = {"entities": [], "extraction_status": "failed", "error": error_msg}
             
-            # Store in working memory
+            # Store in working memory - entities now contains structured format
             mem.entities = entities
             
-            # Extract entity names for backward compatibility
-            # We now map: group->threat_actors, tool->both malware and software, target->new field
-            entity_names_by_type = {
-                "malware": [],
-                "software": [], 
-                "threat_actors": [],
-                "campaigns": [],
-                "targets": []
-            }
-            
-            for entity in entities.get("entities", []):
-                if isinstance(entity, dict):
-                    name = entity.get("name", "")
-                    entity_type = entity.get("type", "")
-                    
-                    if name and entity_type:
-                        if entity_type == "group":
-                            # Groups map to threat_actors
-                            entity_names_by_type["threat_actors"].append(name)
-                        elif entity_type == "tool":
-                            # Tools can be both malware and legitimate software
-                            # We'll add to both lists and let downstream processing decide
-                            # Check if it looks like malware based on common patterns
-                            malware_indicators = ["rat", "trojan", "backdoor", "stealer", "ransomware", 
-                                                 "bot", "worm", "virus", "malware", "implant", "payload"]
-                            name_lower = name.lower()
-                            
-                            if any(indicator in name_lower for indicator in malware_indicators):
-                                entity_names_by_type["malware"].append(name)
-                            else:
-                                # Could be either - add to both for safety
-                                entity_names_by_type["malware"].append(name)
-                                entity_names_by_type["software"].append(name)
-                        elif entity_type == "target":
-                            entity_names_by_type["targets"].append(name)
-                        elif entity_type == "campaign":
-                            entity_names_by_type["campaigns"].append(name)
-                        # Handle legacy types if LLM still returns them
-                        elif entity_type == "malware":
-                            entity_names_by_type["malware"].append(name)
-                        elif entity_type == "actor":
-                            entity_names_by_type["threat_actors"].append(name)
-            
-            # Set backward compatibility attributes
-            mem.malware = list(set(entity_names_by_type["malware"]))  # Deduplicate
-            mem.software = list(set(entity_names_by_type["software"]))
-            mem.threat_actors = entity_names_by_type["threat_actors"]
-            mem.campaigns = entity_names_by_type["campaigns"]
-            mem.targets = entity_names_by_type.get("targets", [])
-            
             # Log entity breakdown
-            logger.info(f"Entity breakdown: {len(mem.malware)} malware, {len(mem.software)} tools, "
-                       f"{len(mem.threat_actors)} actors, {len(mem.campaigns)} campaigns")
+            entity_count = len(entities.get("entities", []))
+            logger.info(f"Entity extraction complete: {entity_count} entities extracted")
                 
         except Exception as e:
             error_msg = f"Entity extraction failed with exception: {e}"
@@ -241,12 +201,6 @@ class EntityExtractionAgent:
             # Track error for reporting
             mem.extraction_errors = getattr(mem, 'extraction_errors', [])
             mem.extraction_errors.append({"stage": "entity_extraction", "error": str(e)})
-            
-            # Set empty lists for compatibility
-            mem.malware = []
-            mem.software = []
-            mem.threat_actors = []
-            mem.campaigns = []
     
     def _create_chunks(self, text: str, chunk_size: int = None, overlap: int = None) -> List[str]:
         """

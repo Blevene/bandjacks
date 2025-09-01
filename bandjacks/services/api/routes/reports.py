@@ -214,7 +214,8 @@ async def ingest_report(request: IngestRequest):
             "techniques_count": pipeline_results.get("techniques_count", pipeline_results.get("technique_count", 0)),
             "claims": pipeline_results.get("claims", []),
             "entities": pipeline_results.get("entities", {}),
-            "metrics": pipeline_results.get("metrics", {})
+            "metrics": pipeline_results.get("metrics", {}),
+            "flow": pipeline_results.get("flow")  # Include flow from pipeline results
         }
         
         # Create report SDO
@@ -248,7 +249,8 @@ async def ingest_report(request: IngestRequest):
                 "claims_count": len(extraction_results.get("claims", [])),
                 "bundle_preview": bundle,
                 "extraction_claims": extraction_results.get("claims", []),
-                "entities": extraction_results.get("entities", {})
+                "entities": extraction_results.get("entities", {}),
+                "flow": extraction_results.get("flow")  # Add flow to the extraction result
             },
             source_info=source_info,
             raw_text=text_content,

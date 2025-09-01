@@ -36,7 +36,7 @@ import {
   AlertTriangle,
   Info,
 } from "lucide-react";
-import type { ExtractedEntities, Entity } from "@/lib/report-types";
+import type { ExtractedEntities, Entity, CategorizedEntities, categorizeEntities } from "@/lib/report-types";
 
 interface EntityReviewProps {
   entities?: ExtractedEntities;
@@ -44,52 +44,10 @@ interface EntityReviewProps {
   readOnly?: boolean;
 }
 
-// Helper function to transform string arrays to Entity objects
-const transformEntities = (rawEntities: any): ExtractedEntities => {
-  if (!rawEntities) return {};
-
-  const transformed: ExtractedEntities = {};
-  
-  const entityTypeMap = {
-    'malware': 'malware' as const,
-    'software': 'software' as const,
-    'threat_actors': 'threat_actor' as const,
-    'campaigns': 'campaign' as const,
-    'tools': 'tool' as const,
-  };
-
-  Object.entries(rawEntities).forEach(([key, value]) => {
-    if (Array.isArray(value) && key !== 'primary_entity') {
-      const entityType = entityTypeMap[key as keyof typeof entityTypeMap];
-      if (entityType) {
-        transformed[key as keyof ExtractedEntities] = value.map((item: any) => {
-          // If it's already an Entity object, return as-is
-          if (typeof item === 'object' && item.name) {
-            return item;
-          }
-          // If it's a string, transform to Entity object
-          if (typeof item === 'string') {
-            return {
-              name: item,
-              type: entityType,
-              verified: false,
-              review_status: 'pending' as const,
-            };
-          }
-          return item;
-        });
-      }
-    } else {
-      // Handle primary_entity and other non-array fields
-      transformed[key as keyof ExtractedEntities] = value;
-    }
-  });
-
-  return transformed;
-};
+// No transformation needed - entities now come in structured format directly
 
 export function EntityReview({ entities, onReviewComplete, readOnly = false }: EntityReviewProps) {
-  const [reviewedEntities, setReviewedEntities] = useState<ExtractedEntities>(transformEntities(entities));
+  const [reviewedEntities, setReviewedEntities] = useState<ExtractedEntities>(entities || { entities: [], extraction_status: 'not_attempted' });
   const [editingEntity, setEditingEntity] = useState<{ type: string; index: number; entity: Entity } | null>(null);
   const [activeTab, setActiveTab] = useState<string>("malware");
 
@@ -108,15 +66,14 @@ export function EntityReview({ entities, onReviewComplete, readOnly = false }: E
     switch (type) {
       case "malware":
         return <Bug className="h-4 w-4" />;
-      case "software":
       case "tool":
         return <Wrench className="h-4 w-4" />;
-      case "threat_actors":
-      case "threat_actor":
+      case "group":
         return <Users className="h-4 w-4" />;
-      case "campaigns":
       case "campaign":
         return <Target className="h-4 w-4" />;
+      case "target":
+        return <Shield className="h-4 w-4" />;
       default:
         return <Shield className="h-4 w-4" />;
     }
@@ -135,56 +92,53 @@ export function EntityReview({ entities, onReviewComplete, readOnly = false }: E
     }
   };
 
-  const handleApprove = (type: string, index: number) => {
+  const handleApprove = (index: number) => {
     const updatedEntities = { ...reviewedEntities };
-    const entityList = updatedEntities[type as keyof ExtractedEntities] as Entity[];
-    if (entityList && entityList[index]) {
-      entityList[index].review_status = "approved";
-      entityList[index].verified = true;
+    if (updatedEntities.entities && updatedEntities.entities[index]) {
+      updatedEntities.entities[index].review_status = "approved";
+      updatedEntities.entities[index].verified = true;
       setReviewedEntities(updatedEntities);
     }
   };
 
-  const handleReject = (type: string, index: number) => {
+  const handleReject = (index: number) => {
     const updatedEntities = { ...reviewedEntities };
-    const entityList = updatedEntities[type as keyof ExtractedEntities] as Entity[];
-    if (entityList && entityList[index]) {
-      entityList[index].review_status = "rejected";
-      entityList[index].verified = false;
+    if (updatedEntities.entities && updatedEntities.entities[index]) {
+      updatedEntities.entities[index].review_status = "rejected";
+      updatedEntities.entities[index].verified = false;
       setReviewedEntities(updatedEntities);
     }
   };
 
-  const handleEdit = (type: string, index: number) => {
-    const entityList = reviewedEntities[type as keyof ExtractedEntities] as Entity[];
-    if (entityList && entityList[index]) {
-      setEditingEntity({ type, index, entity: { ...entityList[index] } });
+  const handleEdit = (index: number) => {
+    if (reviewedEntities.entities && reviewedEntities.entities[index]) {
+      setEditingEntity({ type: reviewedEntities.entities[index].type, index, entity: { ...reviewedEntities.entities[index] } });
     }
   };
 
   const handleSaveEdit = () => {
-    if (!editingEntity) return;
+    if (!editingEntity || !reviewedEntities.entities) return;
 
     const updatedEntities = { ...reviewedEntities };
-    const entityList = updatedEntities[editingEntity.type as keyof ExtractedEntities] as Entity[];
-    if (entityList) {
-      entityList[editingEntity.index] = {
-        ...editingEntity.entity,
-        review_status: "edited",
-        verified: true,
-      };
-      setReviewedEntities(updatedEntities);
-    }
+    updatedEntities.entities[editingEntity.index] = {
+      ...editingEntity.entity,
+      review_status: "edited",
+      verified: true,
+    };
+    setReviewedEntities(updatedEntities);
     setEditingEntity(null);
   };
 
-  const renderEntityCard = (entity: Entity, type: string, index: number) => (
-    <Card key={`${type}-${index}`} className="mb-3">
+  const renderEntityCard = (entity: Entity, index: number) => (
+    <Card key={`entity-${index}`} className="mb-3">
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-2">
-            {getEntityIcon(type)}
+            {getEntityIcon(entity.type)}
             <CardTitle className="text-lg">{entity.name}</CardTitle>
+            <Badge variant="outline" className="text-xs">
+              {entity.type}
+            </Badge>
             {entity.aliases && entity.aliases.length > 0 && (
               <span className="text-sm text-muted-foreground">
                 (aka: {entity.aliases.join(", ")})
@@ -227,7 +181,7 @@ export function EntityReview({ entities, onReviewComplete, readOnly = false }: E
             <Button
               size="sm"
               variant={entity.review_status === "approved" ? "default" : "outline"}
-              onClick={() => handleApprove(type, index)}
+              onClick={() => handleApprove(index)}
               className="flex-1"
             >
               <CheckCircle className="h-3 w-3 mr-1" />
@@ -236,7 +190,7 @@ export function EntityReview({ entities, onReviewComplete, readOnly = false }: E
             <Button
               size="sm"
               variant={entity.review_status === "rejected" ? "destructive" : "outline"}
-              onClick={() => handleReject(type, index)}
+              onClick={() => handleReject(index)}
               className="flex-1"
             >
               <XCircle className="h-3 w-3 mr-1" />
@@ -245,7 +199,7 @@ export function EntityReview({ entities, onReviewComplete, readOnly = false }: E
             <Button
               size="sm"
               variant="outline"
-              onClick={() => handleEdit(type, index)}
+              onClick={() => handleEdit(index)}
             >
               <Edit className="h-3 w-3 mr-1" />
               Edit
@@ -267,25 +221,29 @@ export function EntityReview({ entities, onReviewComplete, readOnly = false }: E
 
   const entityTypes = [
     { key: "malware", label: "Malware", icon: Bug },
-    { key: "software", label: "Software/Tools", icon: Wrench },
-    { key: "threat_actors", label: "Threat Actors", icon: Users },
-    { key: "campaigns", label: "Campaigns", icon: Target },
+    { key: "tool", label: "Tools", icon: Wrench },
+    { key: "group", label: "Threat Actors", icon: Users },
+    { key: "campaign", label: "Campaigns", icon: Target },
+    { key: "target", label: "Targets", icon: Shield },
   ];
 
   const getEntityCount = (type: string) => {
-    const entityList = reviewedEntities[type as keyof ExtractedEntities];
-    return Array.isArray(entityList) ? entityList.length : 0;
+    return reviewedEntities.entities?.filter(e => e.type === type).length || 0;
+  };
+
+  const getEntitiesByType = (type: string) => {
+    return reviewedEntities.entities?.filter(e => e.type === type) || [];
   };
 
   return (
     <>
       <div className="space-y-4">
         {/* Summary Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           {entityTypes.map(({ key, label, icon: Icon }) => {
-            const count = getEntityCount(key);
-            const approved = (reviewedEntities[key as keyof ExtractedEntities] as Entity[] || [])
-              .filter(e => e.review_status === "approved").length;
+            const entitiesOfType = getEntitiesByType(key);
+            const count = entitiesOfType.length;
+            const approved = entitiesOfType.filter(e => e.review_status === "approved").length;
             
             return (
               <Card key={key}>
@@ -310,7 +268,7 @@ export function EntityReview({ entities, onReviewComplete, readOnly = false }: E
 
         {/* Entity Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-4">
+          <TabsList className="grid w-full grid-cols-5">
             {entityTypes.map(({ key, label }) => (
               <TabsTrigger key={key} value={key} disabled={getEntityCount(key) === 0}>
                 {label} ({getEntityCount(key)})
@@ -324,14 +282,15 @@ export function EntityReview({ entities, onReviewComplete, readOnly = false }: E
                 <Alert>
                   <Info className="h-4 w-4" />
                   <AlertDescription>
-                    No {key.replace('_', ' ')} entities found in this report.
+                    No {key} entities found in this report.
                   </AlertDescription>
                 </Alert>
               ) : (
                 <>
-                  {(reviewedEntities[key as keyof ExtractedEntities] as Entity[] || []).map((entity, index) =>
-                    renderEntityCard(entity, key, index)
-                  )}
+                  {getEntitiesByType(key).map((entity, index) => {
+                    const globalIndex = reviewedEntities.entities?.findIndex(e => e === entity) || index;
+                    return renderEntityCard(entity, globalIndex);
+                  })}
                 </>
               )}
             </TabsContent>
@@ -343,7 +302,7 @@ export function EntityReview({ entities, onReviewComplete, readOnly = false }: E
           <div className="flex justify-end gap-2 pt-4">
             <Button
               variant="outline"
-              onClick={() => setReviewedEntities(transformEntities(entities))}
+              onClick={() => setReviewedEntities(entities || { entities: [], extraction_status: 'not_attempted' })}
             >
               Reset
             </Button>
@@ -398,8 +357,9 @@ export function EntityReview({ entities, onReviewComplete, readOnly = false }: E
                   <SelectContent>
                     <SelectItem value="malware">Malware</SelectItem>
                     <SelectItem value="tool">Tool/Software</SelectItem>
-                    <SelectItem value="threat_actor">Threat Actor</SelectItem>
+                    <SelectItem value="group">Threat Actor/Group</SelectItem>
                     <SelectItem value="campaign">Campaign</SelectItem>
+                    <SelectItem value="target">Target</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
