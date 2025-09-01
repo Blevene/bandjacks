@@ -164,7 +164,7 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
 
     // Update item
     const updatedItems = state.items.map(item => 
-      item.id === itemId ? { ...item, ...editedValues, review_status: 'edited' } : item
+      item.id === itemId ? { ...item, ...editedValues, review_status: 'edited' as const } : item
     );
 
     setState({

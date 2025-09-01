@@ -70,6 +70,7 @@ export function JobStatus({
   const [polling, setPolling] = useState(true);
   const [pollInterval, setPollInterval] = useState(2000); // Start with 2 seconds
   const [elapsedTime, setElapsedTime] = useState(0);
+  const [timeoutCount, setTimeoutCount] = useState(0);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -79,6 +80,9 @@ export function JobStatus({
       try {
         const status = await typedApi.reports.getJobStatus(jobId);
         setJob(status);
+        
+        // Reset timeout count on successful response
+        setTimeoutCount(0);
 
         // Update elapsed time
         if (status.started_at) {
@@ -127,6 +131,23 @@ export function JobStatus({
       } catch (error: any) {
         console.error("Failed to poll job status:", error);
         
+        // Handle timeout errors specifically
+        if (error.code === 'ECONNABORTED' || error.message?.includes('timeout')) {
+          setTimeoutCount(prev => prev + 1);
+          
+          // Stop polling after 5 consecutive timeouts
+          if (timeoutCount >= 5) {
+            setPolling(false);
+            toast({
+              variant: "destructive",
+              title: "Connection Lost",
+              description: "Unable to reach the server. Please check your connection and refresh the page.",
+            });
+          }
+          // Otherwise continue polling - the job is likely still running
+          return;
+        }
+        
         // Don't stop polling on transient errors
         if (error.response?.status === 404) {
           setPolling(false);
@@ -145,7 +166,7 @@ export function JobStatus({
     pollJob();
 
     return () => clearInterval(interval);
-  }, [jobId, polling, pollInterval, elapsedTime, onComplete, onError, toast, autoRedirect]);
+  }, [jobId, polling, pollInterval, elapsedTime, timeoutCount, onComplete, onError, toast, autoRedirect]);
 
   const handleCancel = async () => {
     try {

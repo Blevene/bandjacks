@@ -513,9 +513,6 @@ class JobProcessor:
             "techniques_count": pipeline_results.get("technique_count", 0),
             "claims": pipeline_results.get("claims", []),
             "entities": pipeline_results.get("entities", {}),
-            "threat_actors": pipeline_results.get("entities", {}).get("threat_actors", []),
-            "malware": pipeline_results.get("entities", {}).get("malware", []),
-            "tools": pipeline_results.get("entities", {}).get("tools", [])
         }
         
         # Update progress
@@ -537,28 +534,17 @@ class JobProcessor:
         else:
             logger.warning("No attack flow generated")
         
-        # Create entity nodes and relationships in Neo4j
-        self.job_store.update(job_id, {
-            "progress": 85,
-            "message": "Creating entity relationships..."
-        })
+        # NOTE: Entity graph creation moved to post-review approval
+        # We no longer create entities during extraction to ensure the graph
+        # is only modified after human review and approval
         
-        # Get extracted entities
+        # Store extracted entities in results for review, but don't create nodes
         entities = pipeline_results.get("entities", {})
-        primary_entity = pipeline_results.get("primary_entity")
-        
-        if entities or primary_entity:
-            try:
-                self._create_entity_graph(
-                    entities=entities,
-                    primary_entity=primary_entity,
-                    techniques=extraction_results.get("techniques", {}),
-                    report_id=report_sdo["id"],
-                    flow_data=flow_data
-                )
-                logger.info(f"Created entity graph for report {report_sdo['id']}")
-            except Exception as e:
-                logger.error(f"Failed to create entity graph: {e}")
+        if entities:
+            logger.info(f"Extracted entities for review: {len(entities.get('entities', []))} entities")
+            # Optionally resolve to existing entities for reference (read-only)
+            # This helps show "this might be existing entity X" in review UI
+            self._resolve_entities_for_reference(entities, report_sdo["id"])
                 
         # Save to OpenSearch
         self.job_store.update(job_id, {
@@ -673,55 +659,59 @@ class JobProcessor:
         
         try:
             with driver.session() as session:
-                # Handle primary entity first
-                primary_entity_id = None
-                if primary_entity and isinstance(primary_entity, dict):
-                    primary_entity_id = resolver.resolve_or_create(
-                        entity=primary_entity,
-                        entity_type=primary_entity.get("type", "malware"),
-                        source_id=report_id
-                    )
-                    logger.info(f"Primary entity: {primary_entity.get('name')} -> {primary_entity_id}")
-                
-                # Process other entities
+                # Process entities in new format
                 entity_ids = []
                 
-                # Process malware
-                for malware in entities.get("malware", []):
-                    if isinstance(malware, dict):
-                        entity_id = resolver.resolve_or_create(
-                            entity=malware,
-                            entity_type="malware",
+                # Handle new format: {"entities": [{"name": str, "type": str}], "extraction_status": str}
+                if isinstance(entities, dict) and "entities" in entities:
+                    entity_list = entities.get("entities", [])
+                    logger.info(f"Processing {len(entity_list)} entities in new format")
+                    
+                    for entity in entity_list:
+                        if isinstance(entity, dict):
+                            entity_type = entity.get("type", "unknown")
+                            entity_name = entity.get("name", "")
+                            
+                            if entity_name:
+                                # Map entity types to resolver types
+                                type_mapping = {
+                                    "group": "threat_actor",
+                                    "intrusion-set": "threat_actor",
+                                    "threat-actor": "threat_actor",
+                                    "malware": "malware",
+                                    "tool": "software",
+                                    "software": "software",
+                                    "campaign": "campaign"
+                                }
+                                
+                                resolver_type = type_mapping.get(entity_type.lower(), entity_type)
+                                
+                                try:
+                                    entity_id = resolver.resolve_or_create(
+                                        entity=entity,
+                                        entity_type=resolver_type,
+                                        source_id=report_id
+                                    )
+                                    if entity_id:
+                                        entity_ids.append(entity_id)
+                                        logger.info(f"Created/resolved entity: {entity_name} ({resolver_type}) -> {entity_id}")
+                                except Exception as e:
+                                    logger.warning(f"Failed to resolve entity {entity_name}: {e}")
+                
+                # Legacy: Handle primary_entity if provided separately
+                primary_entity_id = None
+                if primary_entity and isinstance(primary_entity, dict):
+                    try:
+                        primary_entity_id = resolver.resolve_or_create(
+                            entity=primary_entity,
+                            entity_type=primary_entity.get("type", "malware"),
                             source_id=report_id
                         )
-                        if entity_id:
-                            entity_ids.append(entity_id)
-                
-                # Process software/tools
-                for software in entities.get("software", []):
-                    if isinstance(software, dict):
-                        entity_id = resolver.resolve_or_create(
-                            entity=software,
-                            entity_type="software",
-                            source_id=report_id
-                        )
-                        if entity_id:
-                            entity_ids.append(entity_id)
-                
-                # Process threat actors
-                for actor in entities.get("threat_actors", []):
-                    if isinstance(actor, dict):
-                        entity_id = resolver.resolve_or_create(
-                            entity=actor,
-                            entity_type="threat_actor",
-                            source_id=report_id
-                        )
-                        if entity_id:
-                            entity_ids.append(entity_id)
-                
-                # Use primary entity if no others found
-                if primary_entity_id and not entity_ids:
-                    entity_ids = [primary_entity_id]
+                        if primary_entity_id and primary_entity_id not in entity_ids:
+                            entity_ids.append(primary_entity_id)
+                            logger.info(f"Primary entity: {primary_entity.get('name')} -> {primary_entity_id}")
+                    except Exception as e:
+                        logger.warning(f"Failed to resolve primary entity: {e}")
                 
                 # Create USES relationships from entities to techniques
                 for entity_id in entity_ids:
@@ -809,6 +799,57 @@ class JobProcessor:
                 "end_idx": min(i + chunk_size, len(text))
             })
         return chunks
+    
+    def _resolve_entities_for_reference(
+        self,
+        entities: Dict[str, Any],
+        report_id: str
+    ):
+        """
+        Resolve entities to existing nodes for reference only (read-only).
+        Does NOT create any new nodes - only looks up existing ones.
+        
+        This helps show "this might be existing entity X" in the review UI
+        without modifying the graph.
+        """
+        from bandjacks.llm.entity_resolver import EntityResolver
+        
+        try:
+            resolver = EntityResolver(
+                neo4j_uri=settings.neo4j_uri,
+                neo4j_user=settings.neo4j_user,
+                neo4j_password=settings.neo4j_password
+            )
+            
+            # Process entities in new format
+            if isinstance(entities, dict) and "entities" in entities:
+                entity_list = entities.get("entities", [])
+                
+                for entity in entity_list:
+                    if isinstance(entity, dict):
+                        entity_name = entity.get("name", "")
+                        entity_type = entity.get("type", "unknown")
+                        
+                        if entity_name:
+                            # Only resolve, don't create
+                            existing_id = resolver.resolve_entity(
+                                entity_name=entity_name,
+                                entity_type=entity_type,
+                                threshold=0.85
+                            )
+                            
+                            if existing_id:
+                                # Add resolved ID to entity for reference
+                                entity["resolved_stix_id"] = existing_id
+                                entity["resolution_status"] = "matched_existing"
+                                logger.info(f"Resolved '{entity_name}' to existing: {existing_id}")
+                            else:
+                                entity["resolution_status"] = "new_entity"
+                                logger.info(f"'{entity_name}' appears to be a new entity")
+                                
+        except Exception as e:
+            logger.warning(f"Failed to resolve entities for reference: {e}")
+            # Non-critical - continue without resolution
         
 
 

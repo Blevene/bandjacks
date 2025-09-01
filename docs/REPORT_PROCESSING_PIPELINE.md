@@ -86,20 +86,156 @@ else:
     result = run_extraction_pipeline(content)
 ```
 
-### Stage 2: Chunking (for large documents)
+### Stage 2: Chunking Decision and Strategy
+
+#### Size-Based Processing Decision
+
+The system uses a **10KB threshold** to determine extraction strategy:
+
+```python
+# job_processor.py
+USE_CHUNKED_THRESHOLD = 10_000  # 10KB
+
+if text_length < USE_CHUNKED_THRESHOLD:
+    # Direct extraction pipeline
+    result = run_extraction_pipeline(text, config)
+else:
+    # Chunked extraction with dynamic parameters
+    max_chunks, spans_per_chunk = calculate_chunks_and_spans(text_length)
+    extractor = ChunkedExtractor(max_chunks=max_chunks)
+    result = extractor.extract(text, config)
+```
+
+#### Dynamic Parameter Calculation
+
+```python
+def calculate_chunks_and_spans(text_length: int) -> Tuple[int, int, int]:
+    """Dynamically calculate chunks and spans based on document size."""
+    
+    if text_length < 10_000:     # Small docs (< 10KB)
+        max_chunks = min(5, required_chunks)
+        spans_per_chunk = 15
+    elif text_length < 50_000:   # Medium docs (10-50KB)
+        max_chunks = min(15, required_chunks)
+        spans_per_chunk = 12
+    elif text_length < 200_000:  # Large docs (50-200KB)
+        max_chunks = min(30, required_chunks)
+        spans_per_chunk = 10
+    else:                        # Very large docs (> 200KB)
+        max_chunks = min(50, required_chunks)
+        spans_per_chunk = 8
+```
+
+### Stage 2.5: Chunked Processing Architecture (for large documents)
+
+#### Chunk Creation
 
 ```python
 # llm/chunked_extractor.py → ChunkedExtractor
 class ChunkedExtractor:
-    chunk_size = 3000      # Characters per chunk
-    overlap = 150          # Overlap between chunks
-    max_chunks = 10        # Maximum chunks to process
+    chunk_size = 4000      # Characters per chunk (optimized)
+    overlap = 150-200      # Overlap between chunks
+    max_chunks = 8-50      # Dynamic based on doc size
     
-    def process_chunks(text):
-        chunks = create_chunks(text)  # Smart sentence-aware splitting
-        for chunk in chunks:
-            result = extract_from_chunk(chunk)
-            merge_results(result)
+    def create_chunks(text):
+        # Intelligent boundary detection
+        sentence_pattern = re.compile(r'[.!?]\s+')
+        # Attempts to end chunks at sentence boundaries
+        # Looks within 100 chars of target chunk end
+        # Falls back to hard boundaries if needed
+```
+
+#### Independent Chunk Processing
+
+**IMPORTANT**: Each chunk goes through the **complete extraction pipeline**:
+
+```python
+def process_chunk(chunk: DocumentChunk, config: Dict) -> Dict:
+    """Each chunk is processed completely independently."""
+    
+    # Chunk-specific configuration
+    chunk_config = {
+        "use_batch_mapper": True,       # Always batch for efficiency
+        "max_spans": 8-15,              # Reduced per chunk
+        "span_score_threshold": 0.9,    # Higher quality threshold
+        "confidence_threshold": 60,     # Stricter confidence
+        "disable_discovery": True,      # Speed optimization
+        "skip_verification": True       # Speed optimization
+    }
+    
+    # Run FULL extraction pipeline on chunk
+    result = run_extraction_pipeline(
+        report_text=chunk.text,
+        config=chunk_config
+    )
+    # Returns: claims, techniques, entities for this chunk
+```
+
+#### Parallel Execution
+
+```python
+# Chunks processed in parallel with ThreadPoolExecutor
+with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    futures = [executor.submit(process_chunk_with_retry, chunk, config) 
+              for chunk in chunks]
+    
+    # Collect results as they complete
+    for future in concurrent.futures.as_completed(futures, timeout=300):
+        result = future.result()
+        chunk_results.append(result)
+```
+
+#### Results Reconciliation
+
+```python
+def merge_results(chunk_results: List[Dict]) -> Dict:
+    """Sophisticated deduplication and merging."""
+    
+    seen_techniques = {}
+    MAX_TECHNIQUES = 60  # Early termination threshold
+    
+    for result in chunk_results:
+        for claim in result.get("claims", []):
+            tech_id = claim.get("technique_id")
+            
+            if tech_id in seen_techniques:
+                existing = seen_techniques[tech_id]
+                # Merge if confidence within 10 points
+                if claim.confidence >= existing.confidence - 10:
+                    # Merge evidence quotes (avoid duplicates)
+                    # Update confidence to maximum
+                    # Preserve line references
+            else:
+                # Add new technique
+                seen_techniques[tech_id] = claim
+                
+            if len(seen_techniques) >= MAX_TECHNIQUES:
+                break  # Early termination
+    
+    # Entity consolidation
+    # - Deduplicate by normalized name
+    # - Select primary entity (prefer malware > threat actors)
+    # - Preserve all unique entities
+```
+
+#### Retry and Error Recovery
+
+```python
+def process_chunk_with_retry(chunk, config, max_retries=3):
+    """Robust retry mechanism per chunk."""
+    
+    for attempt in range(max_retries):
+        try:
+            result = process_chunk(chunk, config)
+            if "claims" in result or "techniques" in result:
+                return result
+        except Exception as e:
+            if attempt < max_retries - 1:
+                wait_time = (2 ** attempt) * 2  # 2, 4, 8 seconds
+                time.sleep(wait_time)
+    
+    # Return empty result for failed chunks
+    return {"claims": [], "techniques": {}, "entities": {}, "failed": True}
 ```
 
 ### Stage 3: Entity Extraction
@@ -158,10 +294,11 @@ Extracts:
 ```python
 # llm/flow_builder.py → FlowBuilder
 def build_from_extraction(extraction_data):
-    # Try LLM synthesis first
+    # IMPORTANT: Flow analysis uses FULL document text
+    # even when techniques come from chunked extraction
     llm_flow = synthesize_attack_flow(
-        extraction_data,
-        report_text,
+        extraction_data,      # Merged/deduplicated techniques
+        report_text,          # FULL original document
         max_steps=25
     )
     
@@ -173,6 +310,8 @@ def build_from_extraction(extraction_data):
     add_probabilistic_edges(flow)
     return flow
 ```
+
+**Key Insight**: Flow generation preserves temporal context by using the full document text, while benefiting from the deduplicated, high-quality techniques extracted via chunking.
 
 #### Flow Generation Methods:
 
@@ -571,16 +710,43 @@ def call_llm(prompt):
 }
 ```
 
+## Chunked Processing Summary
+
+### Architecture Strengths
+
+1. **Independent Processing**: Each chunk runs the complete extraction pipeline independently
+2. **Sophisticated Reconciliation**: Not just concatenation - intelligent deduplication with evidence merging
+3. **Context Preservation**: Flow analysis uses full document for temporal relationships
+4. **Scalability**: Parallel processing with configurable workers
+5. **Resilience**: Per-chunk retry logic with graceful degradation
+6. **Dynamic Optimization**: Parameters adjust based on document size
+
+### Processing Decision Tree
+
+```
+Document Size
+├── < 10KB → Direct extraction (single pipeline run)
+│   └── 30 spans, full context, no chunking
+├── 10-50KB → Chunked extraction (5-15 chunks)
+│   └── 12-15 spans/chunk, parallel processing
+├── 50-200KB → Heavy chunking (15-30 chunks)
+│   └── 10 spans/chunk, stricter thresholds
+└── > 200KB → Maximum chunking (30-50 chunks)
+    └── 8 spans/chunk, highest quality filters
+```
+
 ## Performance Metrics
 
 ### Typical Processing Times
 
-| Document Size | Chunks | Techniques | Time | Method |
-|--------------|--------|------------|------|---------|
-| 2KB | 1 | 3-5 | 5s | Sync |
-| 5KB | 2 | 8-12 | 10s | Sync |
-| 15KB | 5 | 15-25 | 30s | Async |
-| 50KB | 10 | 30-50 | 60s | Async |
+| Document Size | Strategy | Chunks | Spans/Chunk | Total Techniques | Time | Method |
+|--------------|----------|--------|-------------|-----------------|------|---------|
+| 2KB | Direct | 0 | N/A | 3-5 | 5s | Sync |
+| 5KB | Direct | 0 | N/A | 8-12 | 10s | Sync |
+| 10KB | Chunked | 3-4 | 15 | 10-15 | 15s | Async |
+| 15KB | Chunked | 5 | 12 | 15-25 | 30s | Async |
+| 50KB | Chunked | 10-15 | 10 | 30-50 | 60s | Async |
+| 200KB | Chunked | 30+ | 8 | 50-60 | 120s | Async |
 
 ### Optimization Tips
 
