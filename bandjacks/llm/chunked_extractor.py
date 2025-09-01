@@ -277,11 +277,8 @@ class ChunkedExtractor:
             "chunks_processed": len(chunk_results),
             "metrics": {},
             "entities": {
-                "primary_entity": None,
-                "malware": [],
-                "software": [],
-                "threat_actors": [],
-                "campaigns": []
+                "entities": [],
+                "extraction_status": "not_attempted"
             }
         }
         
@@ -352,60 +349,35 @@ class ChunkedExtractor:
                 }
         
         # Merge entities from all chunks
-        seen_entities = {
-            "malware": {},
-            "software": {},
-            "threat_actors": {},
-            "campaigns": {}
-        }
-        
-        primary_entity_candidates = []
+        # New format: {"entities": [{"name": str, "type": str}], "extraction_status": str}
+        seen_entities = {}  # Track by name to avoid duplicates
+        all_entities = []
         
         for result in chunk_results:
             chunk_entities = result.get("entities", {})
             
-            # Collect primary entity candidates
-            if chunk_entities.get("primary_entity"):
-                primary_entity_candidates.append(chunk_entities["primary_entity"])
-            
-            # Merge entity lists
-            for entity_type in ["malware", "software", "threat_actors", "campaigns"]:
-                for entity in chunk_entities.get(entity_type, []):
-                    # Handle both string and dict entities
-                    if isinstance(entity, str):
-                        # Convert string to dict format
-                        entity_name = entity
-                        entity_dict = {"name": entity, "type": entity_type.rstrip("s")}  # Remove plural
-                    elif isinstance(entity, dict):
+            # Handle new format from extraction pipeline
+            if isinstance(chunk_entities, dict) and "entities" in chunk_entities:
+                # New format with list of entities
+                for entity in chunk_entities.get("entities", []):
+                    if isinstance(entity, dict):
                         entity_name = entity.get("name", "")
-                        entity_dict = entity
-                    else:
-                        continue
-                    
-                    if entity_name and entity_name not in seen_entities[entity_type]:
-                        seen_entities[entity_type][entity_name] = entity_dict
+                        if entity_name and entity_name not in seen_entities:
+                            seen_entities[entity_name] = entity
+                            all_entities.append(entity)
+                            logger.debug(f"Found entity: {entity_name} ({entity.get('type')})")
         
-        # Choose primary entity (prefer malware, then threat actors)
-        if primary_entity_candidates:
-            # Prefer malware as primary entity (ensure they are dicts)
-            malware_candidates = [e for e in primary_entity_candidates 
-                                 if isinstance(e, dict) and e.get("type") == "malware"]
-            if malware_candidates:
-                merged["entities"]["primary_entity"] = malware_candidates[0]
-            else:
-                # Use first valid dict candidate
-                valid_candidates = [e for e in primary_entity_candidates if isinstance(e, dict)]
-                if valid_candidates:
-                    merged["entities"]["primary_entity"] = valid_candidates[0]
-        
-        # Convert entity dicts to lists
-        for entity_type in ["malware", "software", "threat_actors", "campaigns"]:
-            merged["entities"][entity_type] = list(seen_entities[entity_type].values())
+        # Use the new format for merged entities
+        merged["entities"] = {
+            "entities": all_entities,
+            "extraction_status": "completed" if all_entities else "no_entities_found"
+        }
         
         # Log entity extraction results
-        if merged["entities"]["primary_entity"]:
-            logger.info(f"Primary entity: {merged['entities']['primary_entity'].get('name')} "
-                       f"({merged['entities']['primary_entity'].get('type')})")
+        if all_entities:
+            logger.info(f"Extracted {len(all_entities)} entities from chunks")
+            for entity in all_entities[:3]:  # Log first 3 entities
+                logger.info(f"  - {entity.get('name')} ({entity.get('type')})")
         
         # Aggregate metrics
         total_time = sum(r.get("metrics", {}).get("dur_sec", 0) for r in chunk_results)

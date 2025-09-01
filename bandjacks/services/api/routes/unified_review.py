@@ -95,22 +95,27 @@ async def submit_unified_review(
     # Apply entity decisions
     if entity_decisions and report.get("extraction", {}).get("entities"):
         entities = report["extraction"]["entities"]
-        for decision in entity_decisions:
-            # Parse entity ID format: entity-{category}-{index}
-            parts = decision.item_id.split("-")
-            if len(parts) >= 3:
-                category = parts[1]
-                index = int(parts[2])
-                
-                if category in entities and index < len(entities[category]):
-                    entity = entities[category][index]
-                    entity["review_status"] = decision.action
-                    if decision.notes:
-                        entity["review_notes"] = decision.notes
-                    if decision.edited_value:
-                        entity.update(decision.edited_value)
-                    if decision.confidence_adjustment is not None:
-                        entity["confidence"] = decision.confidence_adjustment
+        
+        # Handle new format: {"entities": [{"name": str, "type": str}], "extraction_status": str}
+        if isinstance(entities, dict) and "entities" in entities:
+            entity_list = entities.get("entities", [])
+            
+            for decision in entity_decisions:
+                # Parse entity ID format: entity-{type}-{index}
+                parts = decision.item_id.split("-")
+                if len(parts) >= 3:
+                    entity_type = parts[1]
+                    index = int(parts[2])
+                    
+                    if index < len(entity_list):
+                        entity = entity_list[index]
+                        entity["review_status"] = decision.action
+                        if decision.notes:
+                            entity["review_notes"] = decision.notes
+                        if decision.edited_value:
+                            entity.update(decision.edited_value)
+                        if decision.confidence_adjustment is not None:
+                            entity["confidence"] = decision.confidence_adjustment
     
     # Apply technique decisions
     if technique_decisions and report.get("extraction", {}).get("claims"):
@@ -191,19 +196,23 @@ async def submit_unified_review(
             approved_entities = []
             entities = report.get("extraction", {}).get("entities", {})
             
-            for decision in entity_decisions:
-                if decision.action == "approve":
-                    parts = decision.item_id.split("-")
-                    if len(parts) >= 3:
-                        category = parts[1]
-                        index = int(parts[2])
-                        
-                        if category in entities and index < len(entities[category]):
-                            entity = entities[category][index]
-                            approved_entities.append({
-                                **entity,
-                                "entity_type": category.rstrip("s")
-                            })
+            # Handle new format
+            if isinstance(entities, dict) and "entities" in entities:
+                entity_list = entities.get("entities", [])
+                
+                for decision in entity_decisions:
+                    if decision.action == "approve":
+                        parts = decision.item_id.split("-")
+                        if len(parts) >= 3:
+                            entity_type = parts[1]
+                            index = int(parts[2])
+                            
+                            if index < len(entity_list):
+                                entity = entity_list[index]
+                                approved_entities.append({
+                                    **entity,
+                                    "entity_type": entity.get("type", "unknown")
+                                })
             
             # Upsert approved entities to Neo4j
             if approved_entities:
@@ -247,7 +256,7 @@ async def submit_unified_review(
 
 
 def _upsert_entities_to_graph(session: Session, entities: List[Dict], report_id: str):
-    """Helper to upsert entities to Neo4j."""
+    """Helper to upsert entities to Neo4j - only called after review approval."""
     import uuid
     
     for entity in entities:
@@ -259,15 +268,18 @@ def _upsert_entities_to_graph(session: Session, entities: List[Dict], report_id:
             "software": ("Software", "tool"),
             "tool": ("Software", "tool"),
             "threat_actor": ("IntrusionSet", "intrusion-set"),
+            "group": ("IntrusionSet", "intrusion-set"),  # Handle 'group' type
+            "intrusion-set": ("IntrusionSet", "intrusion-set"),
             "campaign": ("Campaign", "campaign")
         }
         
-        label, stix_type = label_map.get(entity_type, ("Entity", "x-unknown"))
+        label, stix_type = label_map.get(entity_type.lower(), ("Entity", "x-unknown"))
         
-        # Generate STIX ID if not present
-        stix_id = entity.get("stix_id")
+        # Use resolved STIX ID if available, otherwise generate new one
+        stix_id = entity.get("resolved_stix_id") or entity.get("stix_id")
         if not stix_id:
             stix_id = f"{stix_type}--{uuid.uuid4()}"
+            logger.info(f"Creating new entity {entity.get('name')} with ID {stix_id}")
         
         # Create or update entity
         query = f"""

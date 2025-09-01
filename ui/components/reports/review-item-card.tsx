@@ -152,13 +152,20 @@ export function ReviewItemCard({
               <div className="flex items-start justify-between">
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium">{item.name}</span>
-                    {getTypeBadge()}
-                    {item.technique_id && (
-                      <Badge variant="outline" className="text-xs font-mono">
-                        {item.technique_id}
-                      </Badge>
+                    {/* For techniques, split the ID and name for better display */}
+                    {item.type === 'technique' && item.technique_id ? (
+                      <>
+                        <Badge variant="outline" className="text-xs font-mono">
+                          {item.technique_id}
+                        </Badge>
+                        <span className="font-medium">
+                          {item.name.replace(`${item.technique_id}: `, '')}
+                        </span>
+                      </>
+                    ) : (
+                      <span className="font-medium">{item.name}</span>
                     )}
+                    {getTypeBadge()}
                   </div>
                   
                   {/* Metadata */}
@@ -237,14 +244,21 @@ export function ReviewItemCard({
               {/* Evidence (preview or full) */}
               {item.evidence.length > 0 && (
                 <div className="space-y-1">
-                  {(isExpanded ? item.evidence : item.evidence.slice(0, 1)).map((evidence, idx) => (
-                    <blockquote
-                      key={idx}
-                      className="border-l-2 border-muted pl-3 text-sm text-muted-foreground italic"
-                    >
-                      "{evidence.length > 200 && !isExpanded ? evidence.substring(0, 200) + '...' : evidence}"
-                    </blockquote>
-                  ))}
+                  {(isExpanded ? item.evidence : item.evidence.slice(0, 1)).map((evidence, idx) => {
+                    // Handle both string and object evidence formats
+                    const evidenceText = typeof evidence === 'string' 
+                      ? evidence 
+                      : (evidence as any).text || '';
+                    
+                    return (
+                      <blockquote
+                        key={idx}
+                        className="border-l-2 border-muted pl-3 text-sm text-muted-foreground italic"
+                      >
+                        "{evidenceText.length > 200 && !isExpanded ? evidenceText.substring(0, 200) + '...' : evidenceText}"
+                      </blockquote>
+                    );
+                  })}
                   {!isExpanded && item.evidence.length > 1 && (
                     <button
                       onClick={() => onExpand?.(true)}

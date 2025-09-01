@@ -35,7 +35,12 @@ export function FlowVisualization({ flow }: FlowVisualizationProps) {
     if (!edgeMap[edge.source]) {
       edgeMap[edge.source] = [];
     }
-    edgeMap[edge.source].push(edge);
+    // Default relationship to NEXT if not specified
+    const edgeWithRelation = {
+      ...edge,
+      relationship: edge.relationship || 'NEXT' as const
+    };
+    edgeMap[edge.source].push(edgeWithRelation);
   });
 
   const getFlowTypeIcon = (type: string) => {
@@ -130,10 +135,13 @@ export function FlowVisualization({ flow }: FlowVisualizationProps) {
         <CardContent>
           <div className="space-y-4">
             {flow.steps.map((step, idx) => {
-              const outgoingEdges = edgeMap[step.step_id] || [];
+              // Use action_id or fall back to step_id for backward compatibility
+              const stepId = step.action_id || step.step_id || `step-${idx}`;
+              const techniqueId = step.attack_pattern_ref || step.technique_id || 'unknown';
+              const outgoingEdges = edgeMap[stepId] || [];
               
               return (
-                <div key={step.step_id} className="relative">
+                <div key={stepId} className="relative">
                   {/* Step card */}
                   <div className="flex items-start gap-4">
                     <div className="flex-shrink-0 w-8 h-8 bg-primary/10 rounded-full flex items-center justify-center text-sm font-medium">
@@ -144,8 +152,17 @@ export function FlowVisualization({ flow }: FlowVisualizationProps) {
                         <div className="space-y-2">
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-2">
-                              <Badge variant="outline">{step.technique_id}</Badge>
+                              <Badge variant="outline">
+                                {techniqueId.startsWith('attack-pattern--') ? 
+                                  techniqueId.split('--')[1].substring(0, 8) : 
+                                  techniqueId}
+                              </Badge>
                               <span className="font-medium">{step.name}</span>
+                              {step.confidence && (
+                                <Badge variant="secondary" className="ml-2">
+                                  {Math.round(step.confidence)}% conf
+                                </Badge>
+                              )}
                             </div>
                           </div>
                           {step.description && (
@@ -153,14 +170,28 @@ export function FlowVisualization({ flow }: FlowVisualizationProps) {
                               {step.description}
                             </p>
                           )}
+                          {step.reason && (
+                            <p className="text-xs text-muted-foreground italic">
+                              Rationale: {step.reason}
+                            </p>
+                          )}
                           {step.evidence && step.evidence.length > 0 && (
                             <div className="pt-2 border-t">
                               <p className="text-xs font-medium text-muted-foreground mb-1">Evidence:</p>
-                              {step.evidence.slice(0, 2).map((ev, evIdx) => (
-                                <blockquote key={evIdx} className="text-xs italic text-muted-foreground border-l-2 border-muted pl-2">
-                                  "{ev.substring(0, 100)}..."
-                                </blockquote>
-                              ))}
+                              {step.evidence.slice(0, 2).map((ev, evIdx) => {
+                                // Handle both object and string evidence formats
+                                const evidenceText = typeof ev === 'string' 
+                                  ? ev 
+                                  : (ev as any).text || '';
+                                
+                                if (!evidenceText) return null;
+                                
+                                return (
+                                  <blockquote key={evIdx} className="text-xs italic text-muted-foreground border-l-2 border-muted pl-2">
+                                    "{evidenceText.substring(0, 100)}..."
+                                  </blockquote>
+                                );
+                              })}
                             </div>
                           )}
                         </div>
@@ -172,7 +203,9 @@ export function FlowVisualization({ flow }: FlowVisualizationProps) {
                   {outgoingEdges.length > 0 && idx < flow.steps.length - 1 && (
                     <div className="ml-4 mt-2 mb-2">
                       {outgoingEdges.map((edge, edgeIdx) => {
-                        const targetStep = flow.steps.find(s => s.step_id === edge.target);
+                        const targetStep = flow.steps.find(s => 
+                          (s.action_id || s.step_id) === edge.target
+                        );
                         if (!targetStep) return null;
 
                         return (

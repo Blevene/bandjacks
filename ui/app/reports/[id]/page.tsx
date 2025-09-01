@@ -351,42 +351,32 @@ export default function ReportDetailPage() {
           </TabsContent>
 
           <TabsContent value="entities">
-            <EntityReview
-              entities={extraction.entities}
-              readOnly={report.status === 'approved'}
-              onReviewComplete={async (reviewedEntities) => {
-                try {
-                  // Submit entity review to API
-                  const response = await fetch(`http://localhost:8000/v1/reports/${reportId}/entities/review`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                      entities: reviewedEntities,
-                      reviewer_id: 'user-1', // TODO: Get from auth context
-                      timestamp: new Date().toISOString()
-                    })
-                  });
-                  
-                  if (!response.ok) {
-                    throw new Error('Failed to submit entity review');
-                  }
-                  
-                  toast({
-                    title: "Entity review submitted",
-                    description: "Your entity review has been saved successfully.",
-                  });
-                  
-                  // Refresh report to show updated status
-                  fetchReport();
-                } catch (error: any) {
-                  toast({
-                    title: "Error submitting review",
-                    description: error.message || "Failed to save entity review",
-                    variant: "destructive",
-                  });
-                }
-              }}
-            />
+            <div className="space-y-4">
+              {report.status !== 'approved' && (
+                <Alert>
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription>
+                    Entities shown below are extracted but not yet approved. 
+                    Click "Review All Extraction Results" to approve entities for the knowledge graph.
+                  </AlertDescription>
+                </Alert>
+              )}
+              <EntityReview
+                entities={extraction.entities}
+                readOnly={true}  // Always read-only in main view
+              />
+              {report.status !== 'approved' && (
+                <div className="flex justify-end">
+                  <Button
+                    onClick={() => router.push(`/reports/${reportId}/review`)}
+                    className="bg-blue-600 hover:bg-blue-700"
+                  >
+                    <CheckCircle className="h-4 w-4 mr-2" />
+                    Review All Extraction Results
+                  </Button>
+                </div>
+              )}
+            </div>
           </TabsContent>
 
           <TabsContent value="evidence">
