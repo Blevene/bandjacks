@@ -1,6 +1,7 @@
 import re
 import json
-from typing import Any, Dict
+import logging
+from typing import Any, Dict, List
 
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.tools import (
@@ -14,6 +15,7 @@ from bandjacks.llm.client import execute_tool_loop
 from bandjacks.llm.stix_builder import STIXBuilder
 from bandjacks.llm.flow_builder import FlowBuilder
 
+logger = logging.getLogger(__name__)
 
 TECH_ID_RE = re.compile(r"^T\d{4}(?:\.\d{3})?$")
 
@@ -32,6 +34,9 @@ class SpanFinderAgent:
     """Find spans likely to contain TTPs using comprehensive behavioral patterns."""
     
     def __init__(self):
+        # Explicit technique ID pattern
+        self.technique_pattern = re.compile(r"\bT\d{4}(?:\.\d{3})?\b")
+        
         # Reconnaissance patterns
         self.recon_patterns = re.compile(
             r"\b(scan|enumerat|discover|reconnaissan|fingerprint|probe|collect\s+information|" +
@@ -139,6 +144,11 @@ class SpanFinderAgent:
             score = 0.0
             tactics = []
             
+            # Check for explicit technique IDs first (highest priority)
+            if self.technique_pattern.search(line):
+                score = 2.0  # Guaranteed inclusion
+                tactics.append("explicit-technique")
+            
             for pattern, tactic, weight in self.all_patterns:
                 if pattern.search(line):
                     score += weight
@@ -188,10 +198,11 @@ class SpanFinderAgent:
     def _create_entity_spans(self, mem: WorkingMemory):
         """Create spans based on entity mentions and their actions."""
         
-        # Find entity mentions
+        # Find entity mentions - expanded to include more threat actors and malware
         entity_pattern = re.compile(
-            r"\b(APT\d+|TA\d+|FIN\d+|Lazarus|Cozy Bear|Fancy Bear|" +
-            r"threat actor|attacker|adversary|malware|trojan|ransomware)\b", re.I
+            r"\b(APT\d+|TA\d+|FIN\d+|UNC\d+|" +  # Standard threat actor naming
+            r"threat actor|attacker|adversary|threat group|intrusion set|" +  # Generic terms
+            r"malware|trojan|ransomware|backdoor|RAT|rootkit|worm|virus)\b", re.I  # Specific malware
         )
         
         for idx, line in enumerate(mem.line_index):
@@ -212,6 +223,9 @@ class SpanFinderAgent:
 
 
 LEX = ["powershell", "rundll32", "schtasks", "reg add", "wmic", "psexec", "lsass", "mimikatz", "wmi", "svc", "runkey"]
+
+# Removed hardcoded threat actor and malware extraction functions
+# These should be handled by proper entity recognition or knowledge base lookups
 
 def _hinted_query(text: str) -> str:
     lower = text.lower()
@@ -251,89 +265,99 @@ class DiscoveryAgent:
     """Use LLM to discover techniques not found by retrieval."""
     
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
-        max_props = int(config.get("max_discovery_per_span", 10))  # Increased from 3
-        # Provide more context for better discovery
-        context_window = 3  # Lines before/after for context
+        logger.debug(f"DiscoveryAgent: Processing {len(mem.spans)} spans")
+        max_props = int(config.get("max_discovery_per_span", 3))
+        
+        # Use direct LLM client without tools for better performance
+        from bandjacks.llm.client import LLMClient
+        client = LLMClient()
+        discovery_model = config.get("discovery_model", "gemini/gemini-2.5-flash")
         
         for i, span in enumerate(mem.spans):
-            # Get surrounding context
-            line_refs = span.get("line_refs", [])
-            if line_refs:
-                min_line = max(1, min(line_refs) - context_window)
-                max_line = min(len(mem.line_index), max(line_refs) + context_window)
-                context_lines = mem.line_index[min_line-1:max_line]
-                context_text = "\n".join(context_lines)
-            else:
-                context_text = span["text"]
+            # Skip if we already have good candidates
+            existing_candidates = mem.candidates.get(i, [])
+            if len(existing_candidates) >= 5 and any(c.get("score", 0) > 0.7 for c in existing_candidates):
+                continue
             
+            # Simple prompt for discovery
             messages = [
                 {
                     "role": "system",
                     "content": (
-                        "You are an expert in MITRE ATT&CK framework. Analyze the text and identify techniques being described. "
-                        "Use chain-of-thought reasoning:\n"
-                        "1. What behavior is being described?\n"
-                        "2. What is the attacker trying to achieve?\n"
-                        "3. What ATT&CK techniques match this behavior?\n\n"
-                        "Return a JSON array of up to 10 techniques: [{external_id:'Txxxx[.xxx]',name:'technique name',reason:'why this matches'}]"
+                        "You are a MITRE ATT&CK expert. Identify ATT&CK techniques in the text. "
+                        "Output ONLY technique IDs mentioned or clearly implied. "
+                        "Format: {\"techniques\": [\"T1055\", \"T1003.001\", ...]}"
                     ),
                 },
                 {
                     "role": "user",
-                    "content": json.dumps({
-                        "span": span["text"],
-                        "context": context_text,
-                        "line_refs": span["line_refs"],
-                        "span_tactics": span.get("tactics", []),
-                        "max": max_props
-                    }),
+                    "content": f"Text: {span['text'][:500]}\n\nIdentify techniques:"
                 },
             ]
             
-            # Use Gemini 2.5 Flash for better discovery
-            model = config.get("discovery_model", "gemini/gemini-2.5-flash")
-            raw = execute_tool_loop(
-                messages, 
-                get_tool_definitions(), 
-                get_tool_functions(), 
-                max_iterations=5,
-                model=model
-            )
+            # Direct LLM call with structured output (no tools)
             try:
-                props = json.loads(raw)
-                if not isinstance(props, list):
+                # Override model for this call
+                old_model = client.model
+                client.model = discovery_model
+                response = client.call(
+                    messages,
+                    response_format={"type": "json_object"},
+                    max_tokens=2000  # Small response expected
+                )
+                client.model = old_model  # Restore original
+                content = response.get("content", "")
+                
+                # Parse response
+                if not content:
                     continue
-            except Exception:
+                    
+                result = json.loads(content.strip())
+                techniques = result.get("techniques", [])
+                
+                # Add discovered techniques as candidates
+                mem.candidates.setdefault(i, [])
+                seen = {c.get("external_id") for c in mem.candidates[i]}
+                
+                for tech_id in techniques[:max_props]:
+                    if not isinstance(tech_id, str) or not TECH_ID_RE.match(tech_id):
+                        continue
+                    if tech_id in seen:
+                        continue
+                    
+                    # Look up technique metadata
+                    from bandjacks.llm.tools import resolve_technique_by_external_id
+                    meta = resolve_technique_by_external_id(tech_id)
+                    
+                    # Add as candidate with discovery source
+                    mem.candidates[i].append({
+                        "external_id": tech_id,
+                        "name": meta.get("name", "") if meta else "",
+                        "score": 0.5,  # Medium confidence for discovered
+                        "meta": meta,
+                        "source": "discovery",
+                    })
+                    seen.add(tech_id)
+                    logger.debug(f"  DiscoveryAgent: Added {tech_id} to span {i}")
+                    
+            except Exception as e:
+                logger.debug(f"  DiscoveryAgent failed for span {i}: {e}")
                 continue
-            mem.candidates.setdefault(i, [])
-            seen = {c.get("external_id") for c in mem.candidates[i]}
-            for p in props[:max_props]:
-                ext = (p or {}).get("external_id", "")
-                name = (p or {}).get("name", "")
-                if not TECH_ID_RE.match(ext) or ext in seen:
-                    continue
-                # Defer resolution to verifier; keep proposal visible
-                mem.candidates[i].append({
-                    "external_id": ext,
-                    "name": name,
-                    "score": 0.0,
-                    "meta": None,
-                    "source": "free_propose",
-                })
-                seen.add(ext)
 
 
 class MapperAgent:
     """Map spans to techniques with high-quality evidence."""
     
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
+        initial_claims = len(mem.claims)
+        logger.debug(f"MapperAgent: Processing {len(mem.spans)} spans, {initial_claims} existing claims")
         for i, span in enumerate(mem.spans):
             cands = mem.candidates.get(i, [])
             
-            # Get full context for evidence extraction
+            # Get limited context for evidence extraction (optimization)
             line_refs = span.get("line_refs", [])
             evidence_lines = []
-            for ref in line_refs:
+            for ref in line_refs[:3]:  # Limit to 3 evidence lines for performance
                 if 1 <= ref <= len(mem.line_index):
                     evidence_lines.append(f"Line {ref}: {mem.line_index[ref-1]}")
             
@@ -341,47 +365,68 @@ class MapperAgent:
                 {
                     "role": "system",
                     "content": (
+                        "You are a cybersecurity analyst that outputs JSON. "
                         "Analyze the span and map it to the BEST matching ATT&CK technique. "
-                        "You can either:\n"
-                        "1. Select from provided candidates\n"
-                        "2. Propose a different technique if none match well\n\n"
+                        "Select from candidates or propose a different technique.\n\n"
                         "Requirements:\n"
-                        "- Provide 2-5 direct quotes as evidence\n"
-                        "- Each quote must be EXACT text from the document\n"
+                        "- Provide 2-3 direct quotes as evidence\n"
                         "- Include line numbers for each quote\n"
-                        "- Score confidence 0-100 based on evidence strength\n\n"
-                        "Return JSON: {selected:{external_id,name}|null, proposed:{external_id,name}|null, "
-                        "evidence:{quotes:[string],line_refs:[int]}, confidence:int, rationale:string}"
+                        "- Score confidence 0-100\n\n"
+                        "Output JSON: {\"selected\":{\"external_id\":str,\"name\":str}|null, \"proposed\":{\"external_id\":str,\"name\":str}|null, "
+                        "\"evidence\":{\"quotes\":[str],\"line_refs\":[int]}, \"confidence\":int}"
                     ),
                 },
                 {
                     "role": "user",
                     "content": json.dumps(
                         {
-                            "span": span["text"],
-                            "line_refs": span["line_refs"],
+                            "span": span["text"][:400],  # Limit span text for performance
+                            "line_refs": span["line_refs"][:5],  # Limit line refs
                             "evidence_lines": evidence_lines,
                             "candidates": [
                                 {"external_id": c["external_id"], "name": c.get("name", ""), "score": c.get("score", 0)} 
-                                for c in cands
+                                for c in cands[:5]  # Limit candidates to top 5
                             ],
                         }
                     ),
                 },
             ]
             
-            # Use Gemini 2.5 Flash for evidence extraction
-            model = config.get("mapper_model", "gemini/gemini-2.5-flash")
-            raw = execute_tool_loop(
-                messages, 
-                get_tool_definitions(), 
-                get_tool_functions(), 
-                max_iterations=5,
-                model=model
-            )
+            # Use direct LLM call for better performance
+            from bandjacks.llm.client import LLMClient
+            client = LLMClient()
+            mapper_model = config.get("mapper_model", "gemini/gemini-2.5-flash")
+            
             try:
-                resp = json.loads(raw)
-            except Exception:
+                # Override model for this call
+                old_model = client.model
+                client.model = mapper_model
+                response = client.call(
+                    messages,
+                    response_format={"type": "json_object"},
+                    max_tokens=4000  # Reasonable for single span
+                )
+                client.model = old_model  # Restore original
+                raw = response.get("content", "")
+                
+                # Handle potential markdown wrapper despite structured output
+                cleaned = raw.strip() if isinstance(raw, str) else raw
+                if cleaned.startswith('```'):
+                    # Extract JSON from markdown if present
+                    if '```json' in cleaned:
+                        cleaned = cleaned.split('```json')[1].split('```')[0].strip()
+                    else:
+                        cleaned = cleaned.split('```')[1].split('```')[0].strip()
+            except Exception as e:
+                logger.debug(f"MapperAgent LLM call failed for span {i}: {e}")
+                continue
+            
+            try:
+                # Direct JSON parsing
+                resp = json.loads(cleaned)
+            except Exception as e:
+                logger.error(f"Failed to parse JSON from MapperAgent: {e}")
+                logger.debug(f"Raw response: {repr(raw[:500]) if raw else 'None'}")
                 continue
             choice = resp.get("selected") or resp.get("proposed") or {}
             ev = resp.get("evidence") or {}
@@ -396,28 +441,46 @@ class MapperAgent:
                             choice["external_id"] = s.get("external_id", choice_id)
                             choice["name"] = s.get("name", choice.get("name", ""))
                             break
-            if choice.get("external_id") and ev.get("quotes") and ev.get("line_refs"):
-                mem.claims.append(
-                    {
-                        "span_idx": i,
-                        "external_id": choice["external_id"],
-                        "name": choice.get("name", ""),
-                        "quotes": ev["quotes"],
-                        "line_refs": ev["line_refs"],
-                        "confidence": int(resp.get("confidence", 60)),
-                        "source": "candidate" if resp.get("selected") else "free_propose",
-                    }
-                )
+            if choice.get("external_id"):
+                # Be more flexible with evidence
+                quotes = ev.get("quotes", [])
+                line_refs = ev.get("line_refs", [])
+                
+                if not quotes:
+                    logger.debug(f"  Span {i}: No quotes for {choice.get('external_id')}, skipping")
+                    continue
+                    
+                if not line_refs:
+                    logger.debug(f"  Span {i}: No line_refs for {choice.get('external_id')}, using span refs")
+                    line_refs = span.get("line_refs", [])
+                
+                if quotes and line_refs:
+                    mem.claims.append(
+                        {
+                            "span_idx": i,
+                            "external_id": choice["external_id"],
+                            "name": choice.get("name", ""),
+                            "quotes": quotes,
+                            "line_refs": line_refs,
+                            "confidence": int(resp.get("confidence", 60)),
+                            "source": "candidate" if resp.get("selected") else "free_propose",
+                        }
+                    )
+                    logger.debug(f"  Span {i}: Added {choice['external_id']} with {len(quotes)} quotes")
+        
+        logger.info(f"MapperAgent: Added {len(mem.claims) - initial_claims} claims (total: {len(mem.claims)})")
 
 
-from bandjacks.llm.tools import resolve_technique_by_external_id
+from bandjacks.llm.tools import resolve_technique_by_external_id, list_subtechniques
 
 
 class EvidenceVerifierAgent:
     """Verify evidence quality and semantic relevance."""
     
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
+        logger.debug(f"EvidenceVerifierAgent: Starting with {len(mem.claims)} claims")
         valid = []
+        rejected = []
         min_quotes = config.get("min_quotes", 2)
         WINDOW = 2
 
@@ -455,20 +518,41 @@ class EvidenceVerifierAgent:
                 claim.get("confidence", 50),
             )
 
-            # Accept if meets minimum quality
+            # Accept if meets minimum quality - relaxed constraints
             if len(valid_quotes) >= min_quotes and evidence_score >= 40:
                 claim["quotes"] = valid_quotes
                 claim["line_refs"] = valid_lines
                 claim["evidence_score"] = evidence_score
                 claim["technique_meta"] = meta
                 valid.append(claim)
-            elif len(valid_quotes) >= 1 and evidence_score >= 60:
+                logger.debug(f"  ✓ Accepted {claim['external_id']}: {len(valid_quotes)} quotes, score={evidence_score}")
+            elif len(valid_quotes) >= 1 and evidence_score >= 50:  # Relaxed from 60
                 claim["quotes"] = valid_quotes
                 claim["line_refs"] = valid_lines
                 claim["evidence_score"] = evidence_score
                 claim["technique_meta"] = meta
                 valid.append(claim)
+                logger.debug(f"  ✓ Accepted (relaxed) {claim['external_id']}: 1 quote, score={evidence_score}")
+            elif claim.get("confidence", 0) >= 80 and len(valid_quotes) >= 1:
+                # High confidence fallback
+                claim["quotes"] = valid_quotes
+                claim["line_refs"] = valid_lines
+                claim["evidence_score"] = evidence_score
+                claim["technique_meta"] = meta
+                valid.append(claim)
+                logger.debug(f"  ✓ Accepted (high conf) {claim['external_id']}: conf={claim['confidence']}")
+            else:
+                rejected.append({
+                    "id": claim['external_id'],
+                    "quotes": len(valid_quotes),
+                    "score": evidence_score,
+                    "conf": claim.get("confidence", 0)
+                })
+                logger.debug(f"  ✗ Rejected {claim['external_id']}: quotes={len(valid_quotes)}, score={evidence_score}, conf={claim.get('confidence', 0)}")
 
+        logger.info(f"EvidenceVerifierAgent: {len(valid)} claims passed verification (rejected {len(rejected)})")
+        if rejected:
+            logger.debug(f"  Rejected details: {rejected[:5]}...")  # Show first 5
         mem.claims = valid
     
     def _score_evidence(self, quotes: list, lines: list, meta: dict, confidence: int) -> int:
@@ -547,6 +631,7 @@ class ConsolidatorAgent:
     """Consolidate claims into unique techniques with calibrated confidence."""
     
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
+        logger.debug(f"ConsolidatorAgent: Processing {len(mem.claims)} claims")
         by_tech: Dict[str, Dict[str, Any]] = {}
         
         for claim in mem.claims:
@@ -567,6 +652,8 @@ class ConsolidatorAgent:
             entry["line_refs"].update(claim["line_refs"])
             entry["evidence_scores"].append(claim.get("evidence_score", 50))
             entry["claim_count"] += 1
+        
+        logger.debug(f"ConsolidatorAgent: Consolidating {len(by_tech)} unique techniques")
         
         # Consolidate into final techniques
         for tid, e in by_tech.items():
@@ -595,21 +682,25 @@ class ConsolidatorAgent:
                             cr = c["rank"]
                             best_rank_val = cr if best_rank_val is None else min(best_rank_val, cr)
 
+            final_confidence = _calibrate_confidence(
+                e["base_conf"],
+                len(unique_evidence),
+                e["claim_count"],
+                int(avg_evidence_score),
+                best_rank_val or 3,
+                prior_val,
+            )
             mem.techniques[tid] = {
                 "name": e["name"],
-                "confidence": _calibrate_confidence(
-                    e["base_conf"],
-                    len(unique_evidence),
-                    e["claim_count"],
-                    int(avg_evidence_score),
-                    best_rank_val or 3,
-                    prior_val,
-                ),
+                "confidence": final_confidence,
                 "evidence": unique_evidence[:5],  # Keep top 5 evidence
                 "line_refs": sorted(e["line_refs"]),
                 "tactic": e["tactic"],
                 "claim_count": e["claim_count"],
             }
+            logger.debug(f"  → {tid}: {e['name']} (conf={final_confidence}, evidence={len(unique_evidence)})")
+        
+        logger.info(f"ConsolidatorAgent: Consolidated into {len(mem.techniques)} techniques")
 
 
 class KillChainSuggestionsAgent:
@@ -721,15 +812,17 @@ class AssemblerAgent:
             "objects": objects
         }
         
-        # Build attack flow if configured
+        # Build attack flow if configured (skip if neo4j not configured)
         flow = None
-        if config.get("build_flow", True):
+        if config.get("build_flow", False) and config.get("neo4j_uri"):
             try:
                 flowb = FlowBuilder(config["neo4j_uri"], config["neo4j_user"], config["neo4j_password"])
                 flow = flowb.build_from_bundle(bundle)
             except Exception as e:
-                print(f"Flow building failed: {e}")
+                logger.error(f"Flow building failed: {e}", exc_info=True)
                 flow = {}
+        else:
+            flow = {}
         
         return {
             "bundle": bundle,

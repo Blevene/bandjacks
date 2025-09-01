@@ -1,0 +1,1809 @@
+{
+  "SequenceStatistics": {
+    "relationships": {
+      "HAS_SCOPE": {
+        "count": 160,
+        "properties": {},
+        "direction": "in",
+        "labels": [
+          "SequenceModel"
+        ]
+      }
+    },
+    "count": 160,
+    "type": "node",
+    "properties": {
+      "total_flows": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "technique_counts": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "conditional_probs": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "asymmetry_scores": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "scope": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created_at": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "model_id": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "total_techniques": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "total_pairs": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "scope_type": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  },
+  "PRODUCES": {
+    "count": 38,
+    "type": "relationship",
+    "properties": {}
+  },
+  "Tactic": {
+    "relationships": {
+      "HAS_TACTIC": {
+        "count": 1076,
+        "properties": {},
+        "direction": "in",
+        "labels": [
+          "AttackPattern"
+        ]
+      }
+    },
+    "count": 16,
+    "type": "node",
+    "properties": {
+      "source_version": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "stix_id": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created_ts": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "name": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "description": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "modified": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "type": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "revoked": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "BOOLEAN"
+      },
+      "shortname": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "source_collection": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "source_url": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  },
+  "AttackEpisode": {
+    "relationships": {
+      "ATTRIBUTED_TO": {
+        "count": 0,
+        "properties": {},
+        "direction": "out",
+        "labels": [
+          "IntrusionSet"
+        ]
+      },
+      "CONTAINS_EPISODE": {
+        "count": 165,
+        "properties": {},
+        "direction": "in",
+        "labels": [
+          "AttackFlow"
+        ]
+      },
+      "DERIVED_FROM": {
+        "count": 0,
+        "properties": {},
+        "direction": "out",
+        "labels": [
+          "IntrusionSet"
+        ]
+      },
+      "CONTAINS": {
+        "count": 0,
+        "properties": {
+          "order": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "INTEGER"
+          }
+        },
+        "direction": "out",
+        "labels": [
+          "AttackAction"
+        ]
+      }
+    },
+    "count": 167,
+    "type": "node",
+    "properties": {
+      "attributed_group_name": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "episode_id": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "flow_id": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "created_with_release": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "name": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "attributed_group_id": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "llm_synthesized": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "BOOLEAN"
+      },
+      "source_id": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "strategy": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  },
+  "OF_TECHNIQUE": {
+    "count": 4210,
+    "type": "relationship",
+    "properties": {}
+  },
+  "EXTRACTED_FROM": {
+    "count": 8,
+    "type": "relationship",
+    "properties": {
+      "evidence": {
+        "indexed": false,
+        "array": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "confidence": {
+        "indexed": false,
+        "array": false,
+        "existence": false,
+        "type": "INTEGER"
+      }
+    }
+  },
+  "NEXT_P": {
+    "count": 6423,
+    "type": "relationship",
+    "properties": {
+      "p": {
+        "indexed": true,
+        "array": false,
+        "existence": false,
+        "type": "FLOAT"
+      },
+      "evidence_count": {
+        "indexed": false,
+        "array": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "features": {
+        "indexed": false,
+        "array": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created_at": {
+        "indexed": false,
+        "array": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "model_id": {
+        "indexed": true,
+        "array": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "rationale": {
+        "indexed": false,
+        "array": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    }
+  },
+  "CONTAINS": {
+    "count": 4210,
+    "type": "relationship",
+    "properties": {
+      "order": {
+        "indexed": false,
+        "array": false,
+        "existence": false,
+        "type": "INTEGER"
+      }
+    }
+  },
+  "COUNTERS": {
+    "count": 954,
+    "type": "relationship",
+    "properties": {
+      "via_mitigation": {
+        "indexed": false,
+        "array": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created": {
+        "indexed": false,
+        "array": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "confidence": {
+        "indexed": false,
+        "array": false,
+        "existence": false,
+        "type": "FLOAT"
+      }
+    }
+  },
+  "D3fendTechnique": {
+    "relationships": {
+      "PRODUCES": {
+        "count": 0,
+        "properties": {},
+        "direction": "out",
+        "labels": [
+          "DigitalArtifact"
+        ]
+      },
+      "IMPLEMENTS": {
+        "count": 0,
+        "properties": {},
+        "direction": "out",
+        "labels": [
+          "Mitigation"
+        ]
+      },
+      "COUNTERS": {
+        "count": 0,
+        "properties": {
+          "via_mitigation": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "STRING"
+          },
+          "created": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "DATE_TIME"
+          },
+          "confidence": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "FLOAT"
+          }
+        },
+        "direction": "out",
+        "labels": [
+          "AttackPattern"
+        ]
+      }
+    },
+    "count": 19,
+    "type": "node",
+    "properties": {
+      "created": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "name": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "description": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "modified": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "category": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "d3fend_id": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  },
+  "AttackPattern": {
+    "relationships": {
+      "OF_TECHNIQUE": {
+        "count": 1403,
+        "properties": {},
+        "direction": "in",
+        "labels": [
+          "AttackAction"
+        ]
+      },
+      "MITIGATES": {
+        "count": 1584,
+        "properties": {},
+        "direction": "in",
+        "labels": [
+          "Mitigation"
+        ]
+      },
+      "EXTRACTED_FROM": {
+        "count": 0,
+        "properties": {
+          "evidence": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "STRING"
+          },
+          "confidence": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "INTEGER"
+          }
+        },
+        "direction": "out",
+        "labels": [
+          "Report"
+        ]
+      },
+      "SUBTECHNIQUE_OF": {
+        "count": 0,
+        "properties": {},
+        "direction": "out",
+        "labels": [
+          "AttackPattern",
+          "AttackPattern"
+        ]
+      },
+      "HAS_TACTIC": {
+        "count": 0,
+        "properties": {},
+        "direction": "out",
+        "labels": [
+          "Tactic"
+        ]
+      },
+      "NEXT_P": {
+        "count": 5011,
+        "properties": {
+          "p": {
+            "indexed": true,
+            "array": false,
+            "existence": false,
+            "type": "FLOAT"
+          },
+          "evidence_count": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "INTEGER"
+          },
+          "features": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "STRING"
+          },
+          "created_at": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "DATE_TIME"
+          },
+          "model_id": {
+            "indexed": true,
+            "array": false,
+            "existence": false,
+            "type": "STRING"
+          },
+          "rationale": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "STRING"
+          }
+        },
+        "direction": "out",
+        "labels": [
+          "AttackPattern",
+          "AttackPattern"
+        ]
+      },
+      "USES": {
+        "count": 6191,
+        "properties": {},
+        "direction": "in",
+        "labels": [
+          "IntrusionSet",
+          "Software"
+        ]
+      },
+      "COUNTERS": {
+        "count": 954,
+        "properties": {
+          "via_mitigation": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "STRING"
+          },
+          "created": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "DATE_TIME"
+          },
+          "confidence": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "FLOAT"
+          }
+        },
+        "direction": "in",
+        "labels": [
+          "D3fendTechnique"
+        ]
+      }
+    },
+    "count": 1157,
+    "type": "node",
+    "properties": {
+      "updated_ts": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "spec_version": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "description": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "external_id": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "x_bj_sources": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "LIST"
+      },
+      "type": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "revoked": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "BOOLEAN"
+      },
+      "source_collection": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "source_url": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "source_version": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "x_mitre_is_subtechnique": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "BOOLEAN"
+      },
+      "stix_id": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created_ts": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "name": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "modified": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "x_bj_provenance": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  },
+  "AttackFlow": {
+    "relationships": {
+      "CONTAINS_EPISODE": {
+        "count": 0,
+        "properties": {},
+        "direction": "out",
+        "labels": [
+          "AttackEpisode"
+        ]
+      }
+    },
+    "count": 165,
+    "type": "node",
+    "properties": {
+      "attributed_group_name": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "flow_type": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "sequence_inferred": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "BOOLEAN"
+      },
+      "flow_id": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "created_with_release": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "name": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "attributed_group_id": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "description": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "modified": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "llm_synthesized": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "BOOLEAN"
+      },
+      "source_id": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  },
+  "NEXT": {
+    "count": 4578,
+    "type": "relationship",
+    "properties": {
+      "p": {
+        "indexed": false,
+        "array": false,
+        "existence": false,
+        "type": "FLOAT"
+      },
+      "rationale": {
+        "indexed": false,
+        "array": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    }
+  },
+  "CONTAINS_EPISODE": {
+    "count": 165,
+    "type": "relationship",
+    "properties": {}
+  },
+  "MITIGATES": {
+    "count": 1584,
+    "type": "relationship",
+    "properties": {}
+  },
+  "SUBTECHNIQUE_OF": {
+    "count": 797,
+    "type": "relationship",
+    "properties": {}
+  },
+  "HAS_TACTIC": {
+    "count": 1076,
+    "type": "relationship",
+    "properties": {}
+  },
+  "DERIVED_FROM": {
+    "count": 332,
+    "type": "relationship",
+    "properties": {}
+  },
+  "IntrusionSet": {
+    "relationships": {
+      "ATTRIBUTED_TO": {
+        "count": 167,
+        "properties": {},
+        "direction": "in",
+        "labels": [
+          "AttackEpisode"
+        ]
+      },
+      "DERIVED_FROM": {
+        "count": 332,
+        "properties": {},
+        "direction": "in",
+        "labels": [
+          "AttackEpisode"
+        ]
+      },
+      "USES": {
+        "count": 0,
+        "properties": {},
+        "direction": "out",
+        "labels": [
+          "AttackPattern",
+          "Software"
+        ]
+      }
+    },
+    "count": 183,
+    "type": "node",
+    "properties": {
+      "source_version": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "stix_id": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created_ts": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "name": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "description": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "modified": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "type": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "revoked": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "BOOLEAN"
+      },
+      "source_collection": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "source_url": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  },
+  "SequenceModel": {
+    "relationships": {
+      "HAS_SCOPE": {
+        "count": 0,
+        "properties": {},
+        "direction": "out",
+        "labels": [
+          "SequenceStatistics"
+        ]
+      }
+    },
+    "count": 22,
+    "type": "node",
+    "properties": {
+      "created_at": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "model_id": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "params": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "version": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "scope_count": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "total_flows": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "total_edges": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "scope": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "total_nodes": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "total_pairs": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "parameters": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "scope_type": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "statistics": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  },
+  "Report": {
+    "relationships": {
+      "EXTRACTED_FROM": {
+        "count": 5,
+        "properties": {
+          "evidence": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "STRING"
+          },
+          "confidence": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "INTEGER"
+          }
+        },
+        "direction": "in",
+        "labels": [
+          "AttackPattern",
+          "Indicator"
+        ]
+      }
+    },
+    "count": 10,
+    "type": "node",
+    "properties": {
+      "spec_version": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "description": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "extraction_model": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "extraction_method": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "published": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "type": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "source_collection": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "source_url": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "source_version": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "stix_id": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created_ts": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "name": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "modified": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "source_hash": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "x_bj_provenance": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  },
+  "AttackAction": {
+    "relationships": {
+      "OF_TECHNIQUE": {
+        "count": 0,
+        "properties": {},
+        "direction": "out",
+        "labels": [
+          "AttackPattern"
+        ]
+      },
+      "NEXT": {
+        "count": 524,
+        "properties": {
+          "p": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "FLOAT"
+          },
+          "rationale": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "STRING"
+          }
+        },
+        "direction": "out",
+        "labels": [
+          "AttackAction",
+          "AttackAction"
+        ]
+      },
+      "CONTAINS": {
+        "count": 4210,
+        "properties": {
+          "order": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "INTEGER"
+          }
+        },
+        "direction": "in",
+        "labels": [
+          "AttackEpisode"
+        ]
+      }
+    },
+    "count": 4210,
+    "type": "node",
+    "properties": {
+      "evidence": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "action_id": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "confidence": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "FLOAT"
+      },
+      "attack_pattern_ref": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "description": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "rationale": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "timestamp": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "order": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      }
+    },
+    "labels": []
+  },
+  "IMPLEMENTS": {
+    "count": 20,
+    "type": "relationship",
+    "properties": {}
+  },
+  "USES": {
+    "count": 35098,
+    "type": "relationship",
+    "properties": {}
+  },
+  "DigitalArtifact": {
+    "relationships": {
+      "PRODUCES": {
+        "count": 38,
+        "properties": {},
+        "direction": "in",
+        "labels": [
+          "D3fendTechnique"
+        ]
+      }
+    },
+    "count": 38,
+    "type": "node",
+    "properties": {
+      "created": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "name": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "modified": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      }
+    },
+    "labels": []
+  },
+  "Indicator": {
+    "relationships": {
+      "EXTRACTED_FROM": {
+        "count": 0,
+        "properties": {
+          "evidence": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "STRING"
+          },
+          "confidence": {
+            "indexed": false,
+            "array": false,
+            "existence": false,
+            "type": "INTEGER"
+          }
+        },
+        "direction": "out",
+        "labels": [
+          "Report"
+        ]
+      }
+    },
+    "count": 3,
+    "type": "node",
+    "properties": {
+      "source_version": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "stix_id": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "pattern_type": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created_ts": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "pattern": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "name": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "description": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "valid_from": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "modified": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "type": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "source_collection": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  },
+  "Mitigation": {
+    "relationships": {
+      "MITIGATES": {
+        "count": 0,
+        "properties": {},
+        "direction": "out",
+        "labels": [
+          "AttackPattern"
+        ]
+      },
+      "IMPLEMENTS": {
+        "count": 20,
+        "properties": {},
+        "direction": "in",
+        "labels": [
+          "D3fendTechnique"
+        ]
+      }
+    },
+    "count": 282,
+    "type": "node",
+    "properties": {
+      "source_version": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "stix_id": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created_ts": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "name": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "description": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "modified": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "external_id": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "type": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "revoked": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "BOOLEAN"
+      },
+      "source_collection": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "source_url": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  },
+  "HAS_SCOPE": {
+    "count": 160,
+    "type": "relationship",
+    "properties": {}
+  },
+  "ReviewDecision": {
+    "relationships": {},
+    "count": 1,
+    "type": "node",
+    "properties": {
+      "decision": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "id": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "object_id": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "review_type": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "ts": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  },
+  "ATTRIBUTED_TO": {
+    "count": 167,
+    "type": "relationship",
+    "properties": {}
+  },
+  "JudgeVerdict": {
+    "relationships": {},
+    "count": 112,
+    "type": "node",
+    "properties": {
+      "from_technique": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "last_accessed": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "confidence": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "FLOAT"
+      },
+      "judge_version": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created_at": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "judged_at": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "access_count": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "to_technique": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "retrieval_hash": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "rationale_summary": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "cost_tokens": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "model_name": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "verdict_type": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "evidence_ids": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "LIST"
+      }
+    },
+    "labels": []
+  },
+  "Software": {
+    "relationships": {
+      "USES": {
+        "count": 2266,
+        "properties": {},
+        "direction": "out",
+        "labels": [
+          "AttackPattern",
+          "IntrusionSet"
+        ]
+      }
+    },
+    "count": 882,
+    "type": "node",
+    "properties": {
+      "source_version": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "stix_id": {
+        "indexed": true,
+        "unique": true,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created_ts": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "name": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "description": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "modified": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "type": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "revoked": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "BOOLEAN"
+      },
+      "source_collection": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "source_url": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  },
+  "CandidateNode": {
+    "relationships": {},
+    "count": 1,
+    "type": "node",
+    "properties": {
+      "reviewed_by": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "reviewed_at": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "description": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "extraction_model": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "created_at": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "DATE_TIME"
+      },
+      "extraction_method": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "type": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "provenance": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "stix_id": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "extraction_confidence": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "INTEGER"
+      },
+      "name": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "id": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "stix_object": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "source_report": {
+        "indexed": false,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      },
+      "status": {
+        "indexed": true,
+        "unique": false,
+        "existence": false,
+        "type": "STRING"
+      }
+    },
+    "labels": []
+  }
+}

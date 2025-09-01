@@ -1,22 +1,43 @@
-"""LiteLLM client wrapper for OpenAI-compatible LLM access."""
+"""LiteLLM client wrapper for OpenAI-compatible LLM access with resilience."""
 
 import os
 import json
+import time
+import logging
 from typing import List, Dict, Any, Optional
 import httpx
 from litellm import completion
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
 from bandjacks.llm.cache import get_cache
+from bandjacks.llm.rate_limiter import get_rate_limiter, get_circuit_breaker
+
+logger = logging.getLogger(__name__)
 
 
 class LLMClient:
-    """Client for interacting with LLMs via LiteLLM."""
+    """Client for interacting with LLMs via LiteLLM with retry and fallback."""
     
     def __init__(self):
         """Initialize LLM client with environment configuration."""
+        # Retry configuration
+        self.max_retries = int(os.getenv("LLM_MAX_RETRIES", "5"))
+        self.retry_min_wait = int(os.getenv("LLM_RETRY_MIN_WAIT", "1"))
+        self.retry_max_wait = int(os.getenv("LLM_RETRY_MAX_WAIT", "60"))
+        self.retry_multiplier = float(os.getenv("LLM_RETRY_MULTIPLIER", "2"))
+        
         # Check for direct API keys first
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
         self.google_api_key = os.getenv("GOOGLE_API_KEY", "")
         self.primary_llm = os.getenv("PRIMARY_LLM", "gemini")  # Default to Gemini
+        
+        # Fallback models list
+        self.fallback_models = []
         
         # LiteLLM configuration (fallback or proxy)
         self.base_url = os.getenv("LITELLM_BASE_URL", "http://localhost:4000")
@@ -31,26 +52,53 @@ class LLMClient:
             os.environ["GEMINI_API_KEY"] = self.google_api_key
             # Use gemini/ prefix to ensure LiteLLM uses Gemini API instead of Vertex
             self.model = "gemini/" + os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
-            print(f"[DEBUG] Using Google Gemini as primary with model: {self.model}")
-        # Use OpenAI as backup or if explicitly set as primary
+            logger.debug(f"Using Google Gemini as primary with model: {self.model}")
+            # Add OpenAI as fallback if available
+            if self.openai_api_key:
+                self.fallback_models.append(os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+        # Use OpenAI as primary or if explicitly set
         elif self.openai_api_key and (self.primary_llm == "openai" or not self.google_api_key):
             os.environ["OPENAI_API_KEY"] = self.openai_api_key
-            self.model = os.getenv("OPENAI_MODEL", "gpt-5")
-            print(f"[DEBUG] Using OpenAI with model: {self.model}")
+            self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            logger.debug(f"Using OpenAI with model: {self.model}")
+            # Add Gemini as fallback if available
+            if self.google_api_key:
+                self.fallback_models.append("gemini/" + os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"))
         # Configure LiteLLM proxy as fallback
         elif self.base_url and self.api_key:
             os.environ["OPENAI_API_BASE"] = self.base_url
             os.environ["OPENAI_API_KEY"] = self.api_key
-            print(f"[DEBUG] Using LiteLLM proxy with model: {self.model}")
+            logger.debug(f"Using LiteLLM proxy with model: {self.model}")
         else:
-            print(f"[DEBUG] No API keys configured, using fallback model: {self.model}")
+            logger.debug(f"No API keys configured, using fallback model: {self.model}")
+        
+        logger.info(f"Initialized LLM client with model: {self.model}, fallbacks: {self.fallback_models}")
+    
+    def _should_retry(self, exception):
+        """Determine if we should retry based on the exception."""
+        # Check for specific error codes
+        error_str = str(exception)
+        retryable_errors = [
+            "503",  # Service Unavailable
+            "429",  # Too Many Requests
+            "500",  # Internal Server Error
+            "overloaded",  # Model overloaded
+            "rate_limit",  # Rate limit
+            "timeout",  # Timeout
+            "connection",  # Connection error
+        ]
+        return any(err in error_str.lower() for err in retryable_errors)
     
     def call(
         self,
         messages: List[Dict[str, str]],
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Optional[str] = "auto",
-        use_cache: bool = True
+        use_cache: bool = True,
+        retry_count: int = 0,
+        response_format: Optional[Dict[str, Any]] = None,
+        max_tokens: Optional[int] = None,
+        request_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Call the LLM with messages and optional tools.
@@ -60,16 +108,36 @@ class LLMClient:
             tools: Optional list of tool definitions
             tool_choice: How to handle tool selection ("auto", "none", or specific tool)
             use_cache: Whether to use cached responses (default: True)
+            response_format: Optional response format (e.g., {"type": "json_object"})
+            max_tokens: Optional max tokens override (default: uses self.max_tokens)
+            request_id: Optional request ID for tracking
             
         Returns:
             Response from LLM including content and/or tool calls
         """
+        # Generate request ID if not provided
+        import uuid
+        if not request_id:
+            request_id = str(uuid.uuid4())[:8]
+        
+        # Log request details
+        request_size = sum(len(m.get("content", "")) for m in messages)
+        actual_model = self.model
+        logger.info(f"[{request_id}] LLM Request: model={actual_model}, messages={len(messages)}, chars={request_size}, json={bool(response_format)}")
+        
+        # Log first message preview for debugging
+        if messages:
+            first_msg = messages[0]
+            preview = first_msg.get("content", "")[:200]
+            logger.debug(f"[{request_id}] First message ({first_msg.get('role')}): {preview}...")
+            logger.debug(f"[{request_id}] Request params: max_tokens={max_tokens}, temperature={self.temperature}")
+        
         # Check cache first if enabled
         if use_cache:
             cache = get_cache()
             cached_response = cache.get(messages, tools=tools, tool_choice=tool_choice)
             if cached_response:
-                print("[DEBUG] Cache hit - returning cached LLM response")
+                logger.info(f"[{request_id}] Cache hit - returning cached response")
                 return cached_response
         
         try:
@@ -78,7 +146,7 @@ class LLMClient:
                 "model": self.model,
                 "messages": messages,
                 "temperature": self.temperature,
-                "max_tokens": self.max_tokens,
+                "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
                 "timeout": self.timeout
             }
             
@@ -86,26 +154,105 @@ class LLMClient:
                 params["tools"] = tools
                 params["tool_choice"] = tool_choice
             
-            # Call via LiteLLM
-            response = completion(**params)
+            # Add response_format if provided
+            if response_format:
+                # Check if we're using Gemini which needs special handling
+                if "gemini" in self.model.lower():
+                    # For Gemini, we need to enable JSON schema validation
+                    # and ensure the system message mentions JSON output
+                    import litellm
+                    litellm.enable_json_schema_validation = True
+                    
+                    # Ensure there's a system message mentioning JSON
+                    has_json_instruction = any(
+                        "json" in msg.get("content", "").lower() 
+                        for msg in messages 
+                        if msg.get("role") == "system"
+                    )
+                    if not has_json_instruction:
+                        # Prepend a system message about JSON output
+                        messages = [
+                            {"role": "system", "content": "You must output valid JSON."},
+                            *messages
+                        ]
+                        params["messages"] = messages
+                
+                # Add response_format to params
+                params["response_format"] = response_format
+            
+            # Check circuit breaker
+            circuit_breaker = get_circuit_breaker()
+            if circuit_breaker.is_open(self.model):
+                raise RuntimeError(f"Circuit breaker open for {self.model} due to repeated failures")
+            
+            # Apply rate limiting
+            rate_limiter = get_rate_limiter()
+            rate_limiter.wait_if_needed(self.model)
+            
+            # Retry decorator for the actual LLM call
+            @retry(
+                stop=stop_after_attempt(self.max_retries),
+                wait=wait_exponential(
+                    multiplier=self.retry_multiplier,
+                    min=self.retry_min_wait,
+                    max=self.retry_max_wait
+                ),
+                retry=retry_if_exception_type(Exception),
+                before_sleep=before_sleep_log(logger, logging.WARNING)
+            )
+            def _make_llm_call():
+                return completion(**params)
+            
+            # Call via LiteLLM with retry
+            import time
+            start_time = time.time()
+            response = _make_llm_call()
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            
+            # Record success with circuit breaker
+            circuit_breaker.record_success(self.model)
             
             # Extract response data
             choice = response.choices[0]
+            
+            # Debug logging to understand response structure
+            logger.debug(f"[{request_id}] Response type: {type(response)}")
+            logger.debug(f"[{request_id}] Choice type: {type(choice)}")
+            logger.debug(f"[{request_id}] Message type: {type(choice.message)}")
+            
+            # Try to get content from various possible locations
             content = choice.message.content
             
-            # DEBUG: Print what we actually get from GPT-5
-            print(f"[DEBUG] Raw choice.message.content: {repr(content)}")
-            print(f"[DEBUG] Choice message type: {type(choice.message)}")
+            if content is None:
+                logger.warning(f"[{request_id}] No content in message.content field")
+                
+                # Log all available attributes for debugging
+                if hasattr(choice.message, '__dict__'):
+                    logger.debug(f"[{request_id}] Message dict: {choice.message.__dict__}")
+                
+                # Try alternative fields
+                if hasattr(choice.message, 'text'):
+                    content = choice.message.text
+                    logger.info(f"[{request_id}] Found content in message.text field")
+                elif hasattr(choice.message, 'function_call') and choice.message.function_call:
+                    content = choice.message.function_call.arguments
+                    logger.info(f"[{request_id}] Found content in function_call.arguments")
+                else:
+                    # List all attributes for debugging
+                    attrs = [attr for attr in dir(choice.message) if not attr.startswith('_')]
+                    logger.error(f"[{request_id}] Cannot find content. Available attrs: {attrs}")
+                    content = ""
             
-            # Check if there's content in other places
-            if hasattr(choice.message, 'to_dict'):
-                message_dict = choice.message.to_dict()
-                print(f"[DEBUG] Full message dict: {message_dict}")
+            # Ensure content is a string
+            if content is None:
+                content = ""
             
-            # Check if content is in a different field for GPT-5
-            if hasattr(choice.message, 'model_dump'):
-                message_dump = choice.message.model_dump()
-                print(f"[DEBUG] Message model_dump: {message_dump}")
+            # Log response details
+            logger.info(f"[{request_id}] LLM Response: chars={len(content)}, time={elapsed_ms}ms, success=True")
+            if content:
+                logger.debug(f"[{request_id}] Response preview: {content[:500]}...")
+            else:
+                logger.warning(f"[{request_id}] Empty response content")
             
             result = {
                 "content": content,
@@ -132,7 +279,53 @@ class LLMClient:
             return result
             
         except Exception as e:
-            raise RuntimeError(f"LLM call failed: {str(e)}")
+            error_msg = str(e)
+            elapsed_ms = int((time.time() - start_time) * 1000)
+            logger.error(f"[{request_id}] LLM call failed with {self.model} after {elapsed_ms}ms: {error_msg}")
+            logger.debug(f"[{request_id}] Failed request size: {request_size} chars, messages: {len(messages)}")
+            
+            # Log more details for debugging
+            if "json" in error_msg.lower():
+                logger.debug(f"[{request_id}] JSON-related error, response_format was: {response_format}")
+            if "rate" in error_msg.lower() or "429" in error_msg:
+                logger.info(f"[{request_id}] Rate limit hit, will retry with backoff")
+            if "timeout" in error_msg.lower():
+                logger.info(f"[{request_id}] Timeout error, request was {request_size} chars")
+            
+            # Record failure with circuit breaker
+            circuit_breaker = get_circuit_breaker()
+            circuit_breaker.record_failure(self.model)
+            
+            # Check if we should retry with a fallback model
+            if self._should_retry(e) and retry_count < len(self.fallback_models):
+                fallback_model = self.fallback_models[retry_count]
+                logger.info(f"Retrying with fallback model: {fallback_model}")
+                
+                # Temporarily switch to fallback model
+                original_model = self.model
+                self.model = fallback_model
+                
+                try:
+                    # Recursive call with incremented retry count
+                    result = self.call(
+                        messages=messages,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        use_cache=False,  # Don't use cache for retries
+                        retry_count=retry_count + 1,
+                        response_format=response_format,
+                        max_tokens=max_tokens
+                    )
+                    # Restore original model on success
+                    self.model = original_model
+                    return result
+                except Exception as fallback_error:
+                    # Restore original model
+                    self.model = original_model
+                    logger.error(f"Fallback model {fallback_model} also failed: {fallback_error}")
+            
+            # If all retries exhausted, raise the error
+            raise RuntimeError(f"LLM call failed after {retry_count + 1} attempts: {error_msg}")
 
 
 def call_llm(
@@ -158,7 +351,8 @@ def execute_tool_loop(
     tools: List[Dict[str, Any]],
     tool_functions: Dict[str, callable],
     max_iterations: int = 2,  # Reduced for performance optimization
-    model: Optional[str] = None  # Allow model override
+    model: Optional[str] = None,  # Allow model override
+    response_format: Optional[Dict[str, Any]] = None  # Optional response format
 ) -> str:
     """
     Execute a tool-calling loop with the LLM.
@@ -169,6 +363,7 @@ def execute_tool_loop(
         tool_functions: Dict mapping tool names to Python functions
         max_iterations: Maximum tool-calling iterations
         model: Optional model override (e.g., "gemini/gemini-2.5-flash")
+        response_format: Optional response format (e.g., {"type": "json_object"})
         
     Returns:
         Final JSON response from the LLM
@@ -181,16 +376,16 @@ def execute_tool_loop(
     for i in range(max_iterations):
         # DEBUG: Print the messages being sent
         if i == 0:  # Only print on first iteration to avoid spam
-            print(f"[DEBUG] Sending {len(current_messages)} messages to LLM")
+            logger.debug(f"Sending {len(current_messages)} messages to LLM")
             for j, msg in enumerate(current_messages):
-                print(f"[DEBUG] Message {j}: role={msg['role']}, content_length={len(msg.get('content', '') or '')}")
+                logger.debug(f"Message {j}: role={msg['role']}, content_length={len(msg.get('content', '') or '')}")
                 if j == len(current_messages) - 1:  # Print last message content
-                    print(f"[DEBUG] Last message content: {msg.get('content', '')[:300]}...")
+                    logger.debug(f"Last message content: {msg.get('content', '')[:300]}...")
         
         # Force final response on last iteration
         tools_to_use = tools if i < max_iterations - 1 else None
         if tools_to_use is None:
-            print(f"[DEBUG] Final iteration - forcing response without tools")
+            logger.debug(f"Final iteration - forcing response without tools")
             # Add explicit JSON instruction for final iteration
             current_messages.append({
                 "role": "system",
@@ -198,12 +393,16 @@ def execute_tool_loop(
             })
         
         # Call LLM
-        print(f"[DEBUG] Iteration {i}: Calling LLM with {len(tools_to_use or [])} tools...")
+        logger.debug(f"Iteration {i}: Calling LLM with {len(tools_to_use or [])} tools...")
         try:
-            response = client.call(current_messages, tools_to_use)
-            print(f"[DEBUG] LLM responded with {len(response.get('tool_calls', []))} tool calls")
+            # On final iteration without tools, use response_format if provided
+            if tools_to_use is None and response_format:
+                response = client.call(current_messages, tools_to_use, response_format=response_format)
+            else:
+                response = client.call(current_messages, tools_to_use)
+            logger.debug(f"LLM responded with {len(response.get('tool_calls', []))} tool calls")
         except Exception as e:
-            print(f"[DEBUG] LLM call failed: {e}")
+            logger.error(f"LLM call failed: {e}")
             raise
         
         # If no tool calls, we have our final answer
@@ -212,7 +411,7 @@ def execute_tool_loop(
             
             # If content is empty, try to force a JSON response
             if not content or content.strip() == "":
-                print(f"[DEBUG] Empty response detected, forcing JSON generation...")
+                logger.debug(f" Empty response detected, forcing JSON generation...")
                 
                 # Add explicit JSON instruction and retry once
                 json_messages = current_messages.copy()
@@ -222,12 +421,17 @@ def execute_tool_loop(
                 })
                 
                 try:
-                    json_response = client.call(json_messages, None)  # No tools
+                    # Use response_format to force JSON output
+                    json_response = client.call(
+                        json_messages, 
+                        None,  # No tools
+                        response_format=response_format or {"type": "json_object"}
+                    )
                     content = json_response.get("content", "")
-                    print(f"[DEBUG] Forced JSON response: {repr(content[:200])}")
+                    logger.debug(f" Forced JSON response: {repr(content[:200])}")
                     return content if content else '{"chunk_id": "", "claims": []}'
                 except Exception as e:
-                    print(f"[DEBUG] JSON retry failed: {e}")
+                    logger.debug(f" JSON retry failed: {e}")
                     return '{"chunk_id": "", "claims": []}'
             
             return content
@@ -236,7 +440,7 @@ def execute_tool_loop(
         for tool_call in response["tool_calls"]:
             function_name = tool_call["function"]["name"]
             function_args = json.loads(tool_call["function"]["arguments"])
-            print(f"[DEBUG] Tool call: {function_name}({function_args})")
+            logger.debug(f" Tool call: {function_name}({function_args})")
             
             if function_name not in tool_functions:
                 tool_result = {"error": f"Unknown tool: {function_name}"}
@@ -244,10 +448,10 @@ def execute_tool_loop(
                 try:
                     # Execute the tool
                     tool_result = tool_functions[function_name](**function_args)
-                    print(f"[DEBUG] Tool result: {str(tool_result)[:200]}...")
+                    logger.debug(f" Tool result: {str(tool_result)[:200]}...")
                 except Exception as e:
                     tool_result = {"error": str(e)}
-                    print(f"[DEBUG] Tool error: {e}")
+                    logger.debug(f" Tool error: {e}")
             
             # Add tool response to messages
             current_messages.append({
@@ -357,38 +561,38 @@ def validate_json_response(response: str, schema: Dict[str, Any]) -> Dict[str, A
     import re
     
     # DEBUG: Print the raw response to understand what we're getting
-    print(f"[DEBUG] Raw LLM response (first 500 chars): {response[:500]}")
-    print(f"[DEBUG] Response length: {len(response)}")
+    logger.debug(f" Raw LLM response (first 500 chars): {response[:500]}")
+    logger.debug(f" Response length: {len(response)}")
     
     # First attempt: Try to parse as-is
     try:
         data = json.loads(response)
     except json.JSONDecodeError as e:
-        print(f"[DEBUG] Initial JSON decode failed: {e}")
+        logger.debug(f" Initial JSON decode failed: {e}")
         
         # Second attempt: Extract from markdown code block
         # Also handle incomplete code blocks
         json_match = re.search(r'```(?:json)?\s*\n(.*?)(?:\n```|$)', response, re.DOTALL)
         if json_match:
-            print(f"[DEBUG] Found JSON in code block")
+            logger.debug(f" Found JSON in code block")
             try:
                 data = json.loads(json_match.group(1))
             except json.JSONDecodeError:
                 # Third attempt: Try to repair the JSON from code block
-                print(f"[DEBUG] Attempting JSON repair on code block content")
+                logger.debug(f" Attempting JSON repair on code block content")
                 repaired = repair_truncated_json(json_match.group(1))
                 try:
                     data = json.loads(repaired)
-                    print(f"[DEBUG] JSON repair successful")
+                    logger.debug(f" JSON repair successful")
                 except json.JSONDecodeError:
                     raise ValueError(f"Could not parse JSON even after repair: {e}")
         else:
             # Fourth attempt: Try to repair the raw response
-            print(f"[DEBUG] No code block found, attempting direct repair")
+            logger.debug(f" No code block found, attempting direct repair")
             repaired = repair_truncated_json(response)
             try:
                 data = json.loads(repaired)
-                print(f"[DEBUG] Direct JSON repair successful")
+                logger.debug(f" Direct JSON repair successful")
             except json.JSONDecodeError:
                 raise ValueError(f"Response is not valid JSON and could not be repaired: {e}")
     
@@ -397,7 +601,7 @@ def validate_json_response(response: str, schema: Dict[str, Any]) -> Dict[str, A
         jsonschema.validate(data, schema)
     except jsonschema.ValidationError as e:
         # Try to fix common schema issues
-        print(f"[DEBUG] Schema validation failed: {e}")
+        logger.debug(f" Schema validation failed: {e}")
         
         # Add missing required fields with defaults
         if "chunk_id" not in data:
@@ -408,7 +612,7 @@ def validate_json_response(response: str, schema: Dict[str, Any]) -> Dict[str, A
         # Retry validation
         try:
             jsonschema.validate(data, schema)
-            print(f"[DEBUG] Schema validation successful after fixing")
+            logger.debug(f" Schema validation successful after fixing")
         except jsonschema.ValidationError:
             raise ValueError(f"Response doesn't match schema: {e}")
     

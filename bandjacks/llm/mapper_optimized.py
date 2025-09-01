@@ -1,62 +1,114 @@
 """Optimized batch mapper for faster extraction."""
 
 import json
+import re
+import logging
 from typing import Any, Dict, List
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.tools import list_subtechniques
+from bandjacks.llm.json_utils import parse_json_with_fallback, validate_and_ensure_claims
+
+logger = logging.getLogger(__name__)
+
+
+# cleanup_json moved to json_utils.py for shared use
 
 
 class BatchMapperAgent:
-    """Batch process all spans in a single LLM call for performance."""
+    """Batch process spans in smaller groups to prevent LLM timeouts."""
     
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
-        print(f"[DEBUG] BatchMapperAgent called with {len(mem.spans)} spans")
-        
-        if not mem.spans:
+        # Check for valid memory object
+        if not mem or not hasattr(mem, 'spans'):
+            logger.error("Invalid WorkingMemory object provided to BatchMapperAgent")
             return
             
+        # Safe length check
+        try:
+            span_count = len(mem.spans) if mem.spans else 0
+        except (TypeError, AttributeError):
+            logger.error("Unable to get span count from WorkingMemory")
+            return
+            
+        initial_claims = len(mem.claims) if hasattr(mem, 'claims') else 0
+        logger.debug(f"BatchMapperAgent called with {span_count} spans, {initial_claims} existing claims")
+        
+        if span_count == 0:
+            return
+            
+        # Dynamic configuration
+        max_batch_spans = config.get("max_batch_spans", 20)  # Total spans to process in batch mode
+        batch_size = config.get("batch_size", 5)  # Spans per LLM call (default 5 to prevent timeouts)
+        
         # Skip if too many spans (fallback to sequential)
-        if len(mem.spans) > 10:
-            print(f"[DEBUG] Too many spans ({len(mem.spans)}), falling back to sequential")
+        if span_count > max_batch_spans:
+            logger.debug(f"Too many spans ({span_count} > {max_batch_spans}), falling back to sequential")
             return self._run_sequential(mem, config)
         
-        # Prepare batch request
-        spans_data = []
-        for i, span in enumerate(mem.spans):
-            cands = mem.candidates.get(i, [])
-            
-            # Get evidence lines
-            line_refs = span.get("line_refs", [])
-            evidence_lines = []
-            for ref in line_refs:
-                if 1 <= ref <= len(mem.line_index):
-                    evidence_lines.append(f"Line {ref}: {mem.line_index[ref-1]}")
-            
-            spans_data.append({
-                "span_id": i,
-                "text": span["text"][:500],  # Limit length
-                "line_refs": line_refs,
-                "evidence_lines": evidence_lines[:5],  # Limit evidence
-                "candidates": [
-                    {"external_id": c["external_id"], "name": c.get("name", ""), "score": c.get("score", 0)} 
-                    for c in cands[:5]  # Limit candidates
-                ]
-            })
+        # Process spans in batches
+        logger.info(f"Processing {span_count} spans in batches of {batch_size}")
+        total_added_claims = 0
         
-        # Create batch prompt
+        # Split spans into batches
+        for batch_start in range(0, span_count, batch_size):
+            batch_end = min(batch_start + batch_size, span_count)
+            batch_spans = list(range(batch_start, batch_end))
+            
+            logger.debug(f"Processing batch: spans {batch_start}-{batch_end-1} ({len(batch_spans)} spans)")
+            
+            # Prepare batch data
+            spans_data = []
+            for i in batch_spans:
+                span = mem.spans[i]
+                cands = mem.candidates.get(i, [])
+                
+                # Get evidence lines
+                line_refs = span.get("line_refs", [])
+                evidence_lines = []
+                for ref in line_refs:
+                    if 1 <= ref <= len(mem.line_index):
+                        evidence_lines.append(f"Line {ref}: {mem.line_index[ref-1]}")
+                
+                spans_data.append({
+                    "span_id": i,
+                    "text": span["text"][:500],  # Limit length
+                    "line_refs": line_refs,
+                    "evidence_lines": evidence_lines[:3],  # Limit evidence to 3 lines
+                    "candidates": [
+                        {"external_id": c["external_id"], "name": c.get("name", ""), "score": c.get("score", 0)} 
+                        for c in cands[:5]  # Limit candidates
+                    ]
+                })
+            
+            # Process this batch
+            batch_claims = self._process_batch(spans_data, mem, config)
+            total_added_claims += batch_claims
+            
+            logger.debug(f"Batch {batch_start}-{batch_end-1} completed: {batch_claims} claims added")
+        
+        logger.info(f"BatchMapperAgent: Added {total_added_claims} total claims (now {len(mem.claims)} claims)")
+        
+        # Validate that we have claims if techniques were found
+        validate_and_ensure_claims(mem, "BatchMapperAgent")
+    
+    def _process_batch(self, spans_data: List[Dict], mem: WorkingMemory, config: Dict[str, Any]) -> int:
+        """Process a single batch of spans."""
+        # Create batch prompt with JSON requirement
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "Analyze multiple text spans and map each to ATT&CK techniques.\n\n"
-                    "For EACH span, provide:\n"
-                    "1. The best matching technique (from candidates or propose new)\n"
-                    "2. Direct quotes as evidence (1-2 quotes)\n"
-                    "3. Confidence score (0-100)\n\n"
-                    "Return a JSON array with one object per span:\n"
-                    "[{span_id:int, technique:{external_id,name}, evidence:{quotes,line_refs}, confidence:int}]\n\n"
-                    "Be concise. Skip spans with no clear techniques."
+                    "You are a cybersecurity analyst. Extract ATT&CK technique IDs from text spans.\n\n"
+                    "Output a simple JSON list:\n"
+                    "[{\"span\":0,\"tid\":\"T1055\",\"conf\":80}]\n\n"
+                    "Rules:\n"
+                    "- span: span index (0-based)\n"
+                    "- tid: technique ID (e.g., T1055, T1566.001)\n"
+                    "- conf: confidence score (0-100)\n"
+                    "- Extract ALL techniques you find\n"
+                    "- Include explicit IDs and behaviors that match techniques\n"
+                    "- Output ONLY the JSON array, nothing else"
                 )
             },
             {
@@ -65,58 +117,143 @@ class BatchMapperAgent:
             }
         ]
         
-        # Single LLM call for all spans
-        print(f"[DEBUG] Calling LLM with batch of {len(spans_data)} spans")
+        # Single LLM call for this batch with structured output
+        logger.info(f"BatchMapper LLM request: batch of {len(spans_data)} spans")
         client = LLMClient()
         try:
-            response = client.call(messages)
+            # Call LLM - temporarily without response_format to debug
+            response = client.call(
+                messages,
+                # response_format={"type": "json_object"},  # TEMPORARILY DISABLED FOR DEBUGGING
+                max_tokens=4000  # Reduced - simpler format needs fewer tokens
+            )
             content = response.get("content", "")
-            print(f"[DEBUG] LLM response received, length: {len(content)}")
             
-            # Extract JSON from response
-            if "```json" in content:
-                content = content.split("```json")[1].split("```")[0]
-            elif "```" in content:
-                content = content.split("```")[1].split("```")[0]
+            # Log response
+            logger.info(f"BatchMapper LLM response: {len(content)} chars")
+            logger.debug(f"BatchMapper raw response preview: {content[:500]}...")
             
-            results = json.loads(content)
+            if not content:
+                logger.error("Empty response from LLM for batch technique extraction")
+                return 0
             
-            # Process results
-            if isinstance(results, list):
-                for result in results:
-                    span_id = result.get("span_id")
-                    if span_id is None or span_id >= len(mem.spans):
-                        continue
-                        
-                    technique = result.get("technique", {})
-                    evidence = result.get("evidence", {})
+            # Parse the simplified JSON array
+            try:
+                # Store original content for fallback
+                original_content = content
+                
+                # Strip markdown wrapper if present
+                if '```' in content:
+                    if '```json' in content:
+                        content = content.split('```json')[1].split('```')[0].strip()
+                    elif content.strip().startswith('```'):
+                        content = content.split('```')[1].split('```')[0].strip()
+                    logger.debug(f"Stripped markdown wrapper, new length: {len(content)}")
+                
+                # Handle both array and object responses
+                if content.strip().startswith('['):
+                    # Direct array response
+                    results = json.loads(content)
+                else:
+                    # Wrapped in object - try to extract array
+                    parsed = json.loads(content)
+                    if isinstance(parsed, dict):
+                        # Look for any key that contains a list
+                        for key in parsed:
+                            if isinstance(parsed[key], list):
+                                results = parsed[key]
+                                break
+                        else:
+                            results = []
+                    else:
+                        results = []
+                
+                if not isinstance(results, list):
+                    logger.error(f"Expected list, got {type(results)}")
+                    results = []
                     
-                    if technique.get("external_id") and evidence.get("quotes"):
-                        # Check for sub-technique preference
-                        choice_id = technique.get("external_id", "")
-                        if choice_id and "." not in choice_id:
-                            subs = list_subtechniques(choice_id)
-                            if isinstance(subs, list) and subs:
-                                for s in subs:
-                                    nm = (s.get("name", "") or "").lower()
-                                    if nm and any(nm in (q or "").lower() for q in evidence.get("quotes", [])):
-                                        technique["external_id"] = s.get("external_id", choice_id)
-                                        technique["name"] = s.get("name", technique.get("name", ""))
-                                        break
-                        
-                        mem.claims.append({
-                            "span_idx": span_id,
-                            "external_id": technique["external_id"],
-                            "name": technique.get("name", ""),
-                            "quotes": evidence.get("quotes", []),
-                            "line_refs": evidence.get("line_refs", []),
-                            "confidence": int(result.get("confidence", 60)),
-                            "source": "batch_mapper"
-                        })
+                logger.info(f"Successfully parsed {len(results)} technique extractions")
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON parse error in technique extraction: {e}")
+                logger.debug(f"Failed content preview: {content[:200] if content else 'Empty'}")
+                
+                # Try fallback parsing with original content
+                parsed = parse_json_with_fallback(
+                    original_content,  # Use original content, not modified
+                    expected_structure=[],
+                    max_retries=2
+                )
+                results = parsed if isinstance(parsed, list) else []
+            
+            # Process simplified results
+            added_claims = 0
+            
+            if isinstance(results, list):
+                logger.debug(f"Processing {len(results)} technique items from LLM")
+                
+                for item in results:
+                    if not isinstance(item, dict):
+                        logger.warning(f"Skipping non-dict item: {type(item)}")
+                        continue
+                    
+                    # Extract from simplified format
+                    span_id = item.get("span", -1)
+                    technique_id = item.get("tid", "")
+                    confidence = item.get("conf", 50)
+                    
+                    if not technique_id:
+                        logger.debug(f"Skipping item without technique ID: {item}")
+                        continue
+                    
+                    if span_id < 0 or span_id >= len(mem.spans):
+                        logger.warning(f"Invalid span ID {span_id} for technique {technique_id}")
+                        continue
+                    
+                    # Get span text and line refs for evidence
+                    span_data = mem.spans[span_id]
+                    span_text = span_data.get("text", "")[:500]
+                    line_refs = span_data.get("line_refs", [])
+                    
+                    # Create simplified claim
+                    claim = {
+                        "external_id": technique_id,
+                        "name": technique_id,  # Will be enriched from candidates
+                        "quotes": [span_text] if span_text else [],
+                        "line_refs": line_refs,
+                        "confidence": confidence,
+                        "span_idx": span_id,
+                        "evidence_score": confidence,
+                        "source": "batch_mapper"
+                    }
+                    
+                    # Try to enrich with candidate metadata if available
+                    for cand in mem.candidates.get(span_id, []):
+                        if cand.get("external_id") == technique_id:
+                            claim["name"] = cand.get("name", technique_id)
+                            claim["technique_meta"] = {
+                                "name": cand.get("name", ""),
+                                "description": cand.get("description", ""),
+                                "tactic": cand.get("tactic", ""),
+                                "platforms": cand.get("platforms", []),
+                                "subtechnique_of": cand.get("subtechnique_of"),
+                            }
+                            break
+                    
+                    mem.claims.append(claim)
+                    added_claims += 1
+                    
+                    logger.debug(f"Added claim: span={span_id}, technique={technique_id}, conf={confidence}")
+            else:
+                logger.warning(f"Results is not a list after parsing: {type(results)}")
+            
+            logger.info(f"BatchMapperAgent: Batch added {added_claims} claims")
+            return added_claims
                         
         except Exception as e:
-            print(f"[DEBUG] Batch mapping failed: {e}, falling back to sequential")
-            return self._run_sequential(mem, config)
+            logger.error(f"Batch processing failed: {e}")
+            logger.debug(f"Error details: {str(e)}", exc_info=True)
+            return 0
     
     def _run_sequential(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
         """Fallback to sequential processing if batch fails."""

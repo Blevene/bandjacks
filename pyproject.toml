@@ -37,6 +37,10 @@ dependencies = [
     "pyjwt>=2.8.0",
     "pysigma>=0.11.23",
     "ruamel-yaml>=0.18.15",
+    "networkx>=3.5",
+    "aiofiles>=24.1.0",
+    "tenacity>=8.5.0",
+    "aiolimiter>=1.2.1",
 ]
 
 [project.optional-dependencies]

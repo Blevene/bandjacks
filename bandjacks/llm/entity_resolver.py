@@ -1,10 +1,15 @@
 """Resolve extracted entities to existing STIX IDs in the knowledge base."""
 
 import re
+import uuid
+import logging
 from typing import Optional, Dict, List, Any, Tuple
+from datetime import datetime
 from neo4j import GraphDatabase
 from fuzzywuzzy import fuzz
 import Levenshtein
+
+logger = logging.getLogger(__name__)
 
 
 class EntityResolver:
@@ -397,6 +402,204 @@ class EntityResolver:
             results[entity_name] = stix_id
         
         return results
+    
+    def resolve_or_create(
+        self,
+        entity: Dict[str, Any],
+        entity_type: str,
+        source_id: Optional[str] = None
+    ) -> str:
+        """
+        Resolve entity to existing STIX ID or create new entity.
+        
+        Args:
+            entity: Entity dictionary with name, confidence, evidence
+            entity_type: Type of entity (malware, software, threat_actor, campaign)
+            source_id: Optional source report/document ID
+            
+        Returns:
+            STIX ID of resolved or created entity
+        """
+        entity_name = entity.get("name", "")
+        if not entity_name:
+            return None
+        
+        # First try to resolve to existing entity
+        existing_id = self.resolve_entity(entity_name, entity_type)
+        if existing_id:
+            logger.info(f"Resolved '{entity_name}' to existing entity: {existing_id}")
+            return existing_id
+        
+        # Create new entity if not found
+        logger.info(f"Creating new {entity_type} entity: {entity_name}")
+        
+        if entity_type == "malware":
+            return self._create_malware_node(entity, source_id)
+        elif entity_type == "software" or entity_type == "tool":
+            return self._create_software_node(entity, source_id)
+        elif entity_type == "threat_actor":
+            return self._create_intrusion_set_node(entity, source_id)
+        elif entity_type == "campaign":
+            return self._create_campaign_node(entity, source_id)
+        else:
+            logger.warning(f"Unknown entity type: {entity_type}")
+            return None
+    
+    def _create_malware_node(self, entity: Dict[str, Any], source_id: Optional[str] = None) -> str:
+        """Create a new malware node in Neo4j."""
+        stix_id = f"malware--{uuid.uuid4()}"
+        
+        with self.driver.session() as session:
+            query = """
+                CREATE (m:Software {
+                    stix_id: $stix_id,
+                    type: 'malware',
+                    name: $name,
+                    description: $description,
+                    is_malware: true,
+                    created: $created,
+                    modified: $modified,
+                    x_bj_extracted: true,
+                    x_bj_confidence: $confidence,
+                    x_bj_source: $source
+                })
+                RETURN m.stix_id as id
+            """
+            
+            result = session.run(
+                query,
+                stix_id=stix_id,
+                name=entity.get("name"),
+                description=entity.get("evidence", f"Extracted malware: {entity.get('name')}"),
+                created=datetime.utcnow().isoformat() + "Z",
+                modified=datetime.utcnow().isoformat() + "Z",
+                confidence=entity.get("confidence", 70),
+                source=source_id or "extraction"
+            )
+            
+            record = result.single()
+            if record:
+                logger.info(f"Created malware node: {stix_id}")
+                return record["id"]
+        
+        return stix_id
+    
+    def _create_software_node(self, entity: Dict[str, Any], source_id: Optional[str] = None) -> str:
+        """Create a new software/tool node in Neo4j."""
+        stix_id = f"tool--{uuid.uuid4()}"
+        
+        with self.driver.session() as session:
+            query = """
+                CREATE (s:Software {
+                    stix_id: $stix_id,
+                    type: 'tool',
+                    name: $name,
+                    description: $description,
+                    is_malware: false,
+                    created: $created,
+                    modified: $modified,
+                    x_bj_extracted: true,
+                    x_bj_confidence: $confidence,
+                    x_bj_source: $source
+                })
+                RETURN s.stix_id as id
+            """
+            
+            result = session.run(
+                query,
+                stix_id=stix_id,
+                name=entity.get("name"),
+                description=entity.get("evidence", f"Extracted tool: {entity.get('name')}"),
+                created=datetime.utcnow().isoformat() + "Z",
+                modified=datetime.utcnow().isoformat() + "Z",
+                confidence=entity.get("confidence", 70),
+                source=source_id or "extraction"
+            )
+            
+            record = result.single()
+            if record:
+                logger.info(f"Created software node: {stix_id}")
+                return record["id"]
+        
+        return stix_id
+    
+    def _create_intrusion_set_node(self, entity: Dict[str, Any], source_id: Optional[str] = None) -> str:
+        """Create a new intrusion set (threat actor) node in Neo4j."""
+        stix_id = f"intrusion-set--{uuid.uuid4()}"
+        
+        with self.driver.session() as session:
+            query = """
+                CREATE (i:IntrusionSet {
+                    stix_id: $stix_id,
+                    type: 'intrusion-set',
+                    name: $name,
+                    description: $description,
+                    aliases: $aliases,
+                    created: $created,
+                    modified: $modified,
+                    x_bj_extracted: true,
+                    x_bj_confidence: $confidence,
+                    x_bj_source: $source
+                })
+                RETURN i.stix_id as id
+            """
+            
+            result = session.run(
+                query,
+                stix_id=stix_id,
+                name=entity.get("name"),
+                description=entity.get("evidence", f"Extracted threat actor: {entity.get('name')}"),
+                aliases=entity.get("aliases", []),
+                created=datetime.utcnow().isoformat() + "Z",
+                modified=datetime.utcnow().isoformat() + "Z",
+                confidence=entity.get("confidence", 70),
+                source=source_id or "extraction"
+            )
+            
+            record = result.single()
+            if record:
+                logger.info(f"Created intrusion set node: {stix_id}")
+                return record["id"]
+        
+        return stix_id
+    
+    def _create_campaign_node(self, entity: Dict[str, Any], source_id: Optional[str] = None) -> str:
+        """Create a new campaign node in Neo4j."""
+        stix_id = f"campaign--{uuid.uuid4()}"
+        
+        with self.driver.session() as session:
+            query = """
+                CREATE (c:Campaign {
+                    stix_id: $stix_id,
+                    type: 'campaign',
+                    name: $name,
+                    description: $description,
+                    created: $created,
+                    modified: $modified,
+                    x_bj_extracted: true,
+                    x_bj_confidence: $confidence,
+                    x_bj_source: $source
+                })
+                RETURN c.stix_id as id
+            """
+            
+            result = session.run(
+                query,
+                stix_id=stix_id,
+                name=entity.get("name"),
+                description=entity.get("evidence", f"Extracted campaign: {entity.get('name')}"),
+                created=datetime.utcnow().isoformat() + "Z",
+                modified=datetime.utcnow().isoformat() + "Z",
+                confidence=entity.get("confidence", 70),
+                source=source_id or "extraction"
+            )
+            
+            record = result.single()
+            if record:
+                logger.info(f"Created campaign node: {stix_id}")
+                return record["id"]
+        
+        return stix_id
     
     def close(self):
         """Close the Neo4j connection."""

@@ -1,6 +1,6 @@
 """Pydantic schemas for API requests and responses."""
 
-from typing import Any, List, Optional, Dict, Literal
+from typing import Any, List, Optional, Dict, Literal, Union
 from pydantic import BaseModel, Field
 
 class VersionRef(BaseModel):
@@ -106,6 +106,9 @@ class FlowBuildRequest(BaseModel):
     use_llm_synthesis: bool = Field(True, description="Use AttackFlowSynthesizer for LLM-based flow generation")
     intrusion_set_id: Optional[str] = Field(None, description="Build from an Intrusion Set (group) by stix_id")
     techniques: Optional[List[str]] = Field(None, description="List of technique identifiers (STIX IDs like 'attack-pattern--...' or ATT&CK IDs like 'T1059.001')")
+    campaign_id: Optional[str] = Field(None, description="Build from a Campaign by stix_id")
+    report_id: Optional[str] = Field(None, description="Build from a Report by stix_id")
+    flow_mode: Optional[Literal["sequential","cooccurrence"]] = Field("sequential", description="Sequence steps by inferred order or as co-occurrence (unordered with low p)")
 
 
 class FlowStep(BaseModel):
@@ -547,6 +550,96 @@ class FlowDeleteResponse(BaseModel):
 
 
 # ============================================================================
+# SEQUENCE ANALYSIS RESPONSE MODELS
+# ============================================================================
+
+class ValidatedTransition(BaseModel):
+    """A validated technique transition."""
+    from_technique: str = Field(..., description="Source technique STIX ID")
+    from_name: Optional[str] = Field(None, description="Source technique name")
+    to_technique: str = Field(..., description="Target technique STIX ID")
+    to_name: Optional[str] = Field(None, description="Target technique name")
+    confidence: float = Field(..., description="Transition confidence score")
+    verdict: str = Field(..., description="Judge verdict (forward/reverse/bidirectional)")
+    features: Optional[Dict[str, Any]] = Field(None, description="Feature vector used for scoring")
+
+
+class UncertainTransition(BaseModel):
+    """An uncertain technique transition needing review."""
+    from_technique: str = Field(..., description="Source technique STIX ID")
+    to_technique: str = Field(..., description="Target technique STIX ID")
+    transition_confidence: float = Field(..., description="Transition probability")
+    judge_confidence: float = Field(..., description="Judge model confidence")
+    reason: Optional[str] = Field(None, description="Reason for uncertainty")
+
+
+class SequenceProposal(BaseModel):
+    """A proposed attack sequence."""
+    sequence_id: str = Field(..., description="Unique sequence identifier")
+    techniques: List[str] = Field(..., description="Ordered list of technique IDs")
+    technique_names: Optional[List[str]] = Field(None, description="Ordered list of technique names")
+    edges: List[ValidatedTransition] = Field(..., description="Transitions in the sequence")
+    overall_confidence: float = Field(..., description="Overall sequence confidence")
+    validation_status: str = Field(..., description="Validation status")
+    created_at: Optional[str] = Field(None, description="Creation timestamp")
+
+
+class PTGModelInfo(BaseModel):
+    """PTG model information."""
+    model_id: Optional[str] = Field(None, description="Model identifier")
+    techniques_count: int = Field(0, description="Number of techniques in model")
+    transitions_count: int = Field(0, description="Number of transitions in model")
+    parameters: Optional[Dict[str, Any]] = Field(None, description="Model parameters used")
+
+
+class SequenceAnalysisResponse(BaseModel):
+    """Response for sequence analysis."""
+    intrusion_set_id: str = Field(..., description="Intrusion set STIX ID")
+    intrusion_set_name: str = Field(..., description="Intrusion set name")
+    generated_at: str = Field(..., description="Analysis timestamp")
+    
+    # PTG Model
+    ptg_model: PTGModelInfo = Field(..., description="PTG model information")
+    
+    # Validation Results
+    validation_results: Dict[str, Any] = Field(..., description="Validation results")
+    validated_transitions: List[ValidatedTransition] = Field(default_factory=list, description="High confidence transitions")
+    uncertain_transitions: List[UncertainTransition] = Field(default_factory=list, description="Transitions needing review")
+    unknown_count: int = Field(0, description="Number of unknown verdicts")
+    
+    # Sequence Proposals
+    sequence_proposals: List[SequenceProposal] = Field(default_factory=list, description="Generated sequence proposals")
+    
+    # Statistics
+    statistics: Dict[str, Any] = Field(default_factory=dict, description="Analysis statistics")
+    
+    # Report
+    markdown_report: Optional[str] = Field(None, description="Human-readable markdown report")
+    
+    trace_id: Optional[str] = Field(None, description="Request trace ID")
+
+
+class SequenceReportResponse(BaseModel):
+    """Response for sequence analysis report."""
+    intrusion_set_id: str = Field(..., description="Intrusion set STIX ID")
+    intrusion_set_name: str = Field(..., description="Intrusion set name")
+    report: str = Field(..., description="Markdown formatted report")
+    generated_at: str = Field(..., description="Report generation timestamp")
+    statistics: Dict[str, Any] = Field(default_factory=dict, description="Analysis statistics")
+    trace_id: Optional[str] = Field(None, description="Request trace ID")
+
+
+class SequenceListResponse(BaseModel):
+    """Response for listing analyzed sequences."""
+    sequences: List[Dict[str, Any]] = Field(..., description="List of analyzed intrusion sets")
+    total: int = Field(..., description="Total number of analyzed sets")
+    page: int = Field(1, description="Current page number")
+    page_size: int = Field(20, description="Items per page")
+    filters_applied: Optional[Dict[str, Any]] = Field(None, description="Applied filters")
+    trace_id: Optional[str] = Field(None, description="Request trace ID")
+
+
+# ============================================================================
 # DEFENSE ENDPOINT RESPONSE MODELS
 # ============================================================================
 
@@ -579,3 +672,67 @@ class DefenseCoverageResponse(BaseModel):
     gaps: List[str] = Field(..., description="Identified coverage gaps")
     recommendations: List[str] = Field(..., description="Defensive recommendations")
     trace_id: Optional[str] = Field(None, description="Request trace ID")
+
+
+# ============================================================================
+# SEQUENCE MODELING & PTG ENDPOINT SCHEMAS (Sprint 8)
+# ============================================================================
+
+class SequenceExtractionResponse(BaseModel):
+    """Response for sequence extraction from attack flows."""
+    sequences_extracted: int = Field(..., description="Number of sequences extracted")
+    scopes_analyzed: int = Field(..., description="Number of scopes analyzed") 
+    scope_summaries: List[Dict[str, Any]] = Field(..., description="Summary statistics per scope")
+    ambiguous_pairs_total: int = Field(..., description="Total ambiguous pairs across scopes")
+    model_id: Optional[str] = Field(None, description="Model ID if exported to Neo4j")
+    parameters: Dict[str, Any] = Field(..., description="Extraction parameters used")
+    extracted_at: str = Field(..., description="ISO timestamp of extraction")
+
+
+class PTGBuildRequest(BaseModel):
+    """Request to build a Probabilistic Temporal Graph."""
+    scope: str = Field(..., description="Scope identifier (intrusion_set_id or 'global')")
+    scope_type: str = Field("global", description="Scope type: 'intrusion-set' or 'global'")
+    background: bool = Field(False, description="Run PTG build in background")
+    parameters: Dict[str, Any] = Field(default_factory=dict, description="PTG construction parameters")
+
+
+class PTGBuildResponse(BaseModel):
+    """Response for PTG build operation.""" 
+    model_id: str = Field(..., description="Generated PTG model ID")
+    scope: str = Field(..., description="Scope that was processed")
+    scope_type: str = Field(..., description="Type of scope")
+    status: str = Field(..., description="Build status: building|completed|failed")
+    message: str = Field(..., description="Status message")
+    total_nodes: int = Field(..., description="Number of technique nodes")
+    total_edges: int = Field(..., description="Number of NEXT_P edges created")
+    parameters: Dict[str, Any] = Field(..., description="Parameters used")
+    statistics: Optional[Dict[str, Any]] = Field(None, description="Model statistics")
+    created_at: str = Field(..., description="ISO timestamp")
+
+
+class PTGModelResponse(BaseModel):
+    """Response for PTG model retrieval."""
+    model_id: str = Field(..., description="PTG model identifier")
+    scope: str = Field(..., description="Model scope")
+    scope_type: str = Field(..., description="Scope type")
+    version: str = Field(..., description="Model version")
+    nodes: Dict[str, Dict[str, Any]] = Field(..., description="Technique nodes with metadata")
+    edges: List[Dict[str, Any]] = Field(..., description="NEXT_P edges with probabilities")
+    parameters: Dict[str, Any] = Field(..., description="Model construction parameters")
+    statistics: Dict[str, Any] = Field(..., description="Model statistics")
+    filters_applied: Dict[str, Any] = Field(..., description="Filters applied to response")
+    created_at: str = Field(..., description="ISO timestamp")
+
+
+class SequenceStatisticsResponse(BaseModel):
+    """Response for pairwise sequence statistics."""
+    scope: str = Field(..., description="Statistics scope")
+    scope_type: str = Field(..., description="Scope type")
+    total_flows: int = Field(..., description="Number of flows analyzed")
+    total_techniques: int = Field(..., description="Number of unique techniques")
+    total_pairs: int = Field(..., description="Number of technique pairs")
+    top_techniques: Dict[str, int] = Field(..., description="Most frequent techniques")
+    top_pairs: Optional[Dict[str, float]] = Field(None, description="Top transitions by probability")
+    asymmetry_scores: Optional[Dict[str, float]] = Field(None, description="Directional asymmetry scores")
+    created_at: str = Field(..., description="ISO timestamp")

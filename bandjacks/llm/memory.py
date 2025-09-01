@@ -14,13 +14,12 @@ class WorkingMemory:
     document_text: str = ""
     line_index: List[str] = field(default_factory=list)
 
-    entities: Dict[str, List[str]] = field(
+    # Structured entities from entity extraction agent
+    # Format: {"entities": [{"name": str, "type": str}], "extraction_status": str}
+    entities: Dict[str, Any] = field(
         default_factory=lambda: {
-            "threat_actors": [],
-            "malware": [],
-            "tools": [],
-            "campaigns": [],
-            "infrastructure": [],
+            "entities": [],
+            "extraction_status": "not_attempted"
         }
     )
 
@@ -54,14 +53,20 @@ class WorkingMemory:
             "notes": self.notes,
         }
 
-    def add_entity(self, kind: str, name: str) -> None:
-        """Add a normalized entity name to the specified kind if not present."""
+    def add_entity(self, entity_type: str, name: str) -> None:
+        """Add a normalized entity to the structured entities list if not present."""
         norm = (name or "").strip()
         if not norm:
             return
-        current = self.entities.get(kind, [])
-        if norm.lower() not in [e.lower() for e in current]:
-            current.append(name)
-            self.entities[kind] = current
+        
+        # Get current entities list
+        current_entities = self.entities.get("entities", [])
+        
+        # Check if entity already exists (case-insensitive)
+        existing_names = [e.get("name", "").lower() for e in current_entities if isinstance(e, dict)]
+        
+        if norm.lower() not in existing_names:
+            current_entities.append({"name": name, "type": entity_type})
+            self.entities["entities"] = current_entities
 
 
