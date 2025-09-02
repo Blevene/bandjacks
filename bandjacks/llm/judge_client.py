@@ -341,9 +341,13 @@ Available evidence_ids: {[s.doc_id for s in evidence_pack.evidence_snippets]}"""
         """Call LLM with judgment prompt."""
         
         try:
-            # Use primary model
+            # Use primary model with structured output
             response = self.llm_client.call(
                 messages=messages,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": self.verdict_schema
+                },
                 use_cache=self.config.enable_caching
             )
             
@@ -365,7 +369,14 @@ Available evidence_ids: {[s.doc_id for s in evidence_pack.evidence_snippets]}"""
                 self.llm_client.model = self.config.fallback_model
                 
                 try:
-                    response = self.llm_client.call(messages=messages, use_cache=False)
+                    response = self.llm_client.call(
+                        messages=messages,
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": self.verdict_schema
+                        },
+                        use_cache=False
+                    )
                     content = response.get("content", "")
                     if content:
                         return content

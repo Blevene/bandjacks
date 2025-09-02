@@ -346,6 +346,23 @@ class DiscoveryAgent:
                 },
             ]
             
+            # JSON schema for technique discovery
+            discovery_schema = {
+                "type": "object",
+                "properties": {
+                    "techniques": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "pattern": "^T[0-9]{4}(\\.[0-9]{3})?$"
+                        },
+                        "description": "List of MITRE ATT&CK technique IDs"
+                    }
+                },
+                "required": ["techniques"],
+                "additionalProperties": False
+            }
+            
             # Direct LLM call with structured output (no tools)
             try:
                 # Override model for this call
@@ -353,7 +370,10 @@ class DiscoveryAgent:
                 client.model = discovery_model
                 response = client.call(
                     messages,
-                    response_format={"type": "json_object"},
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": discovery_schema
+                    },
                     max_tokens=2000  # Small response expected
                 )
                 client.model = old_model  # Restore original
@@ -450,13 +470,54 @@ class MapperAgent:
             client = LLMClient()
             mapper_model = config.get("mapper_model", "gemini/gemini-2.5-flash")
             
+            # JSON schema for mapper response
+            mapper_schema = {
+                "type": "object",
+                "properties": {
+                    "techniques": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "tid": {
+                                    "type": "string",
+                                    "pattern": "^T[0-9]{4}(\\.[0-9]{3})?$",
+                                    "description": "MITRE ATT&CK technique ID"
+                                },
+                                "name": {
+                                    "type": "string",
+                                    "description": "Technique name"
+                                },
+                                "confidence": {
+                                    "type": "integer",
+                                    "minimum": 0,
+                                    "maximum": 100,
+                                    "description": "Confidence score"
+                                },
+                                "rationale": {
+                                    "type": "string",
+                                    "description": "Brief explanation"
+                                }
+                            },
+                            "required": ["tid", "name", "confidence", "rationale"],
+                            "additionalProperties": False
+                        }
+                    }
+                },
+                "required": ["techniques"],
+                "additionalProperties": False
+            }
+            
             try:
                 # Override model for this call
                 old_model = client.model
                 client.model = mapper_model
                 response = client.call(
                     messages,
-                    response_format={"type": "json_object"},
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": mapper_schema
+                    },
                     max_tokens=4000  # Reasonable for single span
                 )
                 client.model = old_model  # Restore original

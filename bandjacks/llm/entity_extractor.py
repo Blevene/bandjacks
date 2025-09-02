@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.json_utils import parse_json_with_fallback
+from bandjacks.llm.evidence_utils import extract_sentence_evidence, calculate_line_refs
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +47,36 @@ Key extraction rules:
 OUTPUT FORMAT - Return ONLY valid JSON:
 {
   "entities": [
-    {"name": "APT29", "type": "group"},
-    {"name": "Cozy Bear", "type": "group"},
-    {"name": "SUNBURST", "type": "malware"},
-    {"name": "PowerShell", "type": "tool"},
-    {"name": "SolarWinds", "type": "target"}
+    {
+      "name": "APT29",
+      "type": "group",
+      "confidence": 95,
+      "evidence": "APT29, also known as Cozy Bear, conducted a sophisticated campaign",
+      "context": "primary_mention"
+    },
+    {
+      "name": "Cozy Bear",
+      "type": "group", 
+      "confidence": 95,
+      "evidence": "APT29, also known as Cozy Bear, conducted a sophisticated campaign",
+      "context": "alias"
+    },
+    {
+      "name": "SUNBURST",
+      "type": "malware",
+      "confidence": 100,
+      "evidence": "The threat actors deployed a custom backdoor called SUNBURST",
+      "context": "primary_mention"
+    }
   ]
 }
+
+For each entity provide:
+- name: The entity name
+- type: group/malware/tool/target/campaign
+- confidence: 0-100 score
+- evidence: The sentence or phrase containing the entity
+- context: primary_mention/alias/coreference
 """
 
 
@@ -73,7 +97,12 @@ IMPORTANT: Distinguish between malware and tools:
 TEXT TO ANALYZE:
 {document_text}
 
-Extract EVERY named entity. Be aggressive and comprehensive - include everything that could be an entity."""
+Extract EVERY named entity with evidence. For each entity, include:
+1. The exact quote/sentence where it appears
+2. Your confidence score (0-100)
+3. The context (primary_mention, alias, or coreference)
+
+Be aggressive and comprehensive - include everything that could be an entity."""
 
 
 class EntityExtractionAgent:
@@ -84,6 +113,51 @@ class EntityExtractionAgent:
         self.client = LLMClient()
         self.chunk_size = 4000  # Size of each chunk for processing
         self.chunk_overlap = 500  # Overlap between chunks to avoid missing entities at boundaries
+        
+        # JSON schema for structured entity extraction
+        # JSON schema for entity extraction - LiteLLM format
+        # Based on error, LiteLLM expects the schema directly without wrapper
+        self.entity_schema = {
+            "type": "object",
+            "properties": {
+                "entities": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "The entity name"
+                            },
+                            "type": {
+                                "type": "string",
+                                "enum": ["group", "malware", "tool", "target", "campaign"],
+                                "description": "The entity type"
+                            },
+                            "confidence": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 100,
+                                "description": "Confidence score 0-100"
+                            },
+                            "evidence": {
+                                "type": "string",
+                                "description": "The sentence or phrase containing the entity"
+                            },
+                            "context": {
+                                "type": "string",
+                                "enum": ["primary_mention", "alias", "coreference"],
+                                "description": "The context of this mention"
+                            }
+                        },
+                        "required": ["name", "type", "confidence", "evidence", "context"],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            "required": ["entities"],
+            "additionalProperties": False
+        }
     
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
         """
@@ -112,6 +186,9 @@ class EntityExtractionAgent:
                 for i, chunk in enumerate(chunks):
                     logger.debug(f"Extracting entities from chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
                     entities = self._extract_from_chunk(chunk)
+                    # Enhance each entity with line references
+                    for entity in entities:
+                        self._enhance_entity_with_line_refs(entity, doc_text)
                     chunk_entities.append(entities)
                     logger.debug(f"Found {len(entities)} entities in chunk {i+1}")
                 
@@ -136,10 +213,14 @@ class EntityExtractionAgent:
                     {"role": "user", "content": user_prompt}
                 ]
                 
-                # Call LLM
+                # Call LLM with structured output
                 response = self.client.call(
                     messages=messages,
-                    max_tokens=2000
+                    max_tokens=2000,
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": self.entity_schema
+                    }
                 )
                 
                 content = response.get("content", "")
@@ -154,6 +235,12 @@ class EntityExtractionAgent:
                 
                 # Parse JSON response
                 try:
+                    # Try to extract JSON from potential markdown wrapper
+                    if '```json' in content:
+                        content = content.split('```json')[1].split('```')[0].strip()
+                    elif '```' in content:
+                        content = content.split('```')[1].split('```')[0].strip()
+                    
                     entities = json.loads(content)
                     
                     # Validate structure
@@ -163,6 +250,26 @@ class EntityExtractionAgent:
                     if not isinstance(entities["entities"], list):
                         raise ValueError(f"Invalid entities field: expected list")
                     
+                    # Enhance entities with line references
+                    for entity in entities["entities"]:
+                        self._enhance_entity_with_line_refs(entity, doc_text)
+                    
+                    # Convert to new format with mentions
+                    enhanced_entities = []
+                    for entity in entities["entities"]:
+                        enhanced = {
+                            "name": entity.get("name", ""),
+                            "type": entity.get("type", ""),
+                            "confidence": entity.get("confidence", 75),
+                            "mentions": [{
+                                "quote": entity.get("evidence", ""),
+                                "line_refs": entity.get("line_refs", []),
+                                "context": entity.get("context", "primary_mention")
+                            }] if entity.get("evidence") else []
+                        }
+                        enhanced_entities.append(enhanced)
+                    
+                    entities["entities"] = enhanced_entities
                     # Add extraction status
                     entities["extraction_status"] = "success"
                     
@@ -239,38 +346,113 @@ class EntityExtractionAgent:
                 
         return chunks
     
+    def _enhance_entity_with_line_refs(self, entity: Dict[str, Any], text: str) -> Dict[str, Any]:
+        """
+        Enhance an entity with line references based on evidence.
+        
+        Args:
+            entity: Entity dict with evidence field
+            text: Full document text
+            
+        Returns:
+            Enhanced entity with line_refs
+        """
+        if not entity.get("evidence"):
+            return entity
+            
+        # Find the evidence in the text
+        evidence = entity["evidence"]
+        evidence_pos = text.find(evidence)
+        
+        if evidence_pos >= 0:
+            # Calculate line references for the evidence
+            line_refs = calculate_line_refs(
+                text, 
+                evidence_pos, 
+                evidence_pos + len(evidence)
+            )
+            entity["line_refs"] = line_refs
+        else:
+            # Try case-insensitive search
+            lower_text = text.lower()
+            lower_evidence = evidence.lower()
+            evidence_pos = lower_text.find(lower_evidence)
+            if evidence_pos >= 0:
+                line_refs = calculate_line_refs(
+                    text,
+                    evidence_pos,
+                    evidence_pos + len(evidence)
+                )
+                entity["line_refs"] = line_refs
+            else:
+                entity["line_refs"] = []
+                
+        return entity
+    
     def _merge_entities(self, entity_lists: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """
-        Merge and deduplicate entities from multiple chunks.
+        Merge and deduplicate entities from multiple chunks, combining evidence.
         
         Args:
             entity_lists: List of entity lists from different chunks
             
         Returns:
-            Merged and deduplicated entity list
+            Merged and deduplicated entity list with combined evidence
         """
-        # Collect all entities
-        all_entities = []
+        # Group entities by (name, type)
+        entity_groups = {}
+        
         for entities in entity_lists:
-            all_entities.extend(entities)
+            for entity in entities:
+                if isinstance(entity, dict):
+                    name = entity.get("name", "")
+                    entity_type = entity.get("type", "")
+                    
+                    if not name:
+                        continue
+                    
+                    # Create key for grouping
+                    key = (name.lower().strip(), entity_type)
+                    
+                    if key not in entity_groups:
+                        entity_groups[key] = {
+                            "name": name,  # Keep original casing
+                            "type": entity_type,
+                            "confidence": entity.get("confidence", 50),
+                            "mentions": []
+                        }
+                    
+                    # Add this mention
+                    mention = {
+                        "quote": entity.get("evidence", ""),
+                        "line_refs": entity.get("line_refs", []),
+                        "context": entity.get("context", "unknown"),
+                        "confidence": entity.get("confidence", 50)
+                    }
+                    
+                    # Only add if we have evidence
+                    if mention["quote"]:
+                        # Check if this exact quote already exists
+                        existing_quotes = [m["quote"] for m in entity_groups[key]["mentions"]]
+                        if mention["quote"] not in existing_quotes:
+                            entity_groups[key]["mentions"].append(mention)
+                    
+                    # Update max confidence
+                    entity_groups[key]["confidence"] = max(
+                        entity_groups[key]["confidence"],
+                        entity.get("confidence", 50)
+                    )
         
-        # Deduplicate by (normalized_name, type) tuple
-        seen = set()
-        unique_entities = []
+        # Convert back to list and boost confidence for multiple mentions
+        merged_entities = []
+        for entity_data in entity_groups.values():
+            # Boost confidence based on number of mentions
+            mention_boost = min(20, len(entity_data["mentions"]) * 5)
+            entity_data["confidence"] = min(100, entity_data["confidence"] + mention_boost)
+            
+            merged_entities.append(entity_data)
         
-        for entity in all_entities:
-            if isinstance(entity, dict):
-                name = entity.get("name", "")
-                entity_type = entity.get("type", "")
-                
-                # Normalize name for deduplication (lowercase, strip spaces)
-                normalized = (name.lower().strip(), entity_type)
-                
-                if normalized not in seen and name:
-                    seen.add(normalized)
-                    unique_entities.append(entity)
-        
-        return unique_entities
+        return merged_entities
     
     def _extract_from_chunk(self, text_chunk: str) -> List[Dict[str, Any]]:
         """
@@ -292,7 +474,11 @@ class EntityExtractionAgent:
         try:
             response = self.client.call(
                 messages=messages,
-                max_tokens=2000
+                max_tokens=2000,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": self.entity_schema
+                }
             )
             
             content = response.get("content", "")

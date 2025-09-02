@@ -27,6 +27,7 @@ from bandjacks.llm.entity_extractor import EntityExtractionAgent
 from bandjacks.llm.tracker import ExtractionTracker
 from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.loaders.embedder import encode
+from bandjacks.llm.entity_utils import consolidate_entities
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +217,11 @@ class ExtractionPipeline:
         
         # Extract entities from working memory - they're already in the correct structured format
         entities_struct = mem.entities
+        
+        # Apply entity consolidation to merge aliases (e.g., APT29 and Cozy Bear)
+        if entities_struct and isinstance(entities_struct, dict):
+            entities_struct = consolidate_entities(entities_struct)
+            logger.info(f"Entity consolidation applied: {len(entities_struct.get('entities', []))} unique entities")
         
         return {
             "techniques": mem.techniques,
