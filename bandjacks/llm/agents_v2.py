@@ -14,6 +14,11 @@ from bandjacks.llm.tools import (
 from bandjacks.llm.client import execute_tool_loop
 from bandjacks.llm.stix_builder import STIXBuilder
 from bandjacks.llm.flow_builder import FlowBuilder
+from bandjacks.llm.evidence_utils import (
+    extract_sentence_evidence,
+    extract_sentence_for_line,
+    calculate_line_refs
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,9 +138,12 @@ class SpanFinderAgent:
         ]
     
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
-        """Find behavioral spans with multi-line context aggregation."""
+        """Find behavioral spans with sentence-based context extraction."""
         
-        # Single-line spans with scoring
+        # Build full text for sentence extraction
+        full_text = '\n'.join(mem.line_index) if mem.line_index else mem.document_text
+        
+        # Process each line and extract sentence-based evidence
         for idx, line in enumerate(mem.line_index):
             if not line.strip():
                 continue
@@ -156,13 +164,24 @@ class SpanFinderAgent:
             
             # Add span if score threshold met
             if score >= 0.6:
-                mem.spans.append({
-                    "text": line.strip(),
-                    "line_refs": [idx + 1],
-                    "score": min(score, 1.0),
-                    "tactics": tactics,
-                    "prior": _section_weight(line)
-                })
+                # Use sentence-based extraction instead of single line
+                evidence = extract_sentence_for_line(
+                    full_text,
+                    mem.line_index,
+                    idx + 1,  # 1-indexed line number
+                    context_sentences=1  # Include 1 sentence before/after
+                )
+                
+                # Only add if we got meaningful evidence
+                if evidence.get("quote"):
+                    mem.spans.append({
+                        "text": evidence["quote"],
+                        "line_refs": evidence["line_refs"],
+                        "score": min(score, 1.0),
+                        "tactics": tactics,
+                        "prior": _section_weight(line),
+                        "type": "sentence_based"
+                    })
         
         # Multi-line context aggregation for complex behaviors
         self._aggregate_context_spans(mem)
@@ -174,7 +193,10 @@ class SpanFinderAgent:
         mem.spans.sort(key=lambda x: x.get("score", 0), reverse=True)
     
     def _aggregate_context_spans(self, mem: WorkingMemory):
-        """Aggregate consecutive lines that form behavioral sequences."""
+        """Aggregate consecutive lines that form behavioral sequences using sentence extraction."""
+        
+        # Build full text for sentence extraction
+        full_text = '\n'.join(mem.line_index) if mem.line_index else mem.document_text
         
         # Look for multi-step sequences
         window_size = 5
@@ -186,17 +208,33 @@ class SpanFinderAgent:
                ("encrypt" in window_text.lower() and "ransom" in window_text.lower()) or \
                ("credential" in window_text.lower() and "lateral" in window_text.lower()):
                 
-                # Create aggregated span
-                mem.spans.append({
-                    "text": window_text[:500],  # Limit length
-                    "line_refs": list(range(i+1, i+window_size+1)),
-                    "score": 0.9,
-                    "tactics": ["multi-stage"],
-                    "prior": 1.05
-                })
+                # Calculate character position for middle of window
+                char_pos = 0
+                for j in range(i + window_size // 2):
+                    char_pos += len(mem.line_index[j]) + 1
+                
+                # Extract sentence-based evidence for this window
+                evidence = extract_sentence_evidence(
+                    full_text,
+                    char_pos,
+                    context_sentences=2  # More context for multi-stage attacks
+                )
+                
+                if evidence.get("quote"):
+                    mem.spans.append({
+                        "text": evidence["quote"],
+                        "line_refs": evidence["line_refs"],
+                        "score": 0.9,
+                        "tactics": ["multi-stage"],
+                        "prior": 1.05,
+                        "type": "sentence_based_aggregate"
+                    })
     
     def _create_entity_spans(self, mem: WorkingMemory):
-        """Create spans based on entity mentions and their actions."""
+        """Create spans based on entity mentions and their actions using sentence extraction."""
+        
+        # Build full text for sentence extraction
+        full_text = '\n'.join(mem.line_index) if mem.line_index else mem.document_text
         
         # Find entity mentions - expanded to include more threat actors and malware
         entity_pattern = re.compile(
@@ -207,18 +245,31 @@ class SpanFinderAgent:
         
         for idx, line in enumerate(mem.line_index):
             if entity_pattern.search(line):
-                # Look for actions in surrounding context
-                context_start = max(0, idx - 2)
-                context_end = min(len(mem.line_index), idx + 3)
-                context = " ".join(mem.line_index[context_start:context_end])
+                # Calculate character position for this line
+                char_pos = 0
+                for j in range(idx):
+                    char_pos += len(mem.line_index[j]) + 1
                 
-                if len(context) > 50:  # Meaningful context
+                # Find position of entity mention in line
+                match = entity_pattern.search(line)
+                if match:
+                    char_pos += match.start()
+                
+                # Extract sentence-based context around entity mention
+                evidence = extract_sentence_evidence(
+                    full_text,
+                    char_pos,
+                    context_sentences=2  # Include surrounding context for entity actions
+                )
+                
+                if evidence.get("quote") and len(evidence["quote"]) > 50:  # Meaningful context
                     mem.spans.append({
-                        "text": context[:500],
-                        "line_refs": list(range(context_start+1, context_end+1)),
+                        "text": evidence["quote"],
+                        "line_refs": evidence["line_refs"],
                         "score": 0.8,
                         "tactics": ["entity-action"],
-                        "prior": 1.05
+                        "prior": 1.05,
+                        "type": "sentence_based_entity"
                     })
 
 
@@ -369,7 +420,9 @@ class MapperAgent:
                         "Analyze the span and map it to the BEST matching ATT&CK technique. "
                         "Select from candidates or propose a different technique.\n\n"
                         "Requirements:\n"
-                        "- Provide 2-3 direct quotes as evidence\n"
+                        "- The span contains complete sentences for context\n"
+                        "- Extract 2-3 meaningful phrases or sentences as evidence\n"
+                        "- Evidence quotes should be complete thoughts, not fragments\n"
                         "- Include line numbers for each quote\n"
                         "- Score confidence 0-100\n\n"
                         "Output JSON: {\"selected\":{\"external_id\":str,\"name\":str}|null, \"proposed\":{\"external_id\":str,\"name\":str}|null, "
@@ -380,8 +433,8 @@ class MapperAgent:
                     "role": "user",
                     "content": json.dumps(
                         {
-                            "span": span["text"][:400],  # Limit span text for performance
-                            "line_refs": span["line_refs"][:5],  # Limit line refs
+                            "span": span["text"][:800],  # Increased limit for sentence-based spans
+                            "line_refs": span["line_refs"][:10],  # More line refs for sentence context
                             "evidence_lines": evidence_lines,
                             "candidates": [
                                 {"external_id": c["external_id"], "name": c.get("name", ""), "score": c.get("score", 0)} 
