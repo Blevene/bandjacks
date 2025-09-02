@@ -6,7 +6,7 @@ import logging
 from typing import Any, Dict, List
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.client import LLMClient
-from bandjacks.llm.tools import list_subtechniques
+from bandjacks.llm.tools import list_subtechniques, resolve_technique_by_external_id
 from bandjacks.llm.json_utils import parse_json_with_fallback, validate_and_ensure_claims
 
 logger = logging.getLogger(__name__)
@@ -218,7 +218,7 @@ class BatchMapperAgent:
                     # Create simplified claim
                     claim = {
                         "external_id": technique_id,
-                        "name": technique_id,  # Will be enriched from candidates
+                        "name": "",  # Will be enriched from candidates or lookup
                         "quotes": [span_text] if span_text else [],
                         "line_refs": line_refs,
                         "confidence": confidence,
@@ -228,9 +228,10 @@ class BatchMapperAgent:
                     }
                     
                     # Try to enrich with candidate metadata if available
+                    technique_name = ""
                     for cand in mem.candidates.get(span_id, []):
                         if cand.get("external_id") == technique_id:
-                            claim["name"] = cand.get("name", technique_id)
+                            technique_name = cand.get("name", "")
                             claim["technique_meta"] = {
                                 "name": cand.get("name", ""),
                                 "description": cand.get("description", ""),
@@ -239,6 +240,27 @@ class BatchMapperAgent:
                                 "subtechnique_of": cand.get("subtechnique_of"),
                             }
                             break
+                    
+                    # If name not found in candidates, try to look it up
+                    if not technique_name:
+                        try:
+                            tech_meta = resolve_technique_by_external_id(technique_id)
+                            if tech_meta and tech_meta.get("name"):
+                                technique_name = tech_meta["name"]
+                                # Also populate technique_meta if not already set
+                                if "technique_meta" not in claim:
+                                    claim["technique_meta"] = {
+                                        "name": tech_meta.get("name", ""),
+                                        "description": tech_meta.get("description", ""),
+                                        "tactic": tech_meta.get("tactic", ""),
+                                        "platforms": tech_meta.get("platforms", []),
+                                        "subtechnique_of": tech_meta.get("subtechnique_of"),
+                                    }
+                        except Exception as e:
+                            logger.debug(f"Failed to resolve technique {technique_id}: {e}")
+                    
+                    # Set the name (fallback to technique_id if name not found)
+                    claim["name"] = technique_name if technique_name else technique_id
                     
                     mem.claims.append(claim)
                     added_claims += 1
