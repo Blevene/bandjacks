@@ -138,12 +138,38 @@ Best for: Critical analysis, comprehensive extraction
 - Determines if document qualifies for single-pass extraction
 - Threshold: <500 words (configurable)
 
-### 2. Single-Pass Extraction (Small Documents)
+### 2. Entity Extraction
+The pipeline extracts named entities from threat intelligence reports:
+
+#### Entity Types
+- **Groups** (`group`): Threat actor groups (e.g., APT29, Lazarus Group)
+- **Malware** (`malware`): Malware families (e.g., SUNBURST, Emotet)
+- **Tools** (`tool`): Legitimate or dual-use tools (e.g., PowerShell, Mimikatz)
+- **Targets** (`target`): Victim organizations or sectors
+- **Campaigns** (`campaign`): Named threat campaigns
+
+#### Entity Features
+- **Evidence Tracking**: Every entity includes the exact quote and line references
+- **Confidence Scoring**: 0-100 scale based on extraction confidence
+- **Alias Detection**: Automatically identifies and consolidates aliases (e.g., APT29/Cozy Bear)
+- **Context Classification**:
+  - `primary_mention`: Direct mention of the entity
+  - `alias`: Alternative name identified from text
+  - `coreference`: Reference like "the group" or "they"
+
+#### Entity Consolidation
+- Entities are automatically consolidated across document chunks
+- Aliases are merged into single entities with tracked alternative names
+- Confidence scores are boosted for frequently mentioned entities
+- Evidence from multiple mentions is preserved
+
+### 3. Single-Pass Extraction (Small Documents)
 - Entire document processed in one LLM call
 - Performance: 4-8 seconds
 - Best for: Executive summaries, alerts, short reports
+- Includes both entity and technique extraction
 
-### 3. Multi-Stage Pipeline (Larger Documents)
+### 4. Multi-Stage Pipeline (Larger Documents)
 
 #### Stage 1: Span Finding
 - Identifies behavioral text segments
@@ -176,6 +202,21 @@ Best for: Critical analysis, comprehensive extraction
 - Compiles metrics
 
 ## Performance Optimization
+
+### TechniqueCache
+
+All MITRE ATT&CK techniques are cached in memory at startup:
+- **1376 techniques** loaded from Neo4j into memory
+- **O(1) lookups** instead of database queries for each technique
+- **Full metadata** cached: name, description, tactics, platforms
+- **Consistent naming** ensures techniques always show human-readable names
+- **Thread-safe** singleton shared across all worker processes
+
+Benefits:
+- Eliminates ~100-500 database queries per extraction
+- Ensures review UI shows "Adversary-in-the-Middle" not just "T1557"
+- Reduces extraction time by 50-70% for technique resolution
+- Zero latency for technique name lookups after startup
 
 ### Caching
 

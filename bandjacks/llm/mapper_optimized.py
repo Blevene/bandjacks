@@ -6,7 +6,8 @@ import logging
 from typing import Any, Dict, List
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.client import LLMClient
-from bandjacks.llm.tools import list_subtechniques
+from bandjacks.llm.tools import list_subtechniques, resolve_technique_by_external_id
+from bandjacks.services.technique_cache import technique_cache
 from bandjacks.llm.json_utils import parse_json_with_fallback, validate_and_ensure_claims
 
 logger = logging.getLogger(__name__)
@@ -100,15 +101,15 @@ class BatchMapperAgent:
                 "role": "system",
                 "content": (
                     "You are a cybersecurity analyst. Extract ATT&CK technique IDs from text spans.\n\n"
-                    "Output a simple JSON list:\n"
-                    "[{\"span\":0,\"tid\":\"T1055\",\"conf\":80}]\n\n"
+                    "Output a JSON object with a 'techniques' array:\n"
+                    "{\"techniques\":[{\"span\":0,\"tid\":\"T1055\",\"conf\":80}]}\n\n"
                     "Rules:\n"
                     "- span: span index (0-based)\n"
                     "- tid: technique ID (e.g., T1055, T1566.001)\n"
                     "- conf: confidence score (0-100)\n"
                     "- Extract ALL techniques you find\n"
                     "- Include explicit IDs and behaviors that match techniques\n"
-                    "- Output ONLY the JSON array, nothing else"
+                    "- Output ONLY valid JSON, nothing else"
                 )
             },
             {
@@ -117,14 +118,50 @@ class BatchMapperAgent:
             }
         ]
         
+        # JSON schema for technique extraction
+        technique_schema = {
+            "type": "object",
+            "properties": {
+                "techniques": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "span": {
+                                "type": "integer",
+                                "description": "Span index (0-based)"
+                            },
+                            "tid": {
+                                "type": "string",
+                                "description": "Technique ID (e.g., T1566.001)"
+                            },
+                            "conf": {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 100,
+                                "description": "Confidence score"
+                            }
+                        },
+                        "required": ["span", "tid", "conf"],
+                        "additionalProperties": False
+                    }
+                }
+            },
+            "required": ["techniques"],
+            "additionalProperties": False
+        }
+        
         # Single LLM call for this batch with structured output
         logger.info(f"BatchMapper LLM request: batch of {len(spans_data)} spans")
         client = LLMClient()
         try:
-            # Call LLM - temporarily without response_format to debug
+            # Call LLM with proper response format
             response = client.call(
                 messages,
-                # response_format={"type": "json_object"},  # TEMPORARILY DISABLED FOR DEBUGGING
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": technique_schema
+                },
                 max_tokens=4000  # Reduced - simpler format needs fewer tokens
             )
             content = response.get("content", "")
@@ -150,23 +187,14 @@ class BatchMapperAgent:
                         content = content.split('```')[1].split('```')[0].strip()
                     logger.debug(f"Stripped markdown wrapper, new length: {len(content)}")
                 
-                # Handle both array and object responses
-                if content.strip().startswith('['):
-                    # Direct array response
-                    results = json.loads(content)
+                # Parse the structured response - expects {"techniques": [...]}
+                parsed = json.loads(content)
+                if isinstance(parsed, dict) and "techniques" in parsed:
+                    results = parsed["techniques"]
                 else:
-                    # Wrapped in object - try to extract array
-                    parsed = json.loads(content)
-                    if isinstance(parsed, dict):
-                        # Look for any key that contains a list
-                        for key in parsed:
-                            if isinstance(parsed[key], list):
-                                results = parsed[key]
-                                break
-                        else:
-                            results = []
-                    else:
-                        results = []
+                    # Fallback for unexpected structure
+                    logger.warning(f"Unexpected response structure: {type(parsed)}")
+                    results = []
                 
                 if not isinstance(results, list):
                     logger.error(f"Expected list, got {type(results)}")
@@ -218,7 +246,7 @@ class BatchMapperAgent:
                     # Create simplified claim
                     claim = {
                         "external_id": technique_id,
-                        "name": technique_id,  # Will be enriched from candidates
+                        "name": "",  # Will be enriched from candidates or lookup
                         "quotes": [span_text] if span_text else [],
                         "line_refs": line_refs,
                         "confidence": confidence,
@@ -228,9 +256,10 @@ class BatchMapperAgent:
                     }
                     
                     # Try to enrich with candidate metadata if available
+                    technique_name = ""
                     for cand in mem.candidates.get(span_id, []):
                         if cand.get("external_id") == technique_id:
-                            claim["name"] = cand.get("name", technique_id)
+                            technique_name = cand.get("name", "")
                             claim["technique_meta"] = {
                                 "name": cand.get("name", ""),
                                 "description": cand.get("description", ""),
@@ -239,6 +268,42 @@ class BatchMapperAgent:
                                 "subtechnique_of": cand.get("subtechnique_of"),
                             }
                             break
+                    
+                    # If name not found in candidates, try to look it up from cache
+                    if not technique_name:
+                        # First try the fast cache lookup
+                        tech_meta = technique_cache.get(technique_id)
+                        if tech_meta:
+                            technique_name = tech_meta.get("name", "")
+                            # Also populate technique_meta if not already set
+                            if "technique_meta" not in claim:
+                                claim["technique_meta"] = {
+                                    "name": tech_meta.get("name", ""),
+                                    "description": tech_meta.get("description", ""),
+                                    "tactic": tech_meta.get("tactic", ""),
+                                    "platforms": tech_meta.get("platforms", []),
+                                    "subtechnique_of": tech_meta.get("subtechnique_of"),
+                                }
+                        else:
+                            # Fallback to direct lookup if not in cache (shouldn't happen normally)
+                            try:
+                                tech_meta = resolve_technique_by_external_id(technique_id)
+                                if tech_meta and tech_meta.get("name"):
+                                    technique_name = tech_meta["name"]
+                                    # Also populate technique_meta if not already set
+                                    if "technique_meta" not in claim:
+                                        claim["technique_meta"] = {
+                                            "name": tech_meta.get("name", ""),
+                                            "description": tech_meta.get("description", ""),
+                                            "tactic": tech_meta.get("tactic", ""),
+                                            "platforms": tech_meta.get("platforms", []),
+                                            "subtechnique_of": tech_meta.get("subtechnique_of"),
+                                        }
+                            except Exception as e:
+                                logger.debug(f"Failed to resolve technique {technique_id}: {e}")
+                    
+                    # Set the name (fallback to technique_id if name not found)
+                    claim["name"] = technique_name if technique_name else technique_id
                     
                     mem.claims.append(claim)
                     added_claims += 1

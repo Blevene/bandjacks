@@ -176,6 +176,21 @@ class LLMClient:
                             *messages
                         ]
                         params["messages"] = messages
+                    
+                    # For Gemini with json_schema, check format
+                    if response_format.get("type") == "json_schema" and "json_schema" in response_format:
+                        json_schema = response_format["json_schema"]
+                        # If it's a dict with 'name', 'schema', 'strict' keys, it's already wrapped
+                        if isinstance(json_schema, dict) and "schema" in json_schema and "name" in json_schema:
+                            # Already properly formatted, use as-is
+                            pass
+                        else:
+                            # Wrap the raw schema for Gemini
+                            response_format["json_schema"] = {
+                                "name": "response_schema",
+                                "strict": True,
+                                "schema": json_schema
+                            }
                 
                 # Add response_format to params
                 params["response_format"] = response_format

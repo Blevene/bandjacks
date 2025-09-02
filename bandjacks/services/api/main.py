@@ -81,6 +81,7 @@ from bandjacks.loaders.opensearch_index import ensure_attack_nodes_index, ensure
 from bandjacks.loaders.edge_embeddings import ensure_attack_edges_index
 from bandjacks.llm.cache import get_cache_stats, clear_cache
 from bandjacks.monitoring.compliance_metrics import get_compliance_report, get_compliance_metrics
+from bandjacks.services.technique_cache import technique_cache
 
 logger = logging.getLogger(__name__)
 logger.info(f"Logging configured: level={LOG_LEVEL}, file={LOG_FILE}")
@@ -160,6 +161,19 @@ async def startup():
         ensure_ddl(settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password)
     except Exception as e:
         print(f"[startup] Neo4j DDL ensure failed: {e}")
+    
+    # Load technique cache after Neo4j is ready
+    try:
+        techniques_loaded = technique_cache.load_from_neo4j(
+            settings.neo4j_uri, 
+            settings.neo4j_user, 
+            settings.neo4j_password
+        )
+        logger.info(f"TechniqueCache initialized with {techniques_loaded} techniques")
+    except Exception as e:
+        logger.error(f"Failed to load technique cache: {e}")
+        # Continue startup even if cache fails - will fall back to direct queries
+    
     try:
         ensure_attack_nodes_index(settings.opensearch_url, settings.os_index_nodes)
         ensure_attack_edges_index(settings.opensearch_url)

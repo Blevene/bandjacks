@@ -201,6 +201,11 @@ When sequential evidence is lacking:
 - **Attack Flow first-class**: Materialized as STIX extension and graph structure
 - **Provenance tracking**: Every node/edge stamped with source metadata
 - **No downgrades**: Prevent accidental version rollbacks unless forced
+- **TechniqueCache singleton**: Loads all ~1376 ATT&CK techniques at startup for O(1) lookups
+  - Eliminates database queries during extraction pipeline
+  - Ensures consistent human-readable names (e.g., "Adversary-in-the-Middle" instead of "T1557")
+  - Thread-safe implementation shared across all workers
+  - Loaded once from Neo4j with tactics, platforms, and metadata
 
 ## Graph Schema
 
