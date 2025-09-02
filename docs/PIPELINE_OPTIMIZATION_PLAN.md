@@ -245,39 +245,25 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
     - Test confirmed: APT29 and Cozy Bear consolidated into single entity with aliases field
 
 ### Task 0.4: Update Review UI for Entity Evidence
-- [ ] **Status**: Not Started
+- [x] **Status**: ✅ Completed (2025-09-02)
 - **Depends On**: Tasks 0.2 and 0.3 (requires backend entity evidence)
 - **Current Problem**: Review UI doesn't show entity evidence
 - **Solution**: Display entity evidence in unified review interface
-- **Files to Modify**:
-  - `ui/components/reports/unified-review.tsx`
-  - `ui/components/reports/review-utils.ts`
-- **Implementation**:
-  ```typescript
-  // Update entity display to show evidence
-  function EntityReviewCard({ entity }) {
-    return (
-      <div>
-        <h3>{entity.name} ({entity.type})</h3>
-        <ConfidenceScore value={entity.confidence} />
-        
-        {/* New: Show evidence mentions */}
-        <EvidenceSection>
-          {entity.mentions.map((mention, idx) => (
-            <EvidenceQuote key={idx}>
-              <QuoteText>{mention.quote}</QuoteText>
-              <LineRefs>Lines {mention.line_refs.join(", ")}</LineRefs>
-              <Context>{mention.context}</Context>
-            </EvidenceQuote>
-          ))}
-        </EvidenceSection>
-      </div>
-    );
-  }
-  ```
-- **Success Metrics**:
-  - Reviewers can see entity evidence
-  - Can verify entity extractions
+- **Files Modified**:
+  - `ui/lib/report-types.ts` (added EntityMention interface)
+  - `ui/lib/review-utils.ts` (extract evidence from mentions)
+  - `ui/components/reports/review-item-card.tsx` (display entity evidence with context)
+- **Implementation Notes**:
+  - Added EntityMention interface for structured evidence
+  - Modified entitiesToReviewableItems() to extract evidence from mentions array
+  - Enhanced review-item-card to display entity evidence with context badges (Primary/Alias/Reference)
+  - Maintained backward compatibility with legacy entity format
+  - Fixed entity extraction intermittent failures with retry logic
+  - Test confirmed: APT29/Cozy Bear properly displayed with aliases
+- **Success Metrics**: ✅
+  - Reviewers can see entity evidence with quotes and line references
+  - Entity aliases are displayed (e.g., "Also known as: Cozy Bear")
+  - Context badges show mention type (Primary/Alias/Reference)
   - Consistent review experience for entities and techniques
 
 ---
