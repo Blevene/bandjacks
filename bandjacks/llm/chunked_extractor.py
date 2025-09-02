@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import concurrent.futures
 from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 from bandjacks.llm.tracker import ExtractionTracker
+from bandjacks.llm.entity_utils import consolidate_entities
 # Removed hardcoded threat actor and malware extraction - handled by proper entity recognition
 
 logger = logging.getLogger(__name__)
@@ -261,9 +262,78 @@ class ChunkedExtractor:
                 "failed": True
             }
     
+    def merge_entity_evidence(self, entity_instances: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Merge evidence from multiple entity mentions, including aliases.
+        
+        Args:
+            entity_instances: List of entity instances to merge
+            
+        Returns:
+            Merged entity with consolidated evidence
+        """
+        if not entity_instances:
+            return None
+            
+        # Determine the primary name (prefer non-alias names)
+        primary_name = entity_instances[0]["name"]
+        aliases = set()
+        
+        for instance in entity_instances:
+            # Check if this instance has an original_name (indicating it was mapped as alias)
+            original_name = instance.get("original_name", instance["name"])
+            if original_name != primary_name:
+                aliases.add(original_name)
+            
+            # Also check for non-alias mentions to find the best primary name
+            for mention in instance.get("mentions", []):
+                if mention.get("context") != "alias":
+                    primary_name = instance["name"]
+                    break
+        
+        # Start with merged entity
+        merged = {
+            "name": primary_name,
+            "type": entity_instances[0]["type"],
+            "confidence": max(e.get("confidence", 50) for e in entity_instances),
+            "mentions": [],
+            "chunks_found": [],
+            "aliases": list(aliases) if aliases else None
+        }
+        
+        # Combine all unique mentions
+        seen_quotes = set()
+        for instance in entity_instances:
+            # Track which chunk this came from
+            chunk_id = instance.get("chunk_id", -1)
+            if chunk_id not in merged["chunks_found"]:
+                merged["chunks_found"].append(chunk_id)
+            
+            # Add mentions from this instance
+            for mention in instance.get("mentions", []):
+                # Use first 100 chars of quote as dedup key
+                quote_key = mention.get("quote", "")[:100]
+                if quote_key and quote_key not in seen_quotes:
+                    merged["mentions"].append(mention)
+                    seen_quotes.add(quote_key)
+        
+        # Boost confidence based on multiple mentions
+        mention_boost = min(20, len(merged["mentions"]) * 5)
+        merged["confidence"] = min(100, merged["confidence"] + mention_boost)
+        
+        # Also boost if found in multiple chunks
+        chunk_boost = min(10, len(merged["chunks_found"]) * 3)
+        merged["confidence"] = min(100, merged["confidence"] + chunk_boost)
+        
+        # Clean up - remove aliases field if empty
+        if not merged.get("aliases"):
+            merged.pop("aliases", None)
+        
+        return merged
+    
     def merge_results(self, chunk_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
-        Merge results from multiple chunks, deduplicating techniques.
+        Merge results from multiple chunks, deduplicating techniques and consolidating entity evidence.
         
         Args:
             chunk_results: List of extraction results from chunks
@@ -348,12 +418,13 @@ class ChunkedExtractor:
                     "line_refs": claim.get("evidence", {}).get("line_refs", claim.get("line_refs", []))
                 }
         
-        # Merge entities from all chunks
-        # New format: {"entities": [{"name": str, "type": str}], "extraction_status": str}
-        seen_entities = {}  # Track by name to avoid duplicates
-        all_entities = []
+        # Merge entities from all chunks with evidence consolidation
+        # Group entities by (name.lower(), type) for merging
+        entity_groups = {}  # Key: (name_lower, type) -> Value: list of entity instances
+        alias_map = {}  # Track known aliases: alias_name -> primary_name
         
-        for result in chunk_results:
+        for idx, result in enumerate(chunk_results):
+            chunk_id = result.get("chunk_id", idx)
             chunk_entities = result.get("entities", {})
             
             # Handle new format from extraction pipeline
@@ -361,11 +432,70 @@ class ChunkedExtractor:
                 # New format with list of entities
                 for entity in chunk_entities.get("entities", []):
                     if isinstance(entity, dict):
-                        entity_name = entity.get("name", "")
-                        if entity_name and entity_name not in seen_entities:
-                            seen_entities[entity_name] = entity
-                            all_entities.append(entity)
-                            logger.debug(f"Found entity: {entity_name} ({entity.get('type')})")
+                        entity_name = entity.get("name", "").strip()
+                        entity_type = entity.get("type", "")
+                        
+                        if entity_name:
+                            # Check if this is a known alias
+                            canonical_name = alias_map.get(entity_name.lower(), entity_name)
+                            
+                            # Check mentions for alias context  
+                            for mention in entity.get("mentions", []):
+                                if mention.get("context") == "alias":
+                                    # This entity is an alias - try to find the primary entity
+                                    quote = mention.get("quote", "")
+                                    # Look for patterns like "X, also known as Y" or "X (aka Y)"
+                                    if "also known as" in quote.lower() or "aka" in quote.lower():
+                                        # Try to extract the primary name
+                                        for existing_key, _ in entity_groups.items():
+                                            existing_name = existing_key[0]
+                                            if existing_name in quote.lower() and existing_name != entity_name.lower():
+                                                # Found the primary entity
+                                                alias_map[entity_name.lower()] = existing_name
+                                                canonical_name = existing_name
+                                                logger.debug(f"Identified {entity_name} as alias of {existing_name}")
+                                                break
+                            
+                            # Create grouping key using canonical name
+                            key = (canonical_name.lower(), entity_type)
+                            
+                            # Add chunk_id to entity for tracking
+                            entity["chunk_id"] = chunk_id
+                            # Store original name for consolidation
+                            entity["original_name"] = entity_name
+                            
+                            if key not in entity_groups:
+                                entity_groups[key] = []
+                            entity_groups[key].append(entity)
+                            
+                            logger.debug(f"Chunk {chunk_id}: Found entity {entity_name} ({entity_type}) with {len(entity.get('mentions', []))} mentions")
+        
+        # Merge entities with evidence consolidation
+        all_entities = []
+        for (name_lower, entity_type), entity_instances in entity_groups.items():
+            if len(entity_instances) == 1:
+                # Single instance, no merging needed
+                entity = entity_instances[0]
+                # Remove chunk_id from final output
+                entity.pop("chunk_id", None)
+                all_entities.append(entity)
+            else:
+                # Multiple instances - merge with evidence consolidation
+                logger.debug(f"Merging {len(entity_instances)} instances of entity: {entity_instances[0]['name']} ({entity_type})")
+                merged_entity = self.merge_entity_evidence(entity_instances)
+                
+                if merged_entity:
+                    # Log consolidation results
+                    logger.info(f"Consolidated entity '{merged_entity['name']}': "
+                              f"{len(merged_entity['mentions'])} mentions from {len(merged_entity['chunks_found'])} chunks, "
+                              f"confidence: {merged_entity['confidence']}%")
+                    
+                    # Remove internal tracking fields
+                    merged_entity.pop("chunks_found", None)
+                    all_entities.append(merged_entity)
+        
+        # Sort entities by confidence (highest first)
+        all_entities.sort(key=lambda e: e.get("confidence", 0), reverse=True)
         
         # Use the new format for merged entities
         merged["entities"] = {
@@ -375,9 +505,12 @@ class ChunkedExtractor:
         
         # Log entity extraction results
         if all_entities:
-            logger.info(f"Extracted {len(all_entities)} entities from chunks")
-            for entity in all_entities[:3]:  # Log first 3 entities
-                logger.info(f"  - {entity.get('name')} ({entity.get('type')})")
+            unique_count = len(all_entities)
+            total_mentions = sum(len(e.get("mentions", [])) for e in all_entities)
+            logger.info(f"Entity consolidation complete: {unique_count} unique entities with {total_mentions} total mentions")
+            for entity in all_entities[:3]:  # Log top 3 entities by confidence
+                logger.info(f"  - {entity.get('name')} ({entity.get('type')}): "
+                          f"confidence={entity.get('confidence')}%, mentions={len(entity.get('mentions', []))}")
         
         # Aggregate metrics
         total_time = sum(r.get("metrics", {}).get("dur_sec", 0) for r in chunk_results)

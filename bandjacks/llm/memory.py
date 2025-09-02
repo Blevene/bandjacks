@@ -15,7 +15,23 @@ class WorkingMemory:
     line_index: List[str] = field(default_factory=list)
 
     # Structured entities from entity extraction agent
-    # Format: {"entities": [{"name": str, "type": str}], "extraction_status": str}
+    # Format: {
+    #   "entities": [
+    #     {
+    #       "name": str,
+    #       "type": str,
+    #       "confidence": int (0-100),
+    #       "mentions": [
+    #         {
+    #           "quote": str,
+    #           "line_refs": List[int],
+    #           "context": str (primary_mention/alias/coreference)
+    #         }
+    #       ]
+    #     }
+    #   ],
+    #   "extraction_status": str
+    # }
     entities: Dict[str, Any] = field(
         default_factory=lambda: {
             "entities": [],
@@ -53,7 +69,8 @@ class WorkingMemory:
             "notes": self.notes,
         }
 
-    def add_entity(self, entity_type: str, name: str) -> None:
+    def add_entity(self, entity_type: str, name: str, evidence: str = "", 
+                   confidence: int = 75, context: str = "primary_mention") -> None:
         """Add a normalized entity to the structured entities list if not present."""
         norm = (name or "").strip()
         if not norm:
@@ -63,10 +80,36 @@ class WorkingMemory:
         current_entities = self.entities.get("entities", [])
         
         # Check if entity already exists (case-insensitive)
-        existing_names = [e.get("name", "").lower() for e in current_entities if isinstance(e, dict)]
+        for entity in current_entities:
+            if isinstance(entity, dict) and entity.get("name", "").lower() == norm.lower():
+                # Entity exists, add mention if we have evidence
+                if evidence and "mentions" in entity:
+                    entity["mentions"].append({
+                        "quote": evidence,
+                        "line_refs": [],  # Would need to calculate
+                        "context": context
+                    })
+                    # Update confidence if higher
+                    entity["confidence"] = max(entity.get("confidence", 75), confidence)
+                return
         
-        if norm.lower() not in existing_names:
-            current_entities.append({"name": name, "type": entity_type})
-            self.entities["entities"] = current_entities
+        # Add new entity with new structure
+        new_entity = {
+            "name": name,
+            "type": entity_type,
+            "confidence": confidence,
+            "mentions": []
+        }
+        
+        # Add evidence as first mention if provided
+        if evidence:
+            new_entity["mentions"].append({
+                "quote": evidence,
+                "line_refs": [],  # Would need to calculate
+                "context": context
+            })
+        
+        current_entities.append(new_entity)
+        self.entities["entities"] = current_entities
 
 

@@ -63,6 +63,7 @@ class IngestResponse(BaseModel):
     rubric: Any = Field(..., description="Quality rubric")
     rubric_evidence: Dict[str, Any] = Field(..., description="Evidence for rubric")
     entities: Dict[str, Any] = Field(..., description="Extracted entities")
+    claims: List[Dict[str, Any]] = Field(default_factory=list, description="Extracted technique claims")
     trace_id: str = Field(..., description="Trace ID for debugging")
     extraction_metrics: Dict[str, Any] = Field(..., description="Extraction metrics")
 
@@ -263,6 +264,7 @@ async def ingest_report(request: IngestRequest):
             rubric={"criteria_met": rubric.criteria_met},
             rubric_evidence=rubric_evidence,
             entities=extraction_results.get("entities", {}),
+            claims=extraction_results.get("claims", []),
             trace_id=trace_id,
             extraction_metrics=extraction_results.get("metrics", {})
         )

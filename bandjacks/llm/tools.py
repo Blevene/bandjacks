@@ -5,6 +5,7 @@ from typing import List, Optional, Dict, Any
 import httpx
 from bandjacks.loaders.search_nodes import ttx_search_kb
 from bandjacks.services.api.settings import settings
+from bandjacks.services.technique_cache import technique_cache
 from neo4j import GraphDatabase
 
 
@@ -266,6 +267,20 @@ def resolve_technique_by_external_id(external_id: str) -> Optional[Dict[str, Any
     Resolve ATT&CK technique metadata from external_id (Txxxx[.xxx]).
     Returns dict with stix_id, name, external_id, tactic, or None if not found.
     """
+    # First check the cache for O(1) lookup
+    cached_tech = technique_cache.get(external_id)
+    if cached_tech:
+        return {
+            "stix_id": cached_tech.get("stix_id"),
+            "name": cached_tech.get("name"),
+            "external_id": cached_tech.get("external_id"),
+            "tactic": cached_tech.get("tactic"),
+            "description": cached_tech.get("description"),
+            "platforms": cached_tech.get("platforms", []),
+            "subtechnique_of": cached_tech.get("subtechnique_of"),
+        }
+    
+    # Fallback to Neo4j query if not in cache (shouldn't happen normally after startup)
     try:
         driver = GraphDatabase.driver(
             settings.neo4j_uri,
@@ -276,7 +291,9 @@ def resolve_technique_by_external_id(external_id: str) -> Optional[Dict[str, Any
                 """
                 MATCH (ap:AttackPattern {external_id: $ext})
                 OPTIONAL MATCH (ap)-[:HAS_TACTIC]->(t:Tactic)
-                RETURN ap.stix_id AS stix_id, ap.name AS name, ap.external_id AS external_id, t.shortname AS tactic
+                RETURN ap.stix_id AS stix_id, ap.name AS name, ap.external_id AS external_id, 
+                       t.shortname AS tactic, ap.description AS description,
+                       ap.x_mitre_platforms AS platforms
                 LIMIT 1
                 """,
                 ext=external_id
@@ -287,6 +304,8 @@ def resolve_technique_by_external_id(external_id: str) -> Optional[Dict[str, Any
                     "name": rec["name"],
                     "external_id": rec["external_id"],
                     "tactic": rec["tactic"],
+                    "description": rec["description"],
+                    "platforms": rec["platforms"] or [],
                 }
             return None
     except Exception as e:

@@ -12,6 +12,14 @@ Bandjacks is a comprehensive cyber threat intelligence (CTI) system that:
 - Provides vector search and graph analytics capabilities
 - Features **94% faster** extraction than earlier versions with LLM response caching
 
+## Architecture Highlights
+
+### TechniqueCache
+- **In-memory cache** of all MITRE ATT&CK techniques loaded at startup
+- **O(1) lookups** by external_id (e.g., T1557) for instant name resolution
+- **1376 techniques** cached with full metadata (name, description, tactics, platforms)
+- **Consistent naming** ensures review UI always shows human-readable technique names
+
 ## Quick Start
 
 ### Prerequisites

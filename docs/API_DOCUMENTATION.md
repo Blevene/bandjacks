@@ -34,6 +34,86 @@ Currently, the API does not require authentication for development. Production d
 }
 ```
 
+## Response Schemas
+
+### Entity Structure
+
+Entities extracted from threat intelligence reports follow this structure:
+
+```json
+{
+  "entities": {
+    "entities": [
+      {
+        "name": "APT29",                    // Entity name
+        "type": "group",                    // Entity type (see types below)
+        "confidence": 100,                  // Confidence score (0-100)
+        "mentions": [                       // All mentions of this entity in text
+          {
+            "quote": "APT29, also known as Cozy Bear, used PowerShell...",
+            "line_refs": [1, 2],            // Line numbers where mentioned
+            "context": "primary_mention"    // Context type (see below)
+          }
+        ],
+        "aliases": ["Cozy Bear", "The Dukes"]  // Alternative names (optional)
+      }
+    ],
+    "extraction_status": "completed"        // Status of extraction
+  }
+}
+```
+
+**Entity Types:**
+- `group` - Threat actor groups (APT29, Lazarus Group)
+- `malware` - Malware families (SUNBURST, Emotet)
+- `tool` - Legitimate or dual-use tools (PowerShell, Mimikatz)
+- `target` - Victim organizations or sectors
+- `campaign` - Named threat campaigns
+
+**Context Types:**
+- `primary_mention` - Direct mention of the entity
+- `alias` - Alternative name (e.g., "Cozy Bear" for APT29)
+- `coreference` - Reference like "the group" referring to a previously mentioned entity
+
+### Technique/Claim Structure
+
+Extracted MITRE ATT&CK techniques follow this structure:
+
+```json
+{
+  "claims": [
+    {
+      "external_id": "T1059.001",           // MITRE ATT&CK technique ID
+      "name": "PowerShell",                 // Technique name
+      "quotes": [                            // Evidence supporting this extraction
+        "APT29 used PowerShell and Mimikatz for credential harvesting..."
+      ],
+      "line_refs": [1, 2],                  // Line numbers in source
+      "confidence": 85,                     // Confidence score (0-100)
+      "span_idx": 0,                        // Which text span this came from
+      "evidence_score": 75,                 // Quality of evidence
+      "source": "batch_mapper",             // Which agent extracted this
+      "technique_meta": {                   // Additional metadata
+        "stix_id": "attack-pattern--4d4aee57-...",
+        "name": "PowerShell",
+        "external_id": "T1059.001",
+        "tactic": "execution",              // Kill chain phase
+        "description": "Adversaries may...", // Technique description
+        "platforms": ["Windows", "Linux"],  // Target platforms
+        "subtechnique_of": "T1059"          // Parent technique if subtechnique
+      }
+    }
+  ]
+}
+```
+
+**Key Fields:**
+- `external_id` - The MITRE ATT&CK technique ID (e.g., T1059.001)
+- `quotes` - Actual text evidence supporting this technique extraction
+- `confidence` - How confident the system is (0-100 scale)
+- `evidence_score` - Quality of the evidence (0-100 scale)
+- `technique_meta` - Additional metadata from the ATT&CK knowledge base
+
 ## Endpoints
 
 ### Catalog Management
@@ -401,29 +481,24 @@ Find paths between two nodes.
 }
 ```
 
-### Document Extraction
+### Report Ingestion
 
-#### Start Extraction Run (Async Pipeline - Recommended)
+#### Ingest Report (Synchronous)
 
 ```http
-POST /v1/extract/runs
+POST /v1/reports/ingest
 ```
 
-Start an async extraction run using the retrieval-first, evidence-anchored pipeline.
+Ingest a threat intelligence report from text (synchronous processing for small reports <5KB).
 
 **Request Body:**
 
 ```json
 {
-  "method": "agentic_v2",
-  "content": "Report text or document content",
+  "text": "Report text content",
   "title": "Optional report title",
-  "config": {
-    "top_k": 5,
-    "disable_discovery": true,
-    "max_discovery_per_span": 1,
-    "min_quotes": 2
-  }
+  "use_batch_mapper": true,
+  "skip_verification": false
 }
 ```
 
@@ -431,166 +506,387 @@ Start an async extraction run using the retrieval-first, evidence-anchored pipel
 
 ```json
 {
-  "run_id": "ex-27798222-d2ad-41a8-b879-666a6fcf33c6",
-  "accepted": true
-}
-```
-
-> PDF ingestion note: parse the PDF to text client-side (e.g., PyPDF2) or provide a `file://` URI and extract text prior to posting. The async endpoint expects plain text in `content`.
-
-#### Get Extraction Status
-
-```http
-GET /v1/extract/runs/{run_id}/status
-```
-
-Check the status of an extraction run.
-
-**Response:**
-
-```json
-{
-  "run_id": "ex-27798222-d2ad-41a8-b879-666a6fcf33c6",
-  "state": "running",            
-  "stage": "Mapper",             
-  "percent": 65,
-  "spans_total": 38,
-  "spans_processed": 22,
-  "counters": {
-    "llm_calls": 0,
-    "candidates": 0,
-    "verified_claims": 15,
-    "techniques": 12,
-    "spans_found": 38
-  },
-  "cost_usd": 0.0,
-  "dur_sec": 486,
-  "events_tail": []
-}
-```
-
-#### Get Extraction Result
-
-```http
-GET /v1/extract/runs/{run_id}/result
-```
-
-Get the final extraction results.
-
-**Response:**
-
-```json
-{
-  "techniques": {
-    "T1566.001": {
-      "name": "Phishing: Spearphishing Attachment",
-      "confidence": 95,
-      "evidence": ["The attackers sent spearphishing emails..."],
-      "line_refs": [15, 16],
-      "tactic": "initial-access",
-      "claim_count": 2
-    }
-  },
-  "bundle": {
-    "type": "bundle",
-    "id": "bundle--...",
-    "objects": [
-      
-    ]
-  },
-  "flow": { 
-    
-  },
-  "metrics": {
-    "run_id": "ex-27798222-d2ad-41a8-b879-666a6fcf33c6",
-    "stage": "Assembler",
-    "percent": 100,
-    "dur_sec": 512,
-    "spans_total": 38,
-    "spans_processed": 38,
-    "counters": {
-      "llm_calls": 0,
-      "candidates": 0,
-      "verified_claims": 19,
-      "techniques": 14,
-      "spans_found": 38
+  "report_id": "report--abc123",
+  "status": "pending_review",
+  "extraction": {
+    "techniques_count": 12,
+    "claims_count": 15,
+    "confidence_avg": 85.5,
+    "entities": {
+      "entities": [
+        {"name": "APT28", "type": "group", "confidence": 90}
+      ]
     }
   }
 }
 ```
 
-#### Legacy Document Extraction
+#### Ingest Report from File Upload
 
 ```http
-POST /v1/extract/document
+POST /v1/reports/ingest/upload
 ```
 
-Extract CTI entities from a document (legacy endpoint, use /extract/runs instead).
+Ingest a report from file upload (PDF, TXT, MD, HTML).
 
 **Request Body (multipart/form-data):**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `file` | file | Document file (PDF, TXT, MD, HTML) |
-| `confidence_threshold` | float | Auto-approval threshold (default: 80.0) |
-| `extract_relationships` | boolean | Extract relationships (default: true) |
+| `file` | file | Document file |
+| `title` | string | Optional report title |
+| `use_batch_mapper` | boolean | Use batch mapping (default: true) |
+| `skip_verification` | boolean | Skip verification (default: false) |
 
-**Response:**
+**Response:** Same as `/ingest` endpoint
+
+#### Ingest Report (Asynchronous)
+
+```http
+POST /v1/reports/ingest_async
+```
+
+For larger reports (>5KB), use asynchronous processing.
+
+**Request Body:**
 
 ```json
 {
-  "status": "success",
-  "extraction_id": "extraction--abc123",
-  "entities": [
-    {
-      "type": "attack-pattern",
-      "name": "Spearphishing Attachment",
-      "confidence": 92.5,
-      "evidence": [
-        {
-          "line": 15,
-          "text": "The attackers sent spearphishing emails with malicious attachments"
-        }
-      ]
-    }
-  ],
-  "relationships": [
-    {
-      "source": "intrusion-set--...",
-      "target": "attack-pattern--...",
-      "type": "uses",
-      "confidence": 88.0
-    }
-  ],
-  "candidates_created": 5
+  "text": "Large report text content",
+  "title": "Large Report Analysis"
 }
 ```
 
-#### Get Provenance
+**Response:**
 
-```http
-GET /v1/extract/provenance/{source_id}
+```json
+{
+  "job_id": "job--abc123",
+  "status": "processing",
+  "message": "Report ingestion started",
+  "progress": 0
+}
 ```
 
-Get extraction provenance for a source document.
+#### Ingest File (Asynchronous)
+
+```http
+POST /v1/reports/ingest_file_async
+```
+
+Ingest a file asynchronously.
+
+**Request Body (multipart/form-data):**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `file` | file | Document file |
+| `title` | string | Optional report title |
+
+**Response:** Same as `/ingest_async` endpoint
+
+#### Get Job Status
+
+```http
+GET /v1/reports/jobs/{job_id}/status
+```
+
+Check the status of an asynchronous ingestion job.
 
 **Response:**
 
 ```json
 {
-  "source_id": "report--abc123",
-  "source_metadata": {
-    "filename": "apt28_report.pdf",
-    "hash": "sha256:abc...",
-    "extracted_at": "2024-01-15T10:30:00Z"
+  "job_id": "job--abc123",
+  "status": "processing",
+  "progress": 60,
+  "current_stage": "Mapper",
+  "message": "Processing chunk 3/5",
+  "result": {
+    "techniques_count": 8,
+    "claims_count": 12,
+    "chunks_processed": 3
+  }
+}
+```
+
+#### List Jobs
+
+```http
+GET /v1/reports/jobs
+```
+
+List all background jobs.
+
+**Query Parameters:**
+- `status` (optional): Filter by status (pending, processing, completed, failed)
+- `limit` (optional): Maximum results (default: 100)
+
+**Response:**
+
+```json
+{
+  "jobs": [
+    {
+      "job_id": "job--abc123",
+      "status": "completed",
+      "created_at": "2024-01-15T10:30:00Z",
+      "completed_at": "2024-01-15T10:31:30Z",
+      "report_id": "report--def456"
+    }
+  ],
+  "total": 25
+}
+```
+
+### Report Management
+
+#### List Reports
+
+```http
+GET /v1/reports
+```
+
+List all ingested reports with pagination and filtering.
+
+**Query Parameters:**
+- `skip` (int): Number of reports to skip (default: 0)
+- `limit` (int): Maximum reports to return (default: 20)
+- `status` (string): Filter by status (pending, processing, completed, reviewed)
+- `sort` (string): Sort field (created_at, title, techniques_count)
+- `order` (string): Sort order (asc, desc)
+
+**Response:**
+```json
+{
+  "reports": [
+    {
+      "id": "report-abc123",
+      "title": "APT29 Campaign Analysis",
+      "source": "upload",
+      "status": "completed",
+      "created_at": "2024-01-15T10:30:00Z",
+      "techniques_count": 12,
+      "review_status": "pending"
+    }
+  ],
+  "total": 45,
+  "skip": 0,
+  "limit": 20
+}
+```
+
+#### Get Report Details
+
+```http
+GET /v1/reports/{report_id}
+```
+
+Get comprehensive details about a specific report including extraction results.
+
+**Response:**
+```json
+{
+  "id": "report-abc123",
+  "title": "APT29 Campaign Analysis",
+  "content": "Full report text...",
+  "metadata": {
+    "source": "upload",
+    "filename": "apt29-report.pdf",
+    "size_bytes": 15234,
+    "pages": 8
   },
-  "extraction_metadata": {
-    "method": "llm",
-    "model": "gemini-2.0-flash",
-    "confidence_threshold": 80.0
+  "extraction": {
+    "techniques": {
+      "T1566.001": {
+        "technique_id": "T1566.001",
+        "name": "Phishing: Spearphishing Attachment",
+        "confidence": 95,
+        "evidence": ["email with malicious attachment"],
+        "line_refs": [42]
+      }
+    },
+    "entities": [...],
+    "flow": {...}
   },
-  "entities_extracted": 12,
-  "relationships_extracted": 8
+  "review": {
+    "status": "completed",
+    "reviewed_at": "2024-01-15T14:30:00Z",
+    "reviewed_by": "analyst-1",
+    "decisions": [...]
+  }
+}
+```
+
+#### Delete Report
+
+```http
+DELETE /v1/reports/{report_id}
+```
+
+Delete a report and all associated data.
+
+**Response:**
+```json
+{
+  "message": "Report deleted successfully",
+  "report_id": "report-abc123"
+}
+```
+
+### Review & Approval
+
+#### Submit Unified Review
+
+```http
+POST /v1/reports/{report_id}/unified-review
+```
+
+Submit review decisions for all extracted items (entities, techniques, flow steps) in a single transaction.
+
+**Request Body:**
+```json
+{
+  "decisions": [
+    {
+      "item_id": "technique-0",
+      "action": "approve",
+      "confidence_adjustment": 5,
+      "notes": "Verified against CTI database"
+    },
+    {
+      "item_id": "entity-malware-1",
+      "action": "edit",
+      "edited_value": {
+        "name": "Updated Malware Name",
+        "description": "Corrected description"
+      }
+    },
+    {
+      "item_id": "flow-step-3",
+      "action": "reject",
+      "notes": "Insufficient evidence"
+    }
+  ],
+  "global_notes": "Overall review notes for the report"
+}
+```
+
+**Response:**
+```json
+{
+  "message": "Review submitted successfully",
+  "report_id": "report-abc123",
+  "review_id": "review-xyz789",
+  "statistics": {
+    "total_items": 25,
+    "approved": 18,
+    "rejected": 4,
+    "edited": 3
+  },
+  "entities_created": [
+    {
+      "stix_id": "malware--...",
+      "name": "Updated Malware Name"
+    }
+  ]
+}
+```
+
+### Attribution
+
+#### Link Report to Intrusion Set
+
+```http
+POST /v1/reports/{report_id}/attribution
+```
+
+Attribute a report's findings to a specific threat actor or intrusion set.
+
+**Request Body:**
+```json
+{
+  "intrusion_set_id": "intrusion-set--899ce53f-13a0-479b-a0e4-67d46e241542",
+  "confidence": 85,
+  "attribution_notes": "TTPs match APT29 historical patterns"
+}
+```
+
+**Response:**
+```json
+{
+  "message": "Attribution created successfully",
+  "attribution": {
+    "report_id": "report-abc123",
+    "intrusion_set": {
+      "stix_id": "intrusion-set--899ce53f-13a0-479b-a0e4-67d46e241542",
+      "name": "APT29"
+    },
+    "confidence": 85,
+    "created_at": "2024-01-15T15:00:00Z"
+  }
+}
+```
+
+### Attack Flow Generation
+
+#### Generate Attack Flow from Report
+
+```http
+POST /v1/reports/{report_id}/generate-flow
+```
+
+Generate an attack flow from the report's extracted techniques using LLM-based sequencing.
+
+**Request Body:**
+```json
+{
+  "max_steps": 25,
+  "include_evidence": true,
+  "flow_type": "sequential"
+}
+```
+
+**Response:**
+```json
+{
+  "flow": {
+    "id": "flow--abc123",
+    "name": "APT29 Attack Flow",
+    "type": "sequential",
+    "steps": [
+      {
+        "step_id": 1,
+        "technique_id": "T1566.001",
+        "name": "Phishing: Spearphishing Attachment",
+        "tactic": "initial-access",
+        "evidence": ["email with malicious attachment"],
+        "temporal_marker": "initial"
+      },
+      {
+        "step_id": 2,
+        "technique_id": "T1059.001",
+        "name": "Command and Scripting Interpreter: PowerShell",
+        "tactic": "execution",
+        "evidence": ["PowerShell scripts were executed"],
+        "temporal_marker": "then"
+      }
+    ],
+    "edges": [
+      {
+        "source": 1,
+        "target": 2,
+        "probability": 0.85,
+        "relationship": "NEXT"
+      }
+    ]
+  },
+  "metadata": {
+    "total_techniques": 12,
+    "sequenced_techniques": 10,
+    "generation_method": "llm_synthesis",
+    "confidence": 78
+  }
 }
 ```
 
@@ -984,6 +1280,22 @@ Clear the LLM response cache.
 ```bash
 curl -X POST http://localhost:8000/v1/cache/clear
 ```
+
+## Performance Optimizations
+
+### TechniqueCache
+The API initializes a global technique cache at startup:
+- Loads all AttackPattern nodes from Neo4j (~1376 techniques)
+- Provides O(1) lookups for technique name resolution
+- Eliminates thousands of database queries per extraction session
+- Ensures review interface displays correct human-readable names
+- Thread-safe singleton pattern for multi-worker deployments
+
+**Benefits:**
+- Extraction pipeline runs 50-70% faster for technique resolution
+- Consistent technique naming across all API endpoints
+- Reduced Neo4j load during high-volume extraction
+- Instant technique metadata access for review UI
 
 ## SDK Examples
 

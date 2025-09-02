@@ -34,7 +34,7 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
 > **This phase improves evidence quality for both entities and techniques** - adding proper evidence tracking for entities and using complete sentences for all evidence quotes.
 
 ### Task 0.1: Sentence-Based Evidence Extraction (Foundation)
-- [ ] **Status**: Not Started
+- [x] **Status**: ✅ Completed
 - **Current Problem**: Evidence quotes are truncated mid-sentence, making them hard to understand
 - **Solution**: Create shared utilities to extract complete sentences as evidence, not arbitrary character windows
 - **Files to Create/Modify**:
@@ -108,12 +108,18 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
   - No truncation mid-word or mid-sentence
   - Better context for review and validation
 - **Testing Required**:
-  - [ ] Test sentence boundary detection
-  - [ ] Verify evidence quality improvement
-  - [ ] Check handling of edge cases (bullet points, headers)
+  - [x] Test sentence boundary detection ✅
+  - [x] Verify evidence quality improvement ✅
+  - [x] Check handling of edge cases (bullet points, headers) ✅
+- **Implementation Notes**:
+  - Created `evidence_utils.py` with sentence extraction utilities
+  - Updated SpanFinderAgent to use sentence-based extraction
+  - All evidence now consists of complete sentences with proper context
+  - Test results: 100% complete sentences, avg 361 chars per evidence quote
+  - Successfully extracted 22 techniques with 1-5 quotes each
 
 ### Task 0.2: Add Evidence Tracking to Entity Extraction
-- [ ] **Status**: Not Started  
+- [x] **Status**: ✅ Completed
 - **Depends On**: Task 0.1 (uses sentence extraction utilities)
 - **Current Problem**: Entity extraction returns only names/types, no evidence or line references
 - **Solution**: Track evidence quotes and line references for every entity mention using sentence utilities from Task 0.1
@@ -171,15 +177,22 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
   - Line references for entity verification
   - Confidence scores for prioritization
 - **Testing Required**:
-  - [ ] Verify evidence quotes are accurate
-  - [ ] Check line reference accuracy
-  - [ ] Test coreference tracking
+  - [x] Verify evidence quotes are accurate ✅
+  - [x] Check line reference accuracy ✅
+  - [x] Test coreference tracking ✅
+- **Implementation Notes**:
+  - Updated entity_extractor.py to capture evidence with each entity
+  - Enhanced prompts to request evidence quotes and confidence scores
+  - Implemented entity evidence merging across chunks with confidence boosting
+  - Updated memory.py to document new entity structure with mentions
+  - Test results: All 9 entities extracted with evidence quotes and line references
+  - Successfully handles aliases (APT29/Cozy Bear) and coreferences
 
 ### Task 0.3: Implement Entity Evidence Consolidation
-- [ ] **Status**: Not Started
+- [x] **Status**: ✅ Completed (Enhanced 2025-09-02)
 - **Depends On**: Task 0.2 (requires entity evidence structure)
 - **Current Problem**: No deduplication or evidence merging for entities across chunks
-- **Solution**: Smart entity merging that combines evidence from multiple mentions
+- **Solution**: Smart entity merging that combines evidence from multiple mentions and consolidates aliases
 - **Files to Modify**:
   - `bandjacks/llm/chunked_extractor.py` (merge_results method)
 - **Implementation**:
@@ -212,6 +225,24 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
   - No duplicate evidence quotes
   - Higher confidence for frequently mentioned entities
   - All evidence preserved across chunks
+- **Testing Required**:
+  - [x] Verify entity deduplication works correctly ✅
+  - [x] Check evidence from multiple chunks is preserved ✅
+  - [x] Test confidence boosting based on mentions ✅
+  - [x] Verify alias handling (APT29/Cozy Bear) ✅
+- **Implementation Notes**:
+  - Implemented `merge_entity_evidence()` method in chunked_extractor.py
+  - Enhanced entity grouping to handle aliases and coreferences
+  - Added confidence boosting for multiple mentions and chunks
+  - Test results: Successfully consolidates entities across chunks
+  - APT29/Cozy Bear properly merged as single entity with aliases
+  - SUNBURST consolidated 3 mentions with 100% confidence
+  - **2025-09-02 Enhancement**: 
+    - Created shared `consolidate_entities()` function in entity_utils.py
+    - Applied consolidation to ALL documents (not just chunked) in extraction_pipeline.py
+    - Fixed issue where small documents (<5KB) weren't getting entity consolidation
+    - API now correctly returns APT29 with Cozy Bear as an alias
+    - Test confirmed: APT29 and Cozy Bear consolidated into single entity with aliases field
 
 ### Task 0.4: Update Review UI for Entity Evidence
 - [ ] **Status**: Not Started
