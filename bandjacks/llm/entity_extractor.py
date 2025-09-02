@@ -213,20 +213,49 @@ class EntityExtractionAgent:
                     {"role": "user", "content": user_prompt}
                 ]
                 
-                # Call LLM with structured output
-                response = self.client.call(
-                    messages=messages,
-                    max_tokens=2000,
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": self.entity_schema
-                    }
-                )
-                
-                content = response.get("content", "")
+                # Try with structured output first, fall back to plain if needed
+                try:
+                    response = self.client.call(
+                        messages=messages,
+                        max_tokens=8000,  # Increased to 8000 to handle large entity lists
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": self.entity_schema
+                        }
+                    )
+                    content = response.get("content", "")
+                except Exception as e:
+                    logger.warning(f"Structured output failed: {e}, retrying without schema")
+                    # Retry without strict schema but with explicit JSON instruction
+                    messages_with_json = [
+                        {"role": "system", "content": ENTITY_EXTRACTION_SYSTEM_PROMPT + "\n\nIMPORTANT: Return ONLY valid JSON, no markdown."},
+                        {"role": "user", "content": user_prompt}
+                    ]
+                    response = self.client.call(
+                        messages=messages_with_json,
+                        max_tokens=8000  # Increased to 8000 to handle large entity lists
+                    )
+                    content = response.get("content", "")
                 
                 if not content:
-                    error_msg = "Empty response from LLM for entity extraction"
+                    # Try one more time with simplified prompt
+                    logger.warning("Empty response, retrying with simplified prompt")
+                    simple_prompt = f"""Extract entities from this text. Return JSON with format:
+{{"entities": [{{"name": "entity_name", "type": "group/malware/tool/target/campaign", "confidence": 90, "evidence": "quote from text", "context": "primary_mention"}}]}}
+
+Text: {doc_text[:2000]}"""
+                    
+                    response = self.client.call(
+                        messages=[
+                            {"role": "system", "content": "Extract entities and return JSON"},
+                            {"role": "user", "content": simple_prompt}
+                        ],
+                        max_tokens=8000  # Increased to 8000
+                    )
+                    content = response.get("content", "")
+                
+                if not content:
+                    error_msg = "Empty response from LLM for entity extraction after retries"
                     logger.error(error_msg)
                     mem.entities = {"entities": [], "extraction_status": "failed", "error": error_msg}
                     mem.extraction_errors = getattr(mem, 'extraction_errors', [])
@@ -472,14 +501,27 @@ class EntityExtractionAgent:
         ]
         
         try:
-            response = self.client.call(
-                messages=messages,
-                max_tokens=2000,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": self.entity_schema
-                }
-            )
+            # Try with schema first, fall back if needed
+            try:
+                response = self.client.call(
+                    messages=messages,
+                    max_tokens=8000,  # Increased to 8000 to handle large entity lists
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": self.entity_schema
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Chunk extraction with schema failed: {e}, retrying without schema")
+                # Add explicit instruction to return valid JSON
+                messages_with_json = [
+                    {"role": "system", "content": ENTITY_EXTRACTION_SYSTEM_PROMPT + "\n\nIMPORTANT: Return ONLY valid JSON, no markdown."},
+                    {"role": "user", "content": user_prompt}
+                ]
+                response = self.client.call(
+                    messages=messages_with_json,
+                    max_tokens=8000  # Increased to 8000 to handle large entity lists
+                )
             
             content = response.get("content", "")
             

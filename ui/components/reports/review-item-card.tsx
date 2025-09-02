@@ -244,28 +244,64 @@ export function ReviewItemCard({
               {/* Evidence (preview or full) */}
               {item.evidence.length > 0 && (
                 <div className="space-y-1">
-                  {(isExpanded ? item.evidence : item.evidence.slice(0, 1)).map((evidence, idx) => {
-                    // Handle both string and object evidence formats
-                    const evidenceText = typeof evidence === 'string' 
-                      ? evidence 
-                      : (evidence as any).text || '';
-                    
-                    return (
-                      <blockquote
-                        key={idx}
-                        className="border-l-2 border-muted pl-3 text-sm text-muted-foreground italic"
+                  {/* For entities with mentions metadata, show enhanced evidence */}
+                  {item.type === 'entity' && item.metadata.mentions?.length > 0 ? (
+                    (isExpanded ? item.metadata.mentions : item.metadata.mentions.slice(0, 1)).map((mention: any, idx: number) => (
+                      <div key={idx} className="space-y-1">
+                        <blockquote className="border-l-2 border-muted pl-3 text-sm text-muted-foreground italic">
+                          "{mention.quote.length > 200 && !isExpanded ? mention.quote.substring(0, 200) + '...' : mention.quote}"
+                        </blockquote>
+                        <div className="flex items-center gap-4 text-xs text-muted-foreground pl-3">
+                          {mention.line_refs && mention.line_refs.length > 0 && (
+                            <span>Lines: {mention.line_refs.slice(0, 3).join(', ')}{mention.line_refs.length > 3 && '...'}</span>
+                          )}
+                          {mention.context && (
+                            <Badge variant="outline" className="text-xs">
+                              {mention.context === 'primary_mention' ? 'Primary' : 
+                               mention.context === 'alias' ? 'Alias' : 
+                               'Reference'}
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    // Default evidence display for techniques and legacy entities
+                    (isExpanded ? item.evidence : item.evidence.slice(0, 1)).map((evidence, idx) => {
+                      const evidenceText = typeof evidence === 'string' 
+                        ? evidence 
+                        : (evidence as any).text || '';
+                      
+                      return (
+                        <blockquote
+                          key={idx}
+                          className="border-l-2 border-muted pl-3 text-sm text-muted-foreground italic"
+                        >
+                          "{evidenceText.length > 200 && !isExpanded ? evidenceText.substring(0, 200) + '...' : evidenceText}"
+                        </blockquote>
+                      );
+                    })
+                  )}
+                  
+                  {/* Show more evidence button */}
+                  {!isExpanded && (
+                    (item.type === 'entity' && item.metadata.mentions?.length > 1) ? (
+                      <button
+                        onClick={() => onExpand?.(true)}
+                        className="text-xs text-blue-500 hover:underline"
                       >
-                        "{evidenceText.length > 200 && !isExpanded ? evidenceText.substring(0, 200) + '...' : evidenceText}"
-                      </blockquote>
-                    );
-                  })}
-                  {!isExpanded && item.evidence.length > 1 && (
-                    <button
-                      onClick={() => onExpand?.(true)}
-                      className="text-xs text-blue-500 hover:underline"
-                    >
-                      +{item.evidence.length - 1} more evidence
-                    </button>
+                        +{item.metadata.mentions.length - 1} more mentions
+                      </button>
+                    ) : (
+                      item.evidence.length > 1 && (
+                        <button
+                          onClick={() => onExpand?.(true)}
+                          className="text-xs text-blue-500 hover:underline"
+                        >
+                          +{item.evidence.length - 1} more evidence
+                        </button>
+                      )
+                    )
                   )}
                 </div>
               )}
