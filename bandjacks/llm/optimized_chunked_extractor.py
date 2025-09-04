@@ -412,10 +412,19 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
         entities = {}
         if not config.get("disable_entity_extraction", False):
             try:
-                entity_agent = EntityExtractionAgent()
-                entity_agent.run(mem, config)
-                if hasattr(mem, 'entities') and mem.entities:
-                    entities = mem.entities
+                # Use batch entity extractor for better performance
+                if config.get("use_batch_entity_extraction", True):
+                    from bandjacks.llm.entity_batch_extractor import BatchEntityExtractor
+                    logger.info("Using BatchEntityExtractor for optimized entity extraction")
+                    batch_extractor = BatchEntityExtractor()
+                    entities = batch_extractor.extract(text, config)
+                else:
+                    # Fallback to original entity extraction
+                    logger.info("Using standard EntityExtractionAgent")
+                    entity_agent = EntityExtractionAgent()
+                    entity_agent.run(mem, config)
+                    if hasattr(mem, 'entities') and mem.entities:
+                        entities = mem.entities
             except Exception as e:
                 logger.warning(f"Entity extraction failed: {e}")
                 entities = {"entities": [], "extraction_status": "failed"}
