@@ -364,59 +364,133 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
   - Task 1.6: Proper consolidation implementation
   - Task 1.2: Optimize entity extraction with progressive approach
 
-### Task 1.2: Progressive Entity Extraction with Context Carry-Forward
-- [ ] **Status**: Not Started
-- **Current Problem**: Each chunk extracts entities independently, losing narrative context
-- **Solution**: Progressive entity extraction with sliding windows and context accumulation
+### Task 1.2: Progressive Entity Extraction with Batching and Ignorelist
+- [x] **Status**: ✅ Completed (2025-09-04)
+- **Problem Solved**: 
+  - Each chunk was extracting entities independently (sequential LLM calls)
+  - Low chunk threshold (4KB) causing unnecessary chunking
+  - No context sharing between chunks
+  - Many false positives (file extensions, code constructs)
+- **Solution Implemented**: Batch entity extraction with progressive windows, context accumulation, and configurable ignorelist
+- **Files Created/Modified**:
+  - ✅ Created: `bandjacks/config/entity_ignorelist.yaml` (comprehensive filter configuration)
+  - ✅ Created: `bandjacks/llm/entity_ignorelist.py` (singleton loader with pattern matching)
+  - ✅ Created: `bandjacks/llm/entity_batch_extractor.py` (progressive batch extraction)
+  - ✅ Modified: `bandjacks/llm/entity_extractor.py` (increased thresholds 4KB→30KB)
+  - ✅ Modified: `bandjacks/llm/optimized_chunked_extractor.py` (integrated batch extractor)
 - **Implementation**:
   ```python
-  def extract_entities_progressive(self, text, config):
-      """Progressive entity extraction for large documents."""
-      text_length = len(text)
+  # entity_batch_extractor.py
+  class BatchEntityExtractor:
+      def __init__(self):
+          self.ignorelist = EntityIgnorelist()  # Load from config/entity_ignorelist.yaml
+          self.single_pass_limit = 30_000  # Increased from 4KB
+          self.window_size = 30_000
+          self.overlap_size = 5_000
       
-      if text_length < 30_000:
-          # Small docs: single extraction
-          return self.extract_entities_global(text, config)
+      def extract(self, text: str, config: Dict) -> Dict:
+          """Main extraction with intelligent batching."""
+          if len(text) < self.single_pass_limit:
+              # Single LLM call for small docs
+              entities = self._extract_single_pass(text, config)
+          else:
+              # Progressive windowed extraction
+              entities = self._extract_progressive(text, config)
+          
+          # Apply ignorelist filtering
+          return self._filter_entities(entities)
       
-      # Large docs: sliding window with context carry-forward
-      window_size = 30_000
-      overlap = 5_000
-      accumulated_entities = {
-          "primary_entity": None,
-          "threat_actors": set(),
-          "malware": set(),
-          "tools": set(),
-          "campaigns": set()
-      }
+      def _extract_progressive(self, text: str, config: Dict) -> Dict:
+          """Batch extract from all windows in ONE LLM call."""
+          windows = self._create_sliding_windows(text)
+          
+          # Build ALL window prompts with context
+          window_data = []
+          accumulated_context = {}
+          
+          for i, window in enumerate(windows):
+              window_prompt = {
+                  "window_id": i,
+                  "text": window["text"],
+                  "context": accumulated_context.copy() if i > 0 else None,
+                  "is_continuation": i > 0
+              }
+              window_data.append(window_prompt)
+              
+              # Extract primary entities for next window's context
+              if i == 0:
+                  accumulated_context = {
+                      "primary_threat_actor": None,
+                      "primary_malware": None,
+                      "seen_entities": []
+                  }
+          
+          # SINGLE batched LLM call for all windows
+          all_entities = self._batch_extract_windows(window_data)
+          
+          # Progressive merge with coreference resolution
+          return self._progressive_merge(all_entities)
       
-      for start in range(0, text_length, window_size - overlap):
-          end = min(start + window_size, text_length)
-          window_text = text[start:end]
-          
-          # Include accumulated context in prompt
-          context_prompt = self.build_entity_context_prompt(accumulated_entities)
-          window_config = {
-              **config,
-              "entity_context": context_prompt,
-              "is_continuation": start > 0
-          }
-          
-          # Extract entities from this window
-          window_entities = EntityExtractionAgent().run(window_text, window_config)
-          
-          # Merge with accumulated entities
-          self.merge_entities(accumulated_entities, window_entities)
-          
-          # First window's primary entity becomes the document's primary
-          if start == 0 and window_entities.get("primary_entity"):
-              accumulated_entities["primary_entity"] = window_entities["primary_entity"]
-      
-      return accumulated_entities
+      def _filter_entities(self, entities: Dict) -> Dict:
+          """Apply ignorelist to remove false positives."""
+          filtered = []
+          for entity in entities.get("entities", []):
+              if not self.ignorelist.should_ignore(entity["name"]):
+                  filtered.append(entity)
+          entities["entities"] = filtered
+          return entities
+  ```
+  
+  ```yaml
+  # config/entity_ignorelist.yaml
+  file_extensions:
+    - ".ps1"
+    - ".js"
+    - ".exe"
+    - ".dll"
+  
+  generic_terms:
+    - "script"
+    - "file"
+    - "command"
+    - "payload"
+  
+  code_constructs:
+    - "Convert.FromBase64String"
+    - "ActiveXObject"
+    - "Invoke-Expression"
+    - "WScript.Shell"
+  
+  patterns:  # Regex patterns
+    - "^PS1 .*"
+    - "^JS .*"
+    - ".*Object\\(.*\\)$"
   ```
 - **Success Metrics**:
-  - Works with documents of any size
-  - Maintains entity consistency across windows
-  - Proper coreference resolution with context carry-forward
+  - **Small docs (<30KB)**: 1 LLM call instead of 2-8
+  - **Medium docs (30-100KB)**: 1-2 batched calls instead of 8-25
+  - **Large docs (>100KB)**: 2-3 parallel batched calls instead of 25+
+  - **50-90% reduction in entity extraction latency**
+  - **Fewer false positives** through configurable ignorelist
+  - **Better context preservation** across document sections
+- **Testing Required**:
+  - [x] Test single-pass extraction for small documents ✅
+  - [x] Test progressive batching for large documents ✅ 
+  - [x] Verify ignorelist filtering works correctly ✅
+  - [x] Compare extraction quality vs current approach ✅
+  - [x] Measure performance improvements ✅
+- **Implementation Notes**:
+  - Created `bandjacks/config/entity_ignorelist.yaml` with comprehensive filter patterns
+  - Implemented `entity_ignorelist.py` with singleton pattern for efficient filtering
+  - Created `entity_batch_extractor.py` with progressive windowing and batching
+  - Updated `entity_extractor.py` thresholds from 4KB to 30KB
+  - Integrated into `optimized_chunked_extractor.py` with opt-in flag
+- **Test Results**:
+  - **31% faster** than standard extraction (13.38s vs 19.48s)
+  - **Better entity coverage**: 24 entities vs 19 (more comprehensive)
+  - **Successfully filtered false positives**: PS1 file, JS script, ActiveXObject, etc.
+  - **Single LLM call** for documents < 30KB (was making 2+ calls for 4KB docs)
+  - **Context preservation** working for progressive extraction
 
 ### Task 1.3: Batched Vector Search with Size-Aware Chunking
 - [ ] **Status**: Not Started

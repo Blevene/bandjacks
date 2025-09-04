@@ -111,8 +111,8 @@ class EntityExtractionAgent:
     def __init__(self):
         """Initialize the entity extraction agent."""
         self.client = LLMClient()
-        self.chunk_size = 4000  # Size of each chunk for processing
-        self.chunk_overlap = 500  # Overlap between chunks to avoid missing entities at boundaries
+        self.chunk_size = 30000  # Increased from 4000 - modern LLMs handle ~8K tokens easily
+        self.chunk_overlap = 5000  # Increased from 500 for better context preservation
         
         # JSON schema for structured entity extraction
         # JSON schema for entity extraction - LiteLLM format
