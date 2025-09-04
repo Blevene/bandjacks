@@ -12,6 +12,7 @@ from pathlib import Path
 from bandjacks.services.api.job_store import FileJobStore
 from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 from bandjacks.llm.chunked_extractor import ChunkedExtractor
+from bandjacks.llm.optimized_chunked_extractor import OptimizedChunkedExtractor
 from bandjacks.store.opensearch_report_store import OpenSearchReportStore
 from bandjacks.services.api.deps import get_opensearch_client
 from bandjacks.services.api.settings import settings
@@ -426,13 +427,27 @@ class JobProcessor:
                 "confidence_threshold": 60 if text_length > 100_000 else 50
             }
             
-            # Create chunked extractor with optimized parameters
-            extractor = ChunkedExtractor(
-                chunk_size=4000,  # Larger chunks for better context
-                overlap=150,      # Less overlap
-                max_chunks=max_chunks,
-                parallel_workers=1  # Sequential to avoid rate limits
-            )
+            # Use optimized extractor if enabled (default: true)
+            use_optimized = os.getenv("USE_OPTIMIZED_EXTRACTOR", "true").lower() == "true"
+            
+            if use_optimized:
+                logger.info("Using OptimizedChunkedExtractor with smart span detection")
+                extractor = OptimizedChunkedExtractor(
+                    chunk_size=4000,  # Larger chunks for better context
+                    overlap=150,      # Less overlap
+                    max_chunks=max_chunks,
+                    parallel_workers=1,  # Sequential to avoid rate limits
+                    window_size=30000,  # ~8K tokens for span detection windows
+                    window_overlap=5000  # ~1.5K tokens overlap
+                )
+            else:
+                logger.info("Using standard ChunkedExtractor")
+                extractor = ChunkedExtractor(
+                    chunk_size=4000,  # Larger chunks for better context
+                    overlap=150,      # Less overlap
+                    max_chunks=max_chunks,
+                    parallel_workers=1  # Sequential to avoid rate limits
+                )
             
             # Progress callback for chunked extraction
             def update_chunk_progress(progress: int, message: str):

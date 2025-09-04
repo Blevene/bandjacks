@@ -38,14 +38,21 @@ class BatchMapperAgent:
         if span_count == 0:
             return
             
-        # Dynamic configuration
-        max_batch_spans = config.get("max_batch_spans", 20)  # Total spans to process in batch mode
-        batch_size = config.get("batch_size", 5)  # Spans per LLM call (default 5 to prevent timeouts)
+        # Dynamic batch size based on total spans (reduced to avoid response truncation)
+        if span_count <= 20:
+            batch_size = min(10, span_count)  # Small docs: up to 10 spans per batch
+        elif span_count <= 50:
+            batch_size = 12  # Medium docs: 12 spans per batch  
+        elif span_count <= 100:
+            batch_size = 15  # Large docs: 15 spans per batch
+        else:
+            batch_size = 18  # Very large docs: 18 spans per batch
         
-        # Skip if too many spans (fallback to sequential)
-        if span_count > max_batch_spans:
-            logger.debug(f"Too many spans ({span_count} > {max_batch_spans}), falling back to sequential")
-            return self._run_sequential(mem, config)
+        # Override with config if provided
+        batch_size = config.get("batch_size", batch_size)
+        
+        # No more fallback to sequential - always use batching
+        logger.info(f"Processing {span_count} spans with batch size {batch_size}")
         
         # Process spans in batches
         logger.info(f"Processing {span_count} spans in batches of {batch_size}")
@@ -162,7 +169,7 @@ class BatchMapperAgent:
                     "type": "json_schema",
                     "json_schema": technique_schema
                 },
-                max_tokens=4000  # Reduced - simpler format needs fewer tokens
+                max_tokens=6000  # Increased to handle larger batches without truncation
             )
             content = response.get("content", "")
             
@@ -320,7 +327,3 @@ class BatchMapperAgent:
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             return 0
     
-    def _run_sequential(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
-        """Fallback to sequential processing if batch fails."""
-        from bandjacks.llm.agents_v2 import MapperAgent
-        MapperAgent().run(mem, config)
