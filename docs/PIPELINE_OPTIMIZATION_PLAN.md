@@ -345,13 +345,24 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
 - **Results Achieved**:
   - **90% reduction in span detection calls** (59 spans detected once vs 5x redundant)
   - **85% reduction in LLM calls** (37 individual → 3-4 batch calls)
-  - Successfully extracted 166 claims from DarkCloud Stealer PDF
+  - Successfully extracted 115 claims from DarkCloud Stealer PDF
   - Batch processing scales dynamically based on document size
+  - Processing time: ~5.5 minutes for 1.4MB PDF with entity extraction
 - **Additional Improvements Made**:
   - Removed sequential fallback entirely (was causing inefficiency)
   - Increased max_tokens from 4000 to 6000 to prevent response truncation
   - Dynamic batch sizing based on span count (10-18 spans per batch)
   - Span redistribution maintains document flow with sequential blocks
+  - Applied quick fix for consolidation issue (fallback to mem.claims)
+- **Issues Discovered**:
+  - **Overly aggressive deduplication**: 115 claims → 23 techniques after consolidation → 12 techniques after merge
+  - **Subtechniques being dropped**: T1027.004, T1027.002, T1560.001 lost during final merge
+  - **Multiple workers processing same job**: 4 workers attempted same job (race condition)
+  - **Entity extraction still slow**: Not optimized yet, takes significant time
+- **Next Steps Required**:
+  - Task 1.7: Fix subtechnique deduplication (HIGH PRIORITY)
+  - Task 1.6: Proper consolidation implementation
+  - Task 1.2: Optimize entity extraction with progressive approach
 
 ### Task 1.2: Progressive Entity Extraction with Context Carry-Forward
 - [ ] **Status**: Not Started
@@ -518,8 +529,8 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
 
 ### Task 1.5: Intelligent Evidence Merging
 - [ ] **Status**: Not Started
-- **Current Problem**: Simple deduplication loses evidence from multiple chunks
-- **Solution**: Smart merging that preserves and combines evidence
+- **Current Problem**: Simple deduplication loses evidence from multiple chunks and treats parent/subtechniques as duplicates
+- **Solution**: Smart merging that preserves and combines evidence while maintaining technique hierarchy
 - **Implementation**:
   ```python
   def merge_evidence(self, technique_instances):
@@ -527,7 +538,8 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
           "confidence": max(t["confidence"] for t in technique_instances),
           "evidence": [],
           "line_refs": set(),
-          "chunks_found": []
+          "chunks_found": [],
+          "is_subtechnique": "." in technique_id  # Track if subtechnique
       }
       
       for instance in technique_instances:
@@ -552,6 +564,7 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
   - Comprehensive evidence preservation
   - Better confidence scoring
   - Full provenance tracking
+  - Parent and subtechniques both preserved
 
 ### Task 1.6: Implement Proper Consolidation in Optimized Pipeline
 - [ ] **Status**: Not Started (Quick fix applied)
@@ -592,6 +605,47 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
   - Verify consolidator sets attribute in all code paths
   - Check deduplication works correctly
   - Ensure evidence merging preserves all relevant quotes
+
+### Task 1.7: Fix Overly Aggressive Technique Deduplication
+- [ ] **Status**: Not Started  
+- **Current Problem**: Merge logic drops subtechniques when parent techniques exist (e.g., T1027.004 dropped when T1027 present)
+- **Evidence**: Extraction finds ~115 claims → 23 techniques after consolidation → only 12 techniques after merge
+- **Root Cause**: `chunked_extractor.py` merge logic treats T1027 and T1027.004 as duplicates
+- **Solution**: Implement hierarchy-aware deduplication that preserves both parent and subtechniques
+- **Files to Modify**:
+  - `bandjacks/llm/chunked_extractor.py` - Fix merge_results() method
+  - `bandjacks/llm/optimized_chunked_extractor.py` - Apply same fix
+- **Implementation**:
+  ```python
+  def merge_techniques(self, all_techniques):
+      """Merge techniques from chunks while preserving parent/subtechnique relationships."""
+      merged = {}
+      
+      for chunk_techniques in all_techniques:
+          for tech_id, tech_data in chunk_techniques.items():
+              # Don't treat T1027 and T1027.004 as duplicates
+              # Each unique technique ID should be preserved
+              if tech_id in merged:
+                  # Merge evidence for same technique
+                  merged[tech_id] = self.merge_evidence([merged[tech_id], tech_data])
+              else:
+                  # Add new technique (parent or sub)
+                  merged[tech_id] = tech_data
+      
+      # Don't filter out subtechniques when parent exists
+      # Both T1027 and T1027.004 should remain if found
+      return merged
+  ```
+- **Success Metrics**:
+  - All unique technique IDs preserved (both parent and subtechniques)
+  - T1027.004 (Compile After Delivery) appears in final report when detected
+  - T1027.002 (Software Packing) preserved alongside T1027
+  - Final technique count closer to consolidated count (e.g., 20+ instead of 12)
+- **Testing Required**:
+  - Verify parent techniques not dropped when subtechniques exist
+  - Verify subtechniques not dropped when parent exists  
+  - Test with documents containing multiple subtechniques of same parent
+  - Confirm evidence properly merged for duplicate technique IDs
 
 ---
 
