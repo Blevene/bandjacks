@@ -153,7 +153,7 @@ export function EntityReview({ entities, onReviewComplete, readOnly = false }: E
           <p className="text-sm text-muted-foreground mb-3">{entity.description}</p>
         )}
         
-        {entity.evidence && entity.evidence.length > 0 && (
+        {entity.evidence && Array.isArray(entity.evidence) && entity.evidence.length > 0 && (
           <div className="mb-3">
             <Label className="text-xs font-semibold">Evidence:</Label>
             <div className="mt-1 space-y-1">
@@ -166,7 +166,7 @@ export function EntityReview({ entities, onReviewComplete, readOnly = false }: E
           </div>
         )}
 
-        {entity.line_refs && entity.line_refs.length > 0 && (
+        {entity.line_refs && Array.isArray(entity.line_refs) && entity.line_refs.length > 0 && (
           <div className="mb-3">
             <Label className="text-xs font-semibold">Line References:</Label>
             <p className="text-xs text-muted-foreground">
