@@ -266,6 +266,104 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
   - Context badges show mention type (Primary/Alias/Reference)
   - Consistent review experience for entities and techniques
 
+### Task 0.5: Implement Atomic Job Claiming and Prevent Duplicate Processing
+- [ ] **Status**: Not Started
+- **Priority**: CRITICAL - Foundational issue affecting all optimizations
+- **Current Problem**: Multiple workers process the same job simultaneously causing:
+  - 2-4x wasted compute (all workers process same PDF)
+  - Inconsistent results (Worker 1: 28 techniques, Worker 3: 23 techniques)
+  - Race conditions with last-writer-wins data loss
+  - No proper distributed locking mechanism
+- **Evidence**: Logs show job-eb93277a processed by both SpawnProcess-3 (23 techniques) and SpawnProcess-1 (28 techniques)
+- **Solution**: Implement atomic job claiming with proper locking
+- **Files to Modify**:
+  - `bandjacks/services/api/job_store.py` - Add atomic claiming logic
+  - `bandjacks/services/api/job_processor.py` - Use atomic claim before processing
+  - `bandjacks/services/api/settings.py` - Add configuration for worker management
+- **Implementation**:
+  ```python
+  # Atomic job claiming with database-level locking
+  async def claim_and_get_next_job(worker_id: str) -> Optional[dict]:
+      """Atomically claim next available job using database transaction."""
+      # Use UPDATE with RETURNING to atomically claim in one operation
+      result = await db.fetch_one("""
+          UPDATE jobs 
+          SET status = 'processing',
+              claimed_by = :worker_id,
+              claimed_at = NOW(),
+              attempts = attempts + 1
+          WHERE job_id = (
+              SELECT job_id FROM jobs
+              WHERE status = 'queued'
+              AND (claimed_by IS NULL OR claimed_at < NOW() - INTERVAL '5 minutes')
+              ORDER BY created_at
+              LIMIT 1
+              FOR UPDATE SKIP LOCKED
+          )
+          RETURNING *
+      """, {"worker_id": worker_id})
+      return result
+  
+  # Worker heartbeat for failure recovery
+  async def update_heartbeat(job_id: str, worker_id: str):
+      """Update job heartbeat to detect stuck jobs."""
+      await db.execute("""
+          UPDATE jobs
+          SET last_heartbeat = NOW()
+          WHERE job_id = :job_id AND claimed_by = :worker_id
+      """, {"job_id": job_id, "worker_id": worker_id})
+  
+  # Reclaim abandoned jobs from crashed workers
+  async def reclaim_abandoned_jobs():
+      """Reclaim jobs abandoned by crashed workers."""
+      await db.execute("""
+          UPDATE jobs
+          SET status = 'queued',
+              claimed_by = NULL,
+              claimed_at = NULL
+          WHERE status = 'processing'
+          AND last_heartbeat < NOW() - INTERVAL '5 minutes'
+      """)
+  
+  # Handle duplicate results intelligently
+  async def handle_duplicate_result(job_id: str, new_result: dict) -> dict:
+      """Handle case where multiple workers complete same job."""
+      existing = await get_job_result(job_id)
+      
+      if existing and existing['completed_at']:
+          # Compare quality metrics
+          existing_techniques = existing.get('techniques_count', 0)
+          new_techniques = new_result.get('techniques_count', 0)
+          
+          if new_techniques > existing_techniques:
+              logger.warning(
+                  f"Job {job_id}: Found better result "
+                  f"({new_techniques} > {existing_techniques} techniques)"
+              )
+              # Option: Update with better result
+              await update_job_result(job_id, new_result, note="Updated with better result")
+          
+          return existing  # Return first completed
+      
+      return await save_job_result(job_id, new_result)
+  ```
+- **Alternative Solutions**:
+  - Use Redis distributed lock (redis.lock.Lock)
+  - Migrate to Celery/Arq job queue system
+  - Implement optimistic locking with version numbers
+- **Success Metrics**:
+  - Zero duplicate processing (each job processed exactly once)
+  - No wasted compute from redundant processing  
+  - Consistent results regardless of worker count
+  - Automatic recovery from worker failures
+  - Clear audit trail of which worker processed each job
+- **Testing Required**:
+  - [ ] Test concurrent workers claiming jobs
+  - [ ] Test worker failure recovery
+  - [ ] Test heartbeat and timeout mechanisms
+  - [ ] Load test with many simultaneous jobs
+  - [ ] Verify result consistency across multiple runs
+
 ---
 
 ## Phase 1: Smart Chunking with Context Sharing (HIGH IMPACT - 2-3 days)
