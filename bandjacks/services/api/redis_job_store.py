@@ -200,6 +200,15 @@ class RedisJobStore:
                 # Try next job
                 return self.claim_and_get_next_job(worker_id)
             
+            # Check if job is in retry state (waiting to retry)
+            if job.get("status") == "retrying":
+                logger.info(f"Job {job_id} is in retry state, skipping")
+                lock.release()
+                # Put it back in queue for later
+                self.redis.rpush(self.QUEUE_KEY, job_id)
+                # Try next job
+                return self.claim_and_get_next_job(worker_id)
+            
             # Update job with claim information
             job.update({
                 "status": "processing",
@@ -491,7 +500,7 @@ class RedisJobStore:
                         self.redis.delete(heartbeat_key)
                         continue
                     
-                    # Only reclaim if job is actually processing
+                    # Only reclaim if job is actually processing (not retrying or completed)
                     if status == "processing":
                         claimed_at = job.get("claimed_at")
                         if claimed_at:
