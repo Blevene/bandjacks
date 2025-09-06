@@ -266,24 +266,100 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
   - Context badges show mention type (Primary/Alias/Reference)
   - Consistent review experience for entities and techniques
 
-### Task 0.5: Implement Atomic Job Claiming and Prevent Duplicate Processing
-- [ ] **Status**: Not Started
+### Task 0.5: Implement Atomic Job Claiming and Fix Job Management Issues
+- [x] **Status**: ✅ Partially Completed (Redis atomic claiming done, heartbeat issues remain)
 - **Priority**: CRITICAL - Foundational issue affecting all optimizations
-- **Current Problem**: Multiple workers process the same job simultaneously causing:
-  - 2-4x wasted compute (all workers process same PDF)
-  - Inconsistent results (Worker 1: 28 techniques, Worker 3: 23 techniques)
-  - Race conditions with last-writer-wins data loss
-  - No proper distributed locking mechanism
-- **Evidence**: Logs show job-eb93277a processed by both SpawnProcess-3 (23 techniques) and SpawnProcess-1 (28 techniques)
-- **Solution**: Implement atomic job claiming with proper locking
-- **Files to Modify**:
-  - `bandjacks/services/api/job_store.py` - Add atomic claiming logic
-  - `bandjacks/services/api/job_processor.py` - Use atomic claim before processing
-  - `bandjacks/services/api/settings.py` - Add configuration for worker management
-- **Implementation**:
+- **Completed Work** (2025-01-06):
+  - ✅ Implemented Redis-based atomic job claiming with distributed locking
+  - ✅ Created `redis_job_store.py` with LPOP atomic claiming
+  - ✅ Added heartbeat mechanism for worker health monitoring
+  - ✅ Fixed security issues (moved JWT_SECRET to .env)
+  - ✅ Updated all routes to use RedisJobStore consistently
+  - ✅ Added duplicate result handling with quality comparison
+- **Remaining Issues Discovered**:
+  1. **Event Loop Blocking**: Synchronous extraction operations block asyncio, preventing heartbeat updates
+  2. **Jobs Incorrectly Marked Abandoned**: Jobs taking >120s due to LLM 503 retries are reclaimed
+  3. **Retry State Management**: Jobs lose worker_id when re-queued for retry
+  4. **Insufficient Heartbeat Updates**: Chunked extractor doesn't update heartbeats frequently
+- **Evidence**: 
+  - Initial: job-eb93277a processed by both SpawnProcess-3 (23 techniques) and SpawnProcess-1 (28 techniques)
+  - Current: Jobs completing successfully but being reclaimed after heartbeat timeout (>120s)
+- **Solution Implementation Phases**:
+  - **Phase 1**: Fix event loop blocking with `asyncio.run_in_executor()`
+  - **Phase 2**: Improve heartbeat management during long operations
+  - **Phase 3**: Fix job state transitions and worker ID tracking
+  - **Phase 4**: Add resilience features (job leasing, checkpointing)
+- **Files Modified**:
+  - ✅ Created: `bandjacks/services/api/redis_job_store.py` - Redis-based atomic job store
+  - ✅ Modified: `bandjacks/services/api/job_processor.py` - Added Redis support
+  - ✅ Modified: `bandjacks/services/api/settings.py` - Added Redis configuration
+  - ✅ Modified: `bandjacks/services/api/routes/reports.py` - Use RedisJobStore
+  - ✅ Created: `docker-compose.yml` - Added Redis service
+  - ✅ Modified: `.env` - Added Redis and security settings
+- **Implementation Phase 1 - Event Loop Fix** (Next Priority):
   ```python
-  # Atomic job claiming with database-level locking
-  async def claim_and_get_next_job(worker_id: str) -> Optional[dict]:
+  # job_processor.py - Fix blocking operations
+  async def _process_report_text(self, job_id: str, text_content: str, ...):
+      loop = asyncio.get_event_loop()
+      
+      # Run extraction in thread pool to avoid blocking
+      if text_length < USE_CHUNKED_THRESHOLD:
+          pipeline_results = await loop.run_in_executor(
+              None,  # Default ThreadPoolExecutor
+              run_extraction_pipeline,
+              report_text,
+              extraction_config,
+              source_id,
+              neo4j_config,
+              progress_callback
+          )
+      else:
+          extraction_results = await loop.run_in_executor(
+              None,
+              extractor.extract,
+              text_content,
+              chunk_config,
+              parallel=True,
+              progress_callback
+          )
+  ```
+- **Implementation Phase 2 - Heartbeat Management**:
+  ```python
+  # Enhanced progress callback with heartbeat updates
+  def update_progress(progress: int, message: str):
+      self.job_store.update(job_id, {
+          "progress": progress,
+          "message": message
+      })
+      # Critical: Update heartbeat more frequently
+      if self.use_redis and self.current_job_id == job_id:
+          self.job_store.update_heartbeat(job_id)
+  
+  # Add heartbeat to chunked extractor
+  def update_chunk_progress(progress: int, message: str):
+      self.job_store.update(job_id, {
+          "progress": progress,
+          "message": message
+      })
+      # Update heartbeat during chunk processing
+      if self.use_redis:
+          self.job_store.update_heartbeat(job_id)
+  ```
+- **Implementation Phase 3 - Job State Fixes**:
+  ```python
+  # Fix retry state management
+  if is_retryable and retry_count < max_retries - 1:
+      self.job_store.update(job_id, {
+          "status": "retrying",  # New status to prevent reclaim
+          "worker_id": worker_id,  # Maintain ownership
+          "retry_count": retry_count,
+          "next_retry_at": (datetime.utcnow() + timedelta(seconds=wait_time)).isoformat()
+      })
+  ```
+- **Already Implemented** (Redis atomic claiming):
+  ```python
+  # redis_job_store.py - Atomic job claiming with Redis
+  def claim_and_get_next_job(self) -> Optional[Dict[str, Any]]:
       """Atomically claim next available job using database transaction."""
       # Use UPDATE with RETURNING to atomically claim in one operation
       result = await db.fetch_one("""
@@ -352,17 +428,28 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
   - Migrate to Celery/Arq job queue system
   - Implement optimistic locking with version numbers
 - **Success Metrics**:
-  - Zero duplicate processing (each job processed exactly once)
-  - No wasted compute from redundant processing  
-  - Consistent results regardless of worker count
-  - Automatic recovery from worker failures
-  - Clear audit trail of which worker processed each job
-- **Testing Required**:
-  - [ ] Test concurrent workers claiming jobs
-  - [ ] Test worker failure recovery
-  - [ ] Test heartbeat and timeout mechanisms
-  - [ ] Load test with many simultaneous jobs
-  - [ ] Verify result consistency across multiple runs
+  - ✅ Zero duplicate processing during initial claim (Redis LPOP ensures atomicity)
+  - ✅ Duplicate result handling with quality comparison (keeps better result)
+  - ⚠️ Jobs not incorrectly marked abandoned (partially working, fails for >120s jobs)
+  - ⚠️ Heartbeats update during long operations (needs async fix)
+  - ✅ Clear audit trail with worker_id tracking
+  - ❌ Consistent retry state management (needs implementation)
+- **Testing Completed**:
+  - ✅ Atomic job claiming verified (no duplicate initial claims)
+  - ✅ Redis store integration tested
+  - ✅ Worker ID tracking functional
+  - ✅ Job completion and result storage working
+- **Testing Required** (for remaining fixes):
+  - [ ] Test with asyncio.run_in_executor for non-blocking operations
+  - [ ] Verify heartbeats update during 5+ minute extractions
+  - [ ] Test retry state transitions with worker ID preservation
+  - [ ] Load test with LLM 503 errors and retries
+  - [ ] Verify no jobs reclaimed while actively processing
+- **Implementation Notes**:
+  - Redis atomic claiming successfully prevents duplicate initial processing
+  - Heartbeat mechanism implemented but blocked by synchronous operations
+  - Jobs completing successfully but being reclaimed due to timeout
+  - Need to address event loop blocking as primary fix
 
 ---
 

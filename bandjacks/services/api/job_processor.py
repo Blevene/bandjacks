@@ -269,8 +269,11 @@ class JobProcessor:
                     retry_count += 1
                     wait_time = (2 ** retry_count) * 5  # Exponential backoff: 10s, 20s, 40s
                     
+                    # Use "retrying" status to prevent reclaim while waiting
+                    # Maintain worker_id to preserve ownership
                     self.job_store.update(job_id, {
-                        "status": "queued",  # Re-queue for retry
+                        "status": "retrying",  # New status to prevent reclaim
+                        "worker_id": self.job_store.worker_id if self.use_redis else None,  # Maintain ownership
                         "retry_count": retry_count,
                         "checkpoint_progress": job.get("progress", 0),
                         "last_error": error_msg,
@@ -280,6 +283,12 @@ class JobProcessor:
                     
                     logger.info(f"Job {job_id} will retry in {wait_time}s (attempt {retry_count}/{max_retries})")
                     await asyncio.sleep(wait_time)
+                    
+                    # After waiting, change status back to queued for retry
+                    self.job_store.update(job_id, {
+                        "status": "queued",
+                        "message": f"Ready for retry attempt {retry_count + 1}"
+                    })
                     
                 else:
                     # Non-retryable error or max retries exceeded
@@ -470,17 +479,26 @@ class JobProcessor:
                     "progress": progress,
                     "message": message
                 })
-                # Also update heartbeat for Redis store
-                if self.use_redis and self.current_job_id == job_id:
-                    self.job_store.update_heartbeat(job_id)
+                # Critical: Always update heartbeat during progress updates
+                # This ensures heartbeat is updated even during long operations
+                if self.use_redis:
+                    try:
+                        self.job_store.update_heartbeat(job_id)
+                        logger.debug(f"Heartbeat updated for job {job_id} at progress {progress}%")
+                    except Exception as e:
+                        logger.warning(f"Failed to update heartbeat: {e}")
             
             # Run unified extraction pipeline (extraction + flow + review package)
-            pipeline_results = run_extraction_pipeline(
-                report_text=text_content,
-                config=extraction_config,
-                source_id=report_sdo["id"],
-                neo4j_config=neo4j_config,
-                progress_callback=update_progress
+            # Use run_in_executor to avoid blocking the event loop
+            loop = asyncio.get_event_loop()
+            pipeline_results = await loop.run_in_executor(
+                None,  # Use default ThreadPoolExecutor
+                run_extraction_pipeline,
+                text_content,  # report_text
+                extraction_config,  # config
+                report_sdo["id"],  # source_id
+                neo4j_config,  # neo4j_config
+                update_progress  # progress_callback
             )
             
         else:
@@ -536,13 +554,25 @@ class JobProcessor:
                     "progress": progress,
                     "message": message
                 })
+                # Critical: Update heartbeat during chunk processing
+                # This prevents job from being marked abandoned during long extractions
+                if self.use_redis:
+                    try:
+                        self.job_store.update_heartbeat(job_id)
+                        logger.debug(f"Heartbeat updated for job {job_id} during chunk processing at {progress}%")
+                    except Exception as e:
+                        logger.warning(f"Failed to update heartbeat during chunk processing: {e}")
             
             # Run chunked extraction with progress callback
-            extraction_results = extractor.extract(
-                text=text_content,
-                config=chunk_config,
-                parallel=True,
-                progress_callback=update_chunk_progress
+            # Use run_in_executor to avoid blocking the event loop
+            loop = asyncio.get_event_loop()
+            extraction_results = await loop.run_in_executor(
+                None,  # Use default ThreadPoolExecutor
+                extractor.extract,
+                text_content,  # text
+                chunk_config,  # config
+                True,  # parallel
+                update_chunk_progress  # progress_callback
             )
             
             # Build flow from chunked results
