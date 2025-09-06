@@ -44,8 +44,21 @@ class Settings(BaseSettings):
     oidc_issuer: str = ""  # OIDC issuer URL
     oidc_audience: str = "bandjacks-api"  # Expected audience
     jwt_algorithm: str = "RS256"  # JWT algorithm
-    jwt_secret: str = "development-secret"  # For HS256 in dev
+    jwt_secret: str = ""  # Must be set via environment variable JWT_SECRET
     require_auth_for_reads: bool = False  # Require auth for GET requests
+    
+    # Redis settings for job queue and distributed locking
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 0
+    redis_password: str = ""
+    redis_lock_timeout: int = 600  # 10 minutes max lock time
+    redis_heartbeat_interval: int = 30  # Worker heartbeat every 30s
+    
+    # Job processing settings
+    job_claim_ttl: int = 300  # 5 minutes to process a job before it's reclaimed
+    job_heartbeat_ttl: int = 60  # Heartbeat expires after 60s
+    worker_id_prefix: str = "worker"  # Prefix for worker IDs
     
     # Rate limiting settings
     rate_limit_enabled: bool = True  # Enable rate limiting
