@@ -28,7 +28,7 @@ from neo4j import Session
 
 from bandjacks.services.api.deps import get_neo4j_session, get_opensearch_client
 from bandjacks.services.api.settings import settings
-from bandjacks.services.api.job_store import get_job_store
+from bandjacks.services.api.redis_job_store import get_redis_job_store
 from bandjacks.store.report_store import ReportStore
 from bandjacks.store.campaign_store import CampaignStore
 from bandjacks.store.opensearch_report_store import OpenSearchReportStore
@@ -376,7 +376,7 @@ async def ingest_report_async(request: IngestRequest):
         )
     
     # Create job in the persistent job store (queued status)
-    job_store = get_job_store()
+    job_store = get_redis_job_store()
     job_data = job_store.create_job(
         job_id=job_id,
         file_path=temp_path,
@@ -455,7 +455,7 @@ async def ingest_file_async(
         )
     
     # Create job in the persistent job store (queued status)
-    job_store = get_job_store()
+    job_store = get_redis_job_store()
     job_data = job_store.create_job(
         job_id=job_id,
         file_path=temp_path,
@@ -611,7 +611,7 @@ async def get_job_status(job_id: str):
     """Get job status from persistent store or in-memory cache."""
     
     # First check persistent store
-    job_store = get_job_store()
+    job_store = get_redis_job_store()
     job = job_store.get(job_id)
     
     if not job:
@@ -641,8 +641,8 @@ async def list_jobs():
     """List all jobs."""
     
     try:
-        # Use FileJobStore instead of in-memory store
-        job_store = get_job_store()
+        # Use RedisJobStore instead of in-memory store
+        job_store = get_redis_job_store()
         all_jobs = job_store.list_all()
         
         jobs = []
@@ -674,8 +674,8 @@ async def list_jobs():
 async def delete_job(job_id: str):
     """Delete a job."""
     
-    # Use FileJobStore instead of in-memory store
-    job_store = get_job_store()
+    # Use RedisJobStore instead of in-memory store
+    job_store = get_redis_job_store()
     job = job_store.get(job_id)
     
     if not job:
