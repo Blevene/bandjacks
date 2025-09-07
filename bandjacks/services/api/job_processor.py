@@ -523,7 +523,14 @@ class JobProcessor:
                 "disable_targeted_extraction": True,
                 "max_spans": spans_per_chunk,  # Dynamic spans per chunk
                 "span_score_threshold": 0.9 if text_length > 100_000 else 0.85,  # Stricter for very large docs
-                "confidence_threshold": 60 if text_length > 100_000 else 50
+                "confidence_threshold": 60 if text_length > 100_000 else 50,
+                # Progressive accumulation and early termination parameters
+                # These will be passed through to the accumulator, which reads from env vars
+                "enable_early_termination": config.get("enable_early_termination"),
+                "early_termination_threshold": config.get("early_termination_threshold"),
+                "min_techniques_for_termination": config.get("min_techniques_for_termination"),
+                "confidence_boost": config.get("confidence_boost"),
+                "max_context_hints": config.get("max_context_hints")
             }
             
             # Use optimized extractor if enabled (default: true)

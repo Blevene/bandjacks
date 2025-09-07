@@ -267,20 +267,24 @@ export function ReviewItemCard({
                     ))
                   ) : (
                     // Default evidence display for techniques and legacy entities
-                    (isExpanded ? item.evidence : item.evidence.slice(0, 1)).map((evidence, idx) => {
-                      const evidenceText = typeof evidence === 'string' 
-                        ? evidence 
-                        : (evidence as any).text || '';
-                      
-                      return (
-                        <blockquote
-                          key={idx}
-                          className="border-l-2 border-muted pl-3 text-sm text-muted-foreground italic"
-                        >
-                          "{evidenceText.length > 200 && !isExpanded ? evidenceText.substring(0, 200) + '...' : evidenceText}"
-                        </blockquote>
-                      );
-                    })
+                    item.evidence && Array.isArray(item.evidence) && item.evidence.length > 0 ? (
+                      (isExpanded ? item.evidence : item.evidence.slice(0, 1)).map((evidence, idx) => {
+                        const evidenceText = typeof evidence === 'string' 
+                          ? evidence 
+                          : (evidence as any).text || '';
+                        
+                        return (
+                          <blockquote
+                            key={idx}
+                            className="border-l-2 border-muted pl-3 text-sm text-muted-foreground italic"
+                          >
+                            "{evidenceText.length > 200 && !isExpanded ? evidenceText.substring(0, 200) + '...' : evidenceText}"
+                          </blockquote>
+                        );
+                      })
+                    ) : (
+                      <span className="text-sm text-muted-foreground italic">No evidence available</span>
+                    )
                   )}
                   
                   {/* Show more evidence button */}
