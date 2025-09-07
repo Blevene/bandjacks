@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     default_rate_limit: int = 100  # Requests per minute
     rate_limit_window: int = 60  # Window size in seconds
     burst_allowance: float = 1.5  # Burst multiplier
+    
+    # Progressive Accumulation and Early Termination Settings
+    enable_early_termination: bool = True
+    early_termination_threshold: float = 100.0
+    min_techniques_for_termination: int = 40
+    confidence_boost: float = 5.0
+    max_context_hints: int = 10
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

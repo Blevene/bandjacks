@@ -12,6 +12,7 @@ from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 from bandjacks.llm.agents_v2 import SpanFinderAgent
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.entity_utils import consolidate_entities
+from bandjacks.llm.accumulator import ThreadSafeAccumulator
 
 logger = logging.getLogger(__name__)
 
@@ -400,7 +401,8 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
         chunk: DocumentChunk,
         pre_detected_spans: List[Dict[str, Any]],
         config: Dict[str, Any],
-        pre_retrieved_candidates: Optional[Dict[int, List[Dict[str, Any]]]] = None
+        pre_retrieved_candidates: Optional[Dict[int, List[Dict[str, Any]]]] = None,
+        accumulator: Optional[ThreadSafeAccumulator] = None
     ) -> Dict[str, Any]:
         """
         Process a chunk with pre-detected spans.
@@ -416,6 +418,16 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
         # Skip span detection - use pre-detected spans
         chunk_config = config.copy()
         chunk_config["skip_span_detection"] = True  # Signal to skip SpanFinderAgent
+        
+        # Add context hints from accumulator if available
+        if accumulator and config.get("context_hints_enabled", True):
+            context_hints = accumulator.get_context_hints()
+            if context_hints["hint_count"] > 0:
+                chunk_config["context_hints"] = context_hints
+                logger.debug(
+                    f"Chunk {chunk.chunk_id}: Using {context_hints['hint_count']} context hints "
+                    f"from {context_hints['total_found']} discovered techniques"
+                )
         
         # Create a modified pipeline that uses pre-detected spans
         # We'll need to inject spans directly into the memory
@@ -441,6 +453,20 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
             
             claims_count = len(result.get("claims", []))
             logger.info(f"Chunk {chunk.chunk_id} processed {len(pre_detected_spans)} pre-detected spans → {claims_count} claims")
+            
+            # Update accumulator with discovered techniques
+            if accumulator:
+                for claim in result.get("claims", []):
+                    tech_id = claim.get("technique_id") or claim.get("external_id", "")
+                    if tech_id:
+                        accumulator.add_technique(
+                            technique_id=tech_id,
+                            name=claim.get("technique_name") or claim.get("name", tech_id),
+                            confidence=claim.get("confidence", 50),
+                            evidence=claim.get("evidence", {}).get("sentences", []),
+                            chunk_id=chunk.chunk_id
+                        )
+                accumulator.mark_chunk_complete(chunk.chunk_id)
             
             return result
             
@@ -604,7 +630,19 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
         if progress_callback:
             progress_callback(30, f"Mapped spans to {len(chunks)} chunks")
         
-        # Step 4: Process chunks with their pre-detected spans
+        # Step 4.5: Initialize accumulator if progressive mode is enabled
+        accumulator = None
+        if config.get("progressive_mode", "async") != "disabled":
+            accumulator = ThreadSafeAccumulator(
+                early_termination_threshold=config.get("early_termination_threshold"),
+                max_context_hints=config.get("max_context_hints"),
+                confidence_boost=config.get("confidence_boost"),
+                min_techniques_for_termination=config.get("min_techniques_for_termination"),
+                enable_early_termination=config.get("enable_early_termination")
+            )
+            logger.info(f"Progressive context accumulation enabled (mode: {config.get('progressive_mode', 'async')})") 
+        
+        # Step 5: Process chunks with their pre-detected spans
         chunk_results = []
         
         if parallel and len(chunks) > 1 and self.parallel_workers > 1:
@@ -623,7 +661,8 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
                         chunk,
                         chunk_spans,
                         config,
-                        chunk_candidates
+                        chunk_candidates,
+                        accumulator
                     )
                     futures.append((future, chunk.chunk_id))
                 
@@ -642,6 +681,13 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
                             progress_callback(progress_pct, f"Processed chunk {completed}/{len(chunks)}")
                         
                         logger.info(f"Chunk {chunk_id} complete: {len(result.get('claims', []))} claims")
+                        
+                        # Check for early termination
+                        if accumulator and accumulator.should_stop_processing():
+                            logger.info(f"Early termination triggered after chunk {chunk_id}")
+                            # Cancel remaining futures
+                            for remaining_future, _ in futures[idx+1:]:
+                                remaining_future.cancel()
                         
                     except Exception as e:
                         logger.error(f"Chunk {chunk_id} failed: {e}")
@@ -667,8 +713,13 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
                 chunk_candidates = self._extract_chunk_candidates(
                     chunk_spans, candidates_map, all_spans
                 )
-                result = self.process_chunk_with_spans(chunk, chunk_spans, config, chunk_candidates)
+                result = self.process_chunk_with_spans(chunk, chunk_spans, config, chunk_candidates, accumulator)
                 chunk_results.append(result)
+                
+                # Check for early termination
+                if accumulator and accumulator.should_stop_processing():
+                    logger.info(f"Early termination triggered after chunk {chunk.chunk_id}")
+                    break
                 
                 if progress_callback:
                     progress_pct = 30 + int(((i + 1) / len(chunks)) * 40)  # 30-70%
@@ -676,15 +727,35 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
                 
                 logger.info(f"Chunk {chunk.chunk_id} complete: {len(result.get('claims', []))} claims")
         
-        # Step 5: Merge results
+        # Step 6: Merge results (with accumulated techniques if available)
         merged = self.merge_results(chunk_results)
+        
+        # Add accumulated techniques if using progressive mode
+        if accumulator:
+            accumulated = accumulator.get_accumulated_techniques()
+            stats = accumulator.get_statistics()
+            
+            # Merge accumulated techniques with higher confidence
+            for tech_id, tech_data in accumulated.items():
+                if tech_id in merged["techniques"]:
+                    # Update with accumulated confidence and evidence
+                    merged["techniques"][tech_id]["confidence"] = tech_data["confidence"]
+                    merged["techniques"][tech_id]["evidence"] = tech_data["evidence"]
+                else:
+                    # Add new technique from accumulator
+                    merged["techniques"][tech_id] = tech_data
+            
+            # Add accumulator statistics
+            merged["accumulator_stats"] = stats
         
         # Add optimization metadata
         merged["optimization_metadata"] = {
             "method": "global" if text_length < self.window_size else "windowed",
             "total_spans_detected": len(all_spans),
-            "chunks_processed": len(chunks),
-            "spans_per_chunk": [len(chunk_spans_map[c.chunk_id]) for c in chunks]
+            "chunks_processed": len(chunk_results),  # Actual processed (may be less due to early termination)
+            "spans_per_chunk": [len(chunk_spans_map[c.chunk_id]) for c in chunks],
+            "progressive_mode": config.get("progressive_mode", "async"),
+            "early_terminated": accumulator.should_stop_processing() if accumulator else False
         }
         
         logger.info(f"Optimized extraction complete: {len(merged['techniques'])} techniques from {len(all_spans)} pre-detected spans")

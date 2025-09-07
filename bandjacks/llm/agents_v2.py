@@ -742,7 +742,60 @@ def _calibrate_confidence(
 
 
 class ConsolidatorAgent:
-    """Consolidate claims into unique techniques with calibrated confidence."""
+    """Consolidate claims into unique techniques with intelligent evidence merging."""
+    
+    def _merge_evidence_intelligently(self, evidence_list: List[str]) -> List[str]:
+        """
+        Intelligently merge evidence by removing duplicates and near-duplicates.
+        Uses semantic similarity to detect similar evidence quotes.
+        """
+        if not evidence_list:
+            return []
+        
+        # First pass: exact deduplication (case-insensitive)
+        unique_evidence = []
+        seen_normalized = set()
+        
+        for ev in evidence_list:
+            # Normalize for comparison: lowercase, strip whitespace, remove extra spaces
+            normalized = " ".join(ev.lower().strip().split())
+            
+            # Check for exact duplicates
+            if normalized not in seen_normalized:
+                unique_evidence.append(ev)
+                seen_normalized.add(normalized)
+        
+        # Second pass: semantic deduplication (remove highly similar evidence)
+        # This is a simple approach - could be enhanced with actual embeddings
+        final_evidence = []
+        for i, ev1 in enumerate(unique_evidence):
+            is_duplicate = False
+            ev1_words = set(ev1.lower().split())
+            
+            for ev2 in final_evidence:
+                ev2_words = set(ev2.lower().split())
+                
+                # Calculate Jaccard similarity
+                intersection = len(ev1_words & ev2_words)
+                union = len(ev1_words | ev2_words)
+                
+                if union > 0:
+                    similarity = intersection / union
+                    # If evidence is >85% similar, consider it a duplicate
+                    if similarity > 0.85:
+                        is_duplicate = True
+                        # Keep the longer evidence (more context)
+                        if len(ev1) > len(ev2):
+                            final_evidence[final_evidence.index(ev2)] = ev1
+                        break
+            
+            if not is_duplicate:
+                final_evidence.append(ev1)
+        
+        # Sort by length (longer evidence first) to preserve more context
+        final_evidence.sort(key=len, reverse=True)
+        
+        return final_evidence
     
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
         logger.debug(f"ConsolidatorAgent: Processing {len(mem.claims)} claims")
@@ -750,6 +803,10 @@ class ConsolidatorAgent:
         
         for claim in mem.claims:
             tid = claim["external_id"]
+            
+            # Track if this is a subtechnique
+            is_subtechnique = "." in tid
+            
             entry = by_tech.setdefault(
                 tid,
                 {
@@ -760,28 +817,45 @@ class ConsolidatorAgent:
                     "evidence_scores": [],
                     "claim_count": 0,
                     "tactic": claim.get("technique_meta", {}).get("tactic"),
+                    "is_subtechnique": is_subtechnique,
+                    "chunks_found": set(),  # Track which chunks found this technique
+                    "span_indices": set(),   # Track span indices for provenance
                 },
             )
             entry["evidence"].extend(claim["quotes"])
             entry["line_refs"].update(claim["line_refs"])
             entry["evidence_scores"].append(claim.get("evidence_score", 50))
             entry["claim_count"] += 1
+            
+            # Track chunk ID if available (from chunk_id in claim or span metadata)
+            if "chunk_id" in claim:
+                entry["chunks_found"].add(claim["chunk_id"])
+            elif claim.get("span_idx", -1) >= 0 and claim["span_idx"] < len(mem.spans):
+                # Try to get chunk_id from span metadata
+                span = mem.spans[claim["span_idx"]]
+                if "chunk_id" in span:
+                    entry["chunks_found"].add(span["chunk_id"])
+                entry["span_indices"].add(claim["span_idx"])
         
         logger.debug(f"ConsolidatorAgent: Consolidating {len(by_tech)} unique techniques")
         
-        # Consolidate into final techniques
+        # Consolidate into final techniques with intelligent evidence merging
         for tid, e in by_tech.items():
             # Calculate average evidence score
             avg_evidence_score = sum(e["evidence_scores"]) / len(e["evidence_scores"]) if e["evidence_scores"] else 50
             
-            # Deduplicate evidence
-            unique_evidence = []
-            seen = set()
-            for ev in e["evidence"]:
-                ev_lower = ev.lower().strip()
-                if ev_lower not in seen:
-                    unique_evidence.append(ev)
-                    seen.add(ev_lower)
+            # Intelligent evidence deduplication with semantic similarity
+            unique_evidence = self._merge_evidence_intelligently(e["evidence"])
+            
+            # Boost confidence based on multiple occurrences across chunks
+            occurrence_boost = 0
+            if len(e["chunks_found"]) > 1:
+                # Significant boost for multi-chunk discovery (up to 20 points)
+                occurrence_boost = min(20, len(e["chunks_found"]) * 5)
+                logger.debug(f"  Technique {tid} found in {len(e['chunks_found'])} chunks, boost: {occurrence_boost}")
+            elif e["claim_count"] > 1:
+                # Smaller boost for multiple claims in same chunk (up to 10 points)
+                occurrence_boost = min(10, e["claim_count"] * 3)
             
             # Derive prior and best candidate rank from contributing claims
             prior_val = 1.0
@@ -796,7 +870,8 @@ class ConsolidatorAgent:
                             cr = c["rank"]
                             best_rank_val = cr if best_rank_val is None else min(best_rank_val, cr)
 
-            final_confidence = _calibrate_confidence(
+            # Calculate base confidence then add occurrence boost
+            base_confidence = _calibrate_confidence(
                 e["base_conf"],
                 len(unique_evidence),
                 e["claim_count"],
@@ -804,15 +879,19 @@ class ConsolidatorAgent:
                 best_rank_val or 3,
                 prior_val,
             )
+            final_confidence = min(100, base_confidence + occurrence_boost)
+            
             mem.techniques[tid] = {
                 "name": e["name"],
                 "confidence": final_confidence,
-                "evidence": unique_evidence[:5],  # Keep top 5 evidence
+                "evidence": unique_evidence[:10],  # Keep more evidence (up to 10)
                 "line_refs": sorted(e["line_refs"]),
                 "tactic": e["tactic"],
                 "claim_count": e["claim_count"],
+                "chunks_found": sorted(e["chunks_found"]) if e["chunks_found"] else [],
+                "is_subtechnique": e["is_subtechnique"],
             }
-            logger.debug(f"  → {tid}: {e['name']} (conf={final_confidence}, evidence={len(unique_evidence)})")
+            logger.debug(f"  → {tid}: {e['name']} (conf={final_confidence}, evidence={len(unique_evidence)}, chunks={len(e['chunks_found'])})")
         
         logger.info(f"ConsolidatorAgent: Consolidated into {len(mem.techniques)} techniques")
 
