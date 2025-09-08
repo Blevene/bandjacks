@@ -23,6 +23,19 @@ class TechniqueContext:
     claim_count: int = 0
 
 
+@dataclass
+class EntityContext:
+    """Stores accumulated context for an entity."""
+    entity_id: str
+    name: str
+    entity_type: str
+    confidence: float
+    evidence: List[str] = field(default_factory=list)
+    chunk_ids: Set[int] = field(default_factory=set)
+    first_seen: float = field(default_factory=time.time)
+    claim_count: int = 0
+
+
 class ThreadSafeAccumulator:
     """
     Thread-safe accumulator for sharing technique discoveries across chunks.
@@ -54,6 +67,7 @@ class ThreadSafeAccumulator:
             enable_early_termination: Whether to enable early termination at all
         """
         self.techniques: Dict[str, TechniqueContext] = {}
+        self.entities: Dict[str, EntityContext] = {}
         self.lock = threading.Lock()
         self.should_terminate = threading.Event()
         
@@ -69,7 +83,9 @@ class ThreadSafeAccumulator:
         # Statistics
         self.chunks_processed = 0
         self.total_techniques = 0
+        self.total_entities = 0
         self.high_confidence_count = 0
+        self.high_confidence_entities = 0
         
     def add_technique(
         self,
@@ -194,6 +210,74 @@ class ThreadSafeAccumulator:
         """Check if processing should stop early."""
         return self.should_terminate.is_set()
     
+    def add_entity(
+        self,
+        entity_id: str,
+        name: str,
+        entity_type: str,
+        confidence: float,
+        evidence: List[str],
+        chunk_id: int
+    ) -> bool:
+        """
+        Add or update an entity discovery.
+        
+        Args:
+            entity_id: Unique entity identifier
+            name: Entity name
+            entity_type: Type of entity (group, malware, tool, etc.)
+            confidence: Confidence score (0-100)
+            evidence: List of evidence strings
+            chunk_id: ID of chunk that found this entity
+            
+        Returns:
+            True if this triggers early termination
+        """
+        with self.lock:
+            if entity_id in self.entities:
+                # Update existing entity
+                entity = self.entities[entity_id]
+                
+                # Aggregate confidence
+                old_confidence = entity.confidence
+                entity.confidence = min(100, max(entity.confidence, confidence) + self.confidence_boost)
+                
+                # Add new evidence
+                for e in evidence:
+                    if e not in entity.evidence:
+                        entity.evidence.append(e)
+                
+                # Track chunk
+                entity.chunk_ids.add(chunk_id)
+                entity.claim_count += 1
+                
+                logger.debug(
+                    f"Updated entity {entity_id}: confidence {old_confidence:.1f} → {entity.confidence:.1f} "
+                    f"(found in {len(entity.chunk_ids)} chunks)"
+                )
+                
+            else:
+                # New entity discovery
+                self.entities[entity_id] = EntityContext(
+                    entity_id=entity_id,
+                    name=name,
+                    entity_type=entity_type,
+                    confidence=confidence,
+                    evidence=evidence.copy(),
+                    chunk_ids={chunk_id},
+                    claim_count=1
+                )
+                self.total_entities += 1
+                
+                logger.debug(f"New entity {entity_id}: {name} ({entity_type}, confidence: {confidence:.1f})")
+            
+            # Track high confidence entities
+            if confidence >= self.early_termination_threshold:
+                self.high_confidence_entities += 1
+            
+            # Early termination not typically triggered by entities alone
+            return False
+    
     def get_accumulated_techniques(self) -> Dict[str, Dict[str, Any]]:
         """
         Get all accumulated techniques.
@@ -213,6 +297,26 @@ class ThreadSafeAccumulator:
                 }
             return result
     
+    def get_accumulated_entities(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Get all accumulated entities.
+        
+        Returns:
+            Dictionary mapping entity IDs to their accumulated data
+        """
+        with self.lock:
+            result = {}
+            for entity_id, entity in self.entities.items():
+                result[entity_id] = {
+                    "name": entity.name,
+                    "type": entity.entity_type,
+                    "confidence": entity.confidence,
+                    "evidence": entity.evidence,
+                    "chunk_ids": list(entity.chunk_ids),
+                    "claim_count": entity.claim_count
+                }
+            return result
+    
     def get_statistics(self) -> Dict[str, Any]:
         """
         Get accumulator statistics.
@@ -221,20 +325,34 @@ class ThreadSafeAccumulator:
             Dictionary with processing statistics
         """
         with self.lock:
-            if not self.techniques:
+            if not self.techniques and not self.entities:
                 return {
                     "chunks_processed": self.chunks_processed,
                     "total_techniques": 0,
+                    "total_entities": 0,
                     "high_confidence_count": 0,
-                    "avg_confidence": 0,
-                    "techniques_per_chunk": 0
+                    "high_confidence_entities": 0,
+                    "avg_technique_confidence": 0,
+                    "avg_entity_confidence": 0,
+                    "techniques_per_chunk": 0,
+                    "entities_per_chunk": 0,
+                    "multi_chunk_techniques": 0,
+                    "multi_chunk_entities": 0
                 }
+            
+            techniques_avg_confidence = sum(t.confidence for t in self.techniques.values()) / len(self.techniques) if self.techniques else 0
+            entities_avg_confidence = sum(e.confidence for e in self.entities.values()) / len(self.entities) if self.entities else 0
             
             return {
                 "chunks_processed": self.chunks_processed,
                 "total_techniques": len(self.techniques),
+                "total_entities": len(self.entities),
                 "high_confidence_count": self.high_confidence_count,
-                "avg_confidence": sum(t.confidence for t in self.techniques.values()) / len(self.techniques),
+                "high_confidence_entities": self.high_confidence_entities,
+                "avg_technique_confidence": techniques_avg_confidence,
+                "avg_entity_confidence": entities_avg_confidence,
                 "techniques_per_chunk": len(self.techniques) / max(1, self.chunks_processed),
-                "multi_chunk_techniques": sum(1 for t in self.techniques.values() if len(t.chunk_ids) > 1)
+                "entities_per_chunk": len(self.entities) / max(1, self.chunks_processed),
+                "multi_chunk_techniques": sum(1 for t in self.techniques.values() if len(t.chunk_ids) > 1),
+                "multi_chunk_entities": sum(1 for e in self.entities.values() if len(e.chunk_ids) > 1)
             }
