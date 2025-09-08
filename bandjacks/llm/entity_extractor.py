@@ -172,6 +172,9 @@ class EntityExtractionAgent:
         doc_text = mem.document_text
         doc_length = len(doc_text)
         
+        # Check if we should generate claims or direct entities
+        use_claims = config.get("use_entity_claims", True)
+        
         # Determine if we need chunking
         use_chunking = doc_length > self.chunk_size or config.get("force_chunking", False)
         
@@ -181,26 +184,51 @@ class EntityExtractionAgent:
                 chunks = self._create_chunks(doc_text)
                 logger.info(f"Processing {len(chunks)} chunks for entity extraction (doc length: {doc_length})")
                 
-                # Extract entities from each chunk
-                chunk_entities = []
-                for i, chunk in enumerate(chunks):
-                    logger.debug(f"Extracting entities from chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
-                    entities = self._extract_from_chunk(chunk)
-                    # Enhance each entity with line references
-                    for entity in entities:
-                        self._enhance_entity_with_line_refs(entity, doc_text)
-                    chunk_entities.append(entities)
-                    logger.debug(f"Found {len(entities)} entities in chunk {i+1}")
-                
-                # Merge and deduplicate entities from all chunks
-                merged_entities = self._merge_entities(chunk_entities)
-                logger.info(f"Extracted {len(merged_entities)} unique entities from {len(chunks)} chunks")
-                
-                entities = {
-                    "entities": merged_entities,
-                    "extraction_status": "success",
-                    "chunks_processed": len(chunks)
-                }
+                if use_claims:
+                    # Generate entity claims for consolidation
+                    all_claims = []
+                    for i, chunk in enumerate(chunks):
+                        logger.debug(f"Extracting entity claims from chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
+                        entities = self._extract_from_chunk(chunk)
+                        
+                        # Convert entities to claims
+                        chunk_claims = self._entities_to_claims(entities, doc_text, chunk_id=i)
+                        all_claims.extend(chunk_claims)
+                        logger.debug(f"Generated {len(chunk_claims)} entity claims from chunk {i+1}")
+                    
+                    # Store claims in memory for consolidation
+                    mem.entity_claims = all_claims
+                    logger.info(f"Generated {len(all_claims)} entity claims from {len(chunks)} chunks")
+                    
+                    # Set a placeholder for entities (will be populated by consolidator)
+                    entities = {
+                        "entities": [],
+                        "extraction_status": "claims_generated",
+                        "chunks_processed": len(chunks),
+                        "claims_count": len(all_claims)
+                    }
+                else:
+                    # Original behavior: direct entity extraction
+                    # Extract entities from each chunk
+                    chunk_entities = []
+                    for i, chunk in enumerate(chunks):
+                        logger.debug(f"Extracting entities from chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
+                        entities = self._extract_from_chunk(chunk)
+                        # Enhance each entity with line references
+                        for entity in entities:
+                            self._enhance_entity_with_line_refs(entity, doc_text)
+                        chunk_entities.append(entities)
+                        logger.debug(f"Found {len(entities)} entities in chunk {i+1}")
+                    
+                    # Merge and deduplicate entities from all chunks
+                    merged_entities = self._merge_entities(chunk_entities)
+                    logger.info(f"Extracted {len(merged_entities)} unique entities from {len(chunks)} chunks")
+                    
+                    entities = {
+                        "entities": merged_entities,
+                        "extraction_status": "success",
+                        "chunks_processed": len(chunks)
+                    }
                 
             else:
                 # For smaller documents, process in one go
@@ -279,28 +307,42 @@ Text: {doc_text[:2000]}"""
                     if not isinstance(entities["entities"], list):
                         raise ValueError(f"Invalid entities field: expected list")
                     
-                    # Enhance entities with line references
-                    for entity in entities["entities"]:
-                        self._enhance_entity_with_line_refs(entity, doc_text)
-                    
-                    # Convert to new format with mentions
-                    enhanced_entities = []
-                    for entity in entities["entities"]:
-                        enhanced = {
-                            "name": entity.get("name", ""),
-                            "type": entity.get("type", ""),
-                            "confidence": entity.get("confidence", 75),
-                            "mentions": [{
-                                "quote": entity.get("evidence", ""),
-                                "line_refs": entity.get("line_refs", []),
-                                "context": entity.get("context", "primary_mention")
-                            }] if entity.get("evidence") else []
+                    if use_claims:
+                        # Convert entities to claims for single-pass documents
+                        entity_claims = self._entities_to_claims(entities["entities"], doc_text, chunk_id=0)
+                        mem.entity_claims = entity_claims
+                        logger.info(f"Generated {len(entity_claims)} entity claims from single-pass extraction")
+                        
+                        # Set placeholder for entities (will be populated by consolidator)
+                        entities = {
+                            "entities": [],
+                            "extraction_status": "claims_generated",
+                            "claims_count": len(entity_claims)
                         }
-                        enhanced_entities.append(enhanced)
-                    
-                    entities["entities"] = enhanced_entities
-                    # Add extraction status
-                    entities["extraction_status"] = "success"
+                    else:
+                        # Original behavior: enhance entities directly
+                        # Enhance entities with line references
+                        for entity in entities["entities"]:
+                            self._enhance_entity_with_line_refs(entity, doc_text)
+                        
+                        # Convert to new format with mentions
+                        enhanced_entities = []
+                        for entity in entities["entities"]:
+                            enhanced = {
+                                "name": entity.get("name", ""),
+                                "type": entity.get("type", ""),
+                                "confidence": entity.get("confidence", 75),
+                                "mentions": [{
+                                    "quote": entity.get("evidence", ""),
+                                    "line_refs": entity.get("line_refs", []),
+                                    "context": entity.get("context", "primary_mention")
+                                }] if entity.get("evidence") else []
+                            }
+                            enhanced_entities.append(enhanced)
+                        
+                        entities["entities"] = enhanced_entities
+                        # Add extraction status
+                        entities["extraction_status"] = "success"
                     
                 except json.JSONDecodeError as e:
                     error_msg = f"JSON parse error in entity extraction: {e}"
@@ -551,6 +593,76 @@ Text: {doc_text[:2000]}"""
         except Exception as e:
             logger.error(f"Error extracting entities from chunk: {e}")
             return []
+    
+    def _entities_to_claims(self, entities: List[Dict[str, Any]], doc_text: str, chunk_id: int = 0) -> List[Dict[str, Any]]:
+        """
+        Convert extracted entities to entity claims with evidence.
+        
+        Args:
+            entities: List of extracted entities
+            doc_text: Full document text for line reference calculation
+            chunk_id: ID of the chunk these entities came from
+            
+        Returns:
+            List of entity claims
+        """
+        claims = []
+        
+        for entity in entities:
+            if not isinstance(entity, dict):
+                continue
+                
+            entity_name = entity.get("name", "")
+            entity_type = entity.get("type", "")
+            
+            if not entity_name or not entity_type:
+                continue
+            
+            # Generate entity ID from type and normalized name
+            entity_id = f"{entity_type}_{entity_name.lower().replace(' ', '_').replace('-', '_')}"
+            
+            # Get evidence quote
+            evidence = entity.get("evidence", "")
+            
+            # Calculate line references if we have evidence
+            line_refs = []
+            if evidence:
+                # Try to find the evidence in the document
+                evidence_pos = doc_text.find(evidence)
+                if evidence_pos >= 0:
+                    line_refs = calculate_line_refs(
+                        doc_text,
+                        evidence_pos,
+                        evidence_pos + len(evidence)
+                    )
+                else:
+                    # Try case-insensitive search
+                    lower_text = doc_text.lower()
+                    lower_evidence = evidence.lower()
+                    evidence_pos = lower_text.find(lower_evidence)
+                    if evidence_pos >= 0:
+                        line_refs = calculate_line_refs(
+                            doc_text,
+                            evidence_pos,
+                            evidence_pos + len(evidence)
+                        )
+            
+            # Create the claim
+            claim = {
+                "entity_id": entity_id,
+                "name": entity_name,
+                "entity_type": entity_type,
+                "quotes": [evidence] if evidence else [],
+                "line_refs": line_refs,
+                "confidence": entity.get("confidence", 75),
+                "evidence_score": entity.get("confidence", 75),  # Use same as confidence for now
+                "chunk_id": chunk_id,
+                "context": entity.get("context", "primary_mention")
+            }
+            
+            claims.append(claim)
+        
+        return claims
     
     def _empty_entities(self) -> Dict[str, Any]:
         """Return empty entities structure."""

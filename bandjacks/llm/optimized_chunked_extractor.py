@@ -454,8 +454,9 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
             claims_count = len(result.get("claims", []))
             logger.info(f"Chunk {chunk.chunk_id} processed {len(pre_detected_spans)} pre-detected spans → {claims_count} claims")
             
-            # Update accumulator with discovered techniques
+            # Update accumulator with discovered techniques and entities
             if accumulator:
+                # Add techniques
                 for claim in result.get("claims", []):
                     tech_id = claim.get("technique_id") or claim.get("external_id", "")
                     if tech_id:
@@ -466,6 +467,32 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
                             evidence=claim.get("evidence", {}).get("sentences", []),
                             chunk_id=chunk.chunk_id
                         )
+                
+                # Add entities if available
+                entities = result.get("entities", {})
+                if entities and entities.get("entities"):
+                    for entity in entities["entities"]:
+                        # Extract evidence from mentions
+                        evidence_quotes = []
+                        if entity.get("mentions"):
+                            for mention in entity["mentions"]:
+                                if mention.get("quote"):
+                                    evidence_quotes.append(mention["quote"])
+                        
+                        # Generate entity ID if not present
+                        entity_type = entity.get("type", "unknown")
+                        entity_name = entity.get("name", "")
+                        entity_id = f"{entity_type}_{entity_name.lower().replace(' ', '_')}"
+                        
+                        accumulator.add_entity(
+                            entity_id=entity_id,
+                            name=entity_name,
+                            entity_type=entity_type,
+                            confidence=entity.get("confidence", 75),
+                            evidence=evidence_quotes,
+                            chunk_id=chunk.chunk_id
+                        )
+                
                 accumulator.mark_chunk_complete(chunk.chunk_id)
             
             return result
@@ -529,19 +556,53 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
         entities = {}
         if not config.get("disable_entity_extraction", False):
             try:
+                # Configure entity extraction to use claims
+                entity_config = config.copy()
+                entity_config["use_entity_claims"] = True
+                
+                # Get chunk_id from config if available
+                chunk_id = config.get("chunk_id", 0)
+                entity_config["chunk_id"] = chunk_id
+                
                 # Use batch entity extractor for better performance
                 if config.get("use_batch_entity_extraction", True):
                     from bandjacks.llm.entity_batch_extractor import BatchEntityExtractor
                     logger.info("Using BatchEntityExtractor for optimized entity extraction")
                     batch_extractor = BatchEntityExtractor()
-                    entities = batch_extractor.extract(chunk_text, config)
+                    entities = batch_extractor.extract(chunk_text, entity_config)
+                    
+                    # Convert extracted entities to claims if batch extractor doesn't do it
+                    if not hasattr(mem, 'entity_claims') and entities.get("entities"):
+                        entity_agent = EntityExtractionAgent()
+                        mem.entity_claims = entity_agent._entities_to_claims(
+                            entities["entities"], 
+                            chunk_text, 
+                            chunk_id=chunk_id
+                        )
                 else:
-                    # Fallback to original entity extraction
-                    logger.info("Using standard EntityExtractionAgent")
+                    # Fallback to original entity extraction with claims
+                    logger.info("Using standard EntityExtractionAgent with claims")
                     entity_agent = EntityExtractionAgent()
-                    entity_agent.run(mem, config)
+                    entity_agent.run(mem, entity_config)
+                
+                # Run entity consolidator if we have claims
+                if hasattr(mem, 'entity_claims') and mem.entity_claims:
+                    from bandjacks.llm.entity_consolidator import EntityConsolidatorAgent
+                    logger.info(f"Consolidating {len(mem.entity_claims)} entity claims")
+                    entity_consolidator = EntityConsolidatorAgent()
+                    entity_consolidator.run(mem, config)
+                    
                     if hasattr(mem, 'entities') and mem.entities:
                         entities = mem.entities
+                    else:
+                        entities = {"entities": [], "extraction_status": "no_entities"}
+                else:
+                    # If no claims were generated but we have entities, use them
+                    if hasattr(mem, 'entities') and mem.entities:
+                        entities = mem.entities
+                    else:
+                        entities = {"entities": [], "extraction_status": "no_claims"}
+                        
             except Exception as e:
                 logger.warning(f"Entity extraction failed: {e}")
                 entities = {"entities": [], "extraction_status": "failed"}
@@ -730,13 +791,14 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
         # Step 6: Merge results (with accumulated techniques if available)
         merged = self.merge_results(chunk_results)
         
-        # Add accumulated techniques if using progressive mode
+        # Add accumulated techniques and entities if using progressive mode
         if accumulator:
-            accumulated = accumulator.get_accumulated_techniques()
+            accumulated_techniques = accumulator.get_accumulated_techniques()
+            accumulated_entities = accumulator.get_accumulated_entities()
             stats = accumulator.get_statistics()
             
             # Merge accumulated techniques with higher confidence
-            for tech_id, tech_data in accumulated.items():
+            for tech_id, tech_data in accumulated_techniques.items():
                 if tech_id in merged["techniques"]:
                     # Update with accumulated confidence and evidence
                     merged["techniques"][tech_id]["confidence"] = tech_data["confidence"]
@@ -744,6 +806,46 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
                 else:
                     # Add new technique from accumulator
                     merged["techniques"][tech_id] = tech_data
+            
+            # Merge accumulated entities with higher confidence
+            if "entities" not in merged:
+                merged["entities"] = {"entities": [], "extraction_status": "success"}
+            
+            # Convert accumulated entities to standard format
+            entity_dict = {}
+            for entity_id, entity_data in accumulated_entities.items():
+                entity_dict[entity_id] = {
+                    "name": entity_data["name"],
+                    "type": entity_data["type"],
+                    "confidence": entity_data["confidence"],
+                    "mentions": [
+                        {
+                            "quote": quote,
+                            "line_refs": [],  # Would need to be tracked separately
+                            "context": "accumulated"
+                        }
+                        for quote in entity_data.get("evidence", [])[:3]  # Top 3 evidence pieces
+                    ]
+                }
+            
+            # Merge with existing entities
+            existing_entities = {f"{e['type']}_{e['name'].lower().replace(' ', '_')}": e 
+                               for e in merged["entities"].get("entities", [])}
+            
+            for entity_id, entity_data in entity_dict.items():
+                if entity_id in existing_entities:
+                    # Update confidence if higher
+                    if entity_data["confidence"] > existing_entities[entity_id].get("confidence", 0):
+                        existing_entities[entity_id]["confidence"] = entity_data["confidence"]
+                    # Merge mentions
+                    existing_mentions = existing_entities[entity_id].get("mentions", [])
+                    for new_mention in entity_data.get("mentions", []):
+                        # Check if this quote already exists
+                        if not any(m.get("quote") == new_mention.get("quote") for m in existing_mentions):
+                            existing_mentions.append(new_mention)
+                else:
+                    # Add new entity
+                    merged["entities"]["entities"].append(entity_data)
             
             # Add accumulator statistics
             merged["accumulator_stats"] = stats
