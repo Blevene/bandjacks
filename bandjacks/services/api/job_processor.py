@@ -463,7 +463,8 @@ class JobProcessor:
                 "skip_verification": config.get("skip_verification", False),
                 "max_spans": 30,  # Increased for better coverage
                 "disable_discovery": False,
-                "disable_targeted_extraction": True
+                "disable_targeted_extraction": True,
+                "use_entity_claims": True  # Enable claim-based entity extraction with full sentences
             }
             
             # Neo4j config for flow building
@@ -524,6 +525,7 @@ class JobProcessor:
                 "max_spans": spans_per_chunk,  # Dynamic spans per chunk
                 "span_score_threshold": 0.9 if text_length > 100_000 else 0.85,  # Stricter for very large docs
                 "confidence_threshold": 60 if text_length > 100_000 else 50,
+                "use_entity_claims": True,  # Enable claim-based entity extraction with full sentences
                 # Progressive accumulation and early termination parameters
                 # These will be passed through to the accumulator, which reads from env vars
                 "enable_early_termination": config.get("enable_early_termination"),

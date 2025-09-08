@@ -569,16 +569,25 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
                     from bandjacks.llm.entity_batch_extractor import BatchEntityExtractor
                     logger.info("Using BatchEntityExtractor for optimized entity extraction")
                     batch_extractor = BatchEntityExtractor()
-                    entities = batch_extractor.extract(chunk_text, entity_config)
+                    result = batch_extractor.extract(chunk_text, entity_config)
                     
-                    # Convert extracted entities to claims if batch extractor doesn't do it
-                    if not hasattr(mem, 'entity_claims') and entities.get("entities"):
-                        entity_agent = EntityExtractionAgent()
-                        mem.entity_claims = entity_agent._entities_to_claims(
-                            entities["entities"], 
-                            chunk_text, 
-                            chunk_id=chunk_id
-                        )
+                    # Check if batch extractor returned claims or entities
+                    if result.get("entity_claims"):
+                        # Batch extractor generated claims directly
+                        mem.entity_claims = result["entity_claims"]
+                        logger.info(f"BatchEntityExtractor generated {len(result['entity_claims'])} entity claims")
+                    elif result.get("entities"):
+                        # Batch extractor returned entities - convert to claims if needed
+                        if entity_config.get("use_entity_claims"):
+                            entity_agent = EntityExtractionAgent()
+                            mem.entity_claims = entity_agent._entities_to_claims(
+                                result["entities"], 
+                                chunk_text, 
+                                chunk_id=chunk_id
+                            )
+                        else:
+                            # Store entities directly
+                            mem.entities = result
                 else:
                     # Fallback to original entity extraction with claims
                     logger.info("Using standard EntityExtractionAgent with claims")

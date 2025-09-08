@@ -5,7 +5,7 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.entity_ignorelist import get_entity_ignorelist
-from bandjacks.llm.evidence_utils import calculate_line_refs
+from bandjacks.llm.evidence_utils import calculate_line_refs, extract_sentence_evidence
 from bandjacks.llm.json_utils import parse_json_with_fallback
 
 logger = logging.getLogger(__name__)
@@ -41,12 +41,13 @@ class BatchEntityExtractor:
             config: Optional extraction configuration
             
         Returns:
-            Dictionary with extracted entities
+            Dictionary with extracted entities or entity claims
         """
         config = config or {}
         text_length = len(text)
+        use_entity_claims = config.get("use_entity_claims", False)
         
-        logger.info(f"Starting entity extraction for document of {text_length} characters")
+        logger.info(f"Starting entity extraction for document of {text_length} characters (claims={use_entity_claims})")
         
         try:
             if text_length <= self.single_pass_limit:
@@ -61,11 +62,27 @@ class BatchEntityExtractor:
             # Apply ignorelist filtering
             filtered_entities = self._filter_entities(entities)
             
-            # Add extraction metadata
-            filtered_entities["extraction_status"] = "success"
-            filtered_entities["extraction_method"] = "single_pass" if text_length <= self.single_pass_limit else "progressive"
-            
-            return filtered_entities
+            # If using entity claims, convert entities to claims
+            if use_entity_claims:
+                entity_list = filtered_entities.get("entities", [])
+                chunk_id = config.get("chunk_id", 0)
+                
+                logger.info(f"Converting {len(entity_list)} entities to claims")
+                entity_claims = self._entities_to_claims(entity_list, text, chunk_id)
+                
+                # Return claims instead of entities
+                return {
+                    "entity_claims": entity_claims,
+                    "extraction_status": "claims_generated",
+                    "extraction_method": "single_pass" if text_length <= self.single_pass_limit else "progressive",
+                    "claims_count": len(entity_claims)
+                }
+            else:
+                # Add extraction metadata for direct entities
+                filtered_entities["extraction_status"] = "success"
+                filtered_entities["extraction_method"] = "single_pass" if text_length <= self.single_pass_limit else "progressive"
+                
+                return filtered_entities
             
         except Exception as e:
             logger.error(f"Entity extraction failed: {e}")
@@ -467,20 +484,37 @@ Return a JSON object with a "windows" array, where each window contains its extr
             return []
     
     def _add_line_references(self, entity: Dict[str, Any], text: str):
-        """Add line references to an entity based on evidence."""
+        """Add line references and enhance evidence to full sentences."""
         if not entity.get("evidence"):
             return
         
         evidence = entity["evidence"]
         evidence_pos = text.find(evidence)
         
+        if evidence_pos < 0:
+            # Try case-insensitive search
+            evidence_pos = text.lower().find(evidence.lower())
+        
         if evidence_pos >= 0:
-            line_refs = calculate_line_refs(
+            # Extract full sentences around the evidence
+            sentence_evidence = extract_sentence_evidence(
                 text,
                 evidence_pos,
-                evidence_pos + len(evidence)
+                context_sentences=1  # Get 1 sentence before and after
             )
-            entity["line_refs"] = line_refs
+            
+            # Update entity with enhanced evidence
+            if sentence_evidence.get("quote"):
+                entity["evidence"] = sentence_evidence["quote"]
+                entity["line_refs"] = sentence_evidence.get("line_refs", [])
+            else:
+                # Fallback to original line refs if sentence extraction fails
+                line_refs = calculate_line_refs(
+                    text,
+                    evidence_pos,
+                    evidence_pos + len(evidence)
+                )
+                entity["line_refs"] = line_refs
     
     def _extract_primary_entities(self, entities: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Extract primary entities for context."""
@@ -575,3 +609,99 @@ Return a JSON object with a "windows" array, where each window contains its extr
         logger.info(f"Filtered {len(entities['entities']) - len(filtered)} entities using ignorelist")
         
         return {"entities": filtered}
+    
+    def _entities_to_claims(self, entities: List[Dict[str, Any]], doc_text: str, chunk_id: int = 0) -> List[Dict[str, Any]]:
+        """
+        Convert extracted entities to entity claims with full sentence evidence.
+        
+        Args:
+            entities: List of extracted entities
+            doc_text: Full document text for line reference calculation
+            chunk_id: ID of the chunk these entities came from
+            
+        Returns:
+            List of entity claims with sentence-based evidence
+        """
+        claims = []
+        
+        for entity in entities:
+            if not isinstance(entity, dict):
+                continue
+                
+            entity_name = entity.get("name", "")
+            entity_type = entity.get("type", "")
+            
+            if not entity_name or not entity_type:
+                continue
+            
+            # Generate entity ID from type and normalized name
+            entity_id = f"{entity_type}_{entity_name.lower().replace(' ', '_').replace('-', '_')}"
+            
+            # Get original evidence quote from LLM or entity name
+            original_evidence = entity.get("evidence", "") or entity_name
+            
+            # Extract full sentence evidence
+            enhanced_quotes = []
+            line_refs = []
+            
+            # Find the position of the evidence in the document
+            evidence_pos = doc_text.find(original_evidence)
+            
+            if evidence_pos < 0 and original_evidence:
+                # Try case-insensitive search
+                lower_text = doc_text.lower()
+                lower_evidence = original_evidence.lower()
+                evidence_pos = lower_text.find(lower_evidence)
+            
+            # If we still can't find the evidence, try the entity name
+            if evidence_pos < 0:
+                name_pos = doc_text.find(entity_name)
+                if name_pos < 0:
+                    # Try case-insensitive
+                    name_pos = doc_text.lower().find(entity_name.lower())
+                if name_pos >= 0:
+                    evidence_pos = name_pos
+                    original_evidence = entity_name
+            
+            if evidence_pos >= 0:
+                # Extract full sentences around the evidence
+                sentence_evidence = extract_sentence_evidence(
+                    doc_text,
+                    evidence_pos,
+                    context_sentences=1  # Get 1 sentence before and after
+                )
+                
+                if sentence_evidence.get("quote"):
+                    enhanced_quotes.append(sentence_evidence["quote"])
+                    line_refs = sentence_evidence.get("line_refs", [])
+                else:
+                    # Fallback to original if sentence extraction fails
+                    enhanced_quotes.append(original_evidence)
+                    line_refs = calculate_line_refs(
+                        doc_text,
+                        evidence_pos,
+                        evidence_pos + len(original_evidence)
+                    )
+            else:
+                # If we can't find any evidence, use what we have
+                if original_evidence:
+                    enhanced_quotes.append(original_evidence)
+                # Try to get line refs from existing entity if available
+                if entity.get("line_refs"):
+                    line_refs = entity["line_refs"]
+            
+            # Create the claim
+            claim = {
+                "entity_id": entity_id,
+                "name": entity_name,
+                "entity_type": entity_type,
+                "quotes": enhanced_quotes,
+                "line_refs": line_refs,
+                "confidence": entity.get("confidence", 75),
+                "chunk_id": chunk_id,
+                "context": entity.get("context", "primary_mention")
+            }
+            
+            claims.append(claim)
+            
+        return claims

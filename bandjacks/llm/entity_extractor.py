@@ -596,7 +596,7 @@ Text: {doc_text[:2000]}"""
     
     def _entities_to_claims(self, entities: List[Dict[str, Any]], doc_text: str, chunk_id: int = 0) -> List[Dict[str, Any]]:
         """
-        Convert extracted entities to entity claims with evidence.
+        Convert extracted entities to entity claims with full sentence evidence.
         
         Args:
             entities: List of extracted entities
@@ -604,7 +604,7 @@ Text: {doc_text[:2000]}"""
             chunk_id: ID of the chunk these entities came from
             
         Returns:
-            List of entity claims
+            List of entity claims with sentence-based evidence
         """
         claims = []
         
@@ -621,41 +621,89 @@ Text: {doc_text[:2000]}"""
             # Generate entity ID from type and normalized name
             entity_id = f"{entity_type}_{entity_name.lower().replace(' ', '_').replace('-', '_')}"
             
-            # Get evidence quote
-            evidence = entity.get("evidence", "")
+            # Get original evidence quote from LLM
+            original_evidence = entity.get("evidence", "")
             
-            # Calculate line references if we have evidence
+            # Extract full sentence evidence
+            enhanced_quotes = []
             line_refs = []
-            if evidence:
-                # Try to find the evidence in the document
-                evidence_pos = doc_text.find(evidence)
-                if evidence_pos >= 0:
-                    line_refs = calculate_line_refs(
-                        doc_text,
-                        evidence_pos,
-                        evidence_pos + len(evidence)
-                    )
-                else:
+            
+            if original_evidence:
+                # Find the position of the evidence in the document
+                evidence_pos = doc_text.find(original_evidence)
+                
+                if evidence_pos < 0:
                     # Try case-insensitive search
                     lower_text = doc_text.lower()
-                    lower_evidence = evidence.lower()
+                    lower_evidence = original_evidence.lower()
                     evidence_pos = lower_text.find(lower_evidence)
-                    if evidence_pos >= 0:
+                
+                if evidence_pos >= 0:
+                    # Extract full sentences around the evidence
+                    sentence_evidence = extract_sentence_evidence(
+                        doc_text,
+                        evidence_pos,
+                        context_sentences=1  # Get 1 sentence before and after
+                    )
+                    
+                    if sentence_evidence.get("quote"):
+                        enhanced_quotes.append(sentence_evidence["quote"])
+                        line_refs = sentence_evidence.get("line_refs", [])
+                    else:
+                        # Fallback to original if sentence extraction fails
+                        enhanced_quotes.append(original_evidence)
                         line_refs = calculate_line_refs(
                             doc_text,
                             evidence_pos,
-                            evidence_pos + len(evidence)
+                            evidence_pos + len(original_evidence)
                         )
+                else:
+                    # If we can't find the evidence, try to find the entity name itself
+                    name_pos = doc_text.find(entity_name)
+                    if name_pos < 0:
+                        # Try case-insensitive
+                        name_pos = doc_text.lower().find(entity_name.lower())
+                    
+                    if name_pos >= 0:
+                        # Extract sentences around the entity name
+                        sentence_evidence = extract_sentence_evidence(
+                            doc_text,
+                            name_pos,
+                            context_sentences=1
+                        )
+                        
+                        if sentence_evidence.get("quote"):
+                            enhanced_quotes.append(sentence_evidence["quote"])
+                            line_refs = sentence_evidence.get("line_refs", [])
+                        else:
+                            # Last resort: use original evidence
+                            enhanced_quotes.append(original_evidence)
+            else:
+                # No evidence provided, try to find entity name in text
+                name_pos = doc_text.find(entity_name)
+                if name_pos < 0:
+                    name_pos = doc_text.lower().find(entity_name.lower())
+                
+                if name_pos >= 0:
+                    sentence_evidence = extract_sentence_evidence(
+                        doc_text,
+                        name_pos,
+                        context_sentences=1
+                    )
+                    
+                    if sentence_evidence.get("quote"):
+                        enhanced_quotes.append(sentence_evidence["quote"])
+                        line_refs = sentence_evidence.get("line_refs", [])
             
-            # Create the claim
+            # Create the claim with enhanced evidence
             claim = {
                 "entity_id": entity_id,
                 "name": entity_name,
                 "entity_type": entity_type,
-                "quotes": [evidence] if evidence else [],
+                "quotes": enhanced_quotes if enhanced_quotes else [original_evidence] if original_evidence else [],
                 "line_refs": line_refs,
                 "confidence": entity.get("confidence", 75),
-                "evidence_score": entity.get("confidence", 75),  # Use same as confidence for now
+                "evidence_score": entity.get("confidence", 75),
                 "chunk_id": chunk_id,
                 "context": entity.get("context", "primary_mention")
             }
