@@ -945,44 +945,20 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
     - Evidence preservation across all sources with line references
 
 ### Task 1.6: Implement Proper Consolidation in Optimized Pipeline
-- [ ] **Status**: Not Started (Quick fix applied)
-- **Current Problem**: ConsolidatorAgent not setting `consolidated_claims` in optimized flow, causing 0 techniques despite successful claim extraction (166 claims extracted but not converted)
-- **Quick Fix Applied**: 
-  - Added fallback in `optimized_chunked_extractor.py` to use `mem.claims` if `consolidated_claims` not available
-  - This ensures extraction results are properly converted to techniques
-- **Proper Solution Needed**:
-  - Update ConsolidatorAgent to always set `consolidated_claims` attribute on WorkingMemory
-  - Ensure proper deduplication and merging logic is applied
-  - Remove the fallback code once consolidator is fixed
-- **Files to Update**:
-  - `bandjacks/llm/consolidator.py` - Ensure `mem.consolidated_claims` is always set
-  - `bandjacks/llm/optimized_chunked_extractor.py` - Remove fallback after consolidator fix
-- **Implementation**:
-  ```python
-  # In consolidator.py
-  class ConsolidatorAgent:
-      def run(self, mem: WorkingMemory, config: Dict):
-          # ... existing consolidation logic ...
-          
-          # Always set consolidated_claims, even if just copying claims
-          if not hasattr(mem, 'consolidated_claims'):
-              mem.consolidated_claims = []
-          
-          # Perform deduplication and merging
-          consolidated = self.deduplicate_and_merge(mem.claims)
-          mem.consolidated_claims = consolidated
-          
-          logger.info(f"Set {len(mem.consolidated_claims)} consolidated claims")
-  ```
-- **Success Metrics**:
-  - ConsolidatorAgent always sets `mem.consolidated_claims`
-  - Proper deduplication removes redundant techniques
-  - Evidence from multiple chunks is properly merged
-  - No need for fallback logic in extractor
-- **Testing Required**:
-  - Verify consolidator sets attribute in all code paths
-  - Check deduplication works correctly
-  - Ensure evidence merging preserves all relevant quotes
+- [x] **Status**: ❌ Not Needed (2025-09-07)
+- **Initial Problem**: ConsolidatorAgent not setting `consolidated_claims` in optimized flow, causing 0 techniques despite successful claim extraction (166 claims extracted but not converted)
+- **Investigation Result**: 
+  - ConsolidatorAgent correctly populates `mem.techniques` dictionary (not `consolidated_claims`)
+  - The fallback in `optimized_chunked_extractor.py` to use `mem.claims` is the **correct behavior**
+  - The system is working as designed - no changes needed
+- **Key Finding**:
+  - Task was based on misunderstanding of ConsolidatorAgent's output
+  - ConsolidatorAgent consolidates claims directly into `mem.techniques` (line 884 in agents_v2.py)
+  - The optimized extractor properly uses these techniques to build the final result
+- **Conclusion**:
+  - No implementation needed - current architecture is correct
+  - The "quick fix" fallback is actually the proper implementation
+  - System successfully extracts techniques as verified in testing
 
 ### Task 1.7: Fix Overly Aggressive Technique Deduplication
 - [ ] **Status**: Not Started  

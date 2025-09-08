@@ -297,7 +297,7 @@ export function ReviewItemCard({
                         +{item.metadata.mentions.length - 1} more mentions
                       </button>
                     ) : (
-                      item.evidence.length > 1 && (
+                      item.evidence && Array.isArray(item.evidence) && item.evidence.length > 1 && (
                         <button
                           onClick={() => onExpand?.(true)}
                           className="text-xs text-blue-500 hover:underline"
