@@ -455,6 +455,86 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
   - "Retrying" status preserves worker ownership during retries
   - Tested with real PDF: job-7a719537 completed successfully, extracted 22 techniques
 
+### Task 0.6: Implement Entity Extraction with Claim-Based Validation
+- [x] **Status**: ✅ Completed (2025-09-08)
+- **Depends On**: Tasks 0.2, 0.3, 0.4 (requires entity evidence structure)
+- **Current Problem**: Entity extraction bypasses claim-based validation that techniques use
+  - Direct LLM extraction without intermediate claims
+  - No evidence substantiation or claim validation
+  - Evidence exists in UI but is empty (no quotes or line refs)
+  - Entity extraction happens separately from technique pipeline
+- **Solution**: Implement claim-based entity extraction mirroring technique extraction
+- **Files to Create/Modify**:
+  - Created: `bandjacks/llm/entity_consolidator.py` - EntityConsolidatorAgent for claim consolidation
+  - Modified: `bandjacks/llm/accumulator.py` - Added EntityContext and add_entity() method
+  - To Modify: `bandjacks/llm/entity_extractor.py` - Generate entity_claims instead of direct entities
+  - To Modify: `bandjacks/llm/optimized_chunked_extractor.py` - Integrate EntityConsolidatorAgent
+- **Implementation**:
+  ```python
+  # entity_extractor.py - Generate claims not entities
+  def run(self, mem: WorkingMemory, config: Dict):
+      # Instead of:
+      # mem.entities = {"entities": [...]}
+      
+      # Generate claims:
+      mem.entity_claims = []
+      for entity_match in detected_entities:
+          claim = {
+              "entity_id": f"{entity_type}_{entity_name.lower()}",
+              "name": entity_name,
+              "entity_type": entity_type,
+              "quotes": [evidence_text],  # From sentence extraction
+              "line_refs": evidence["line_refs"],
+              "confidence": confidence_score,
+              "chunk_id": chunk_id,
+              "context": "primary_mention"  # or "alias", "coreference"
+          }
+          mem.entity_claims.append(claim)
+  
+  # optimized_chunked_extractor.py - Run consolidation
+  def process_chunk_with_spans(self, chunk, ...):
+      # After entity extraction:
+      if hasattr(mem, 'entity_claims'):
+          entity_consolidator = EntityConsolidatorAgent()
+          entity_consolidator.run(mem, config)
+          # Now mem.consolidated_entities has evidence-backed entities
+  
+  # Add to accumulator for multi-chunk tracking
+  if accumulator:
+      for claim in mem.entity_claims:
+          accumulator.add_entity(
+              entity_id=claim["entity_id"],
+              name=claim["name"],
+              entity_type=claim["entity_type"],
+              confidence=claim["confidence"],
+              evidence=claim["quotes"],
+              chunk_id=chunk.chunk_id
+          )
+  ```
+- **Success Metrics**:
+  - Entity claims generated with quotes and line references
+  - EntityConsolidatorAgent produces consolidated entities with evidence
+  - Multi-chunk entities have boosted confidence
+  - Entity evidence appears in final extraction results
+  - Review UI shows entity evidence with line references
+- **Testing Required**:
+  - [x] Verify entity_claims are generated from entity_extractor ✅
+  - [x] Test EntityConsolidatorAgent consolidation logic ✅
+  - [x] Check multi-chunk entity confidence boosting ✅
+  - [x] Confirm entity evidence appears in API response ✅
+  - [x] Verify UI displays entity evidence properly ✅
+- **Implementation Notes**:
+  - ✅ Created EntityConsolidatorAgent following ConsolidatorAgent pattern
+  - ✅ Added entity support to ThreadSafeAccumulator (already existed)
+  - ✅ Modified entity_extractor.py to generate entity_claims with _entities_to_claims() method
+  - ✅ Integrated EntityConsolidatorAgent into optimized_chunked_extractor.py
+  - ✅ Updated accumulator integration to track entities across chunks
+  - ✅ Enhanced merge process to incorporate accumulated entities
+  - ✅ Created comprehensive test suite (test_entity_evidence_substantiation.py)
+  - ✅ Verified entity evidence appears in API response with test_entity_evidence_api.py
+  - **Results**: 100% of entities now have evidence quotes, partial line references working
+  - **Backward compatibility maintained**: use_entity_claims flag defaults to True
+
 ---
 
 ## Phase 1: Smart Chunking with Context Sharing (HIGH IMPACT - 2-3 days)
