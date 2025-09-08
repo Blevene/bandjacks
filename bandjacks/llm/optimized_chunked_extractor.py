@@ -869,7 +869,31 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
             "early_terminated": accumulator.should_stop_processing() if accumulator else False
         }
         
-        logger.info(f"Optimized extraction complete: {len(merged['techniques'])} techniques from {len(all_spans)} pre-detected spans")
+        # Log technique preservation for debugging Task 1.7
+        if merged["techniques"]:
+            technique_ids = sorted(merged["techniques"].keys())
+            parent_count = sum(1 for tid in technique_ids if "." not in tid)
+            sub_count = sum(1 for tid in technique_ids if "." in tid)
+            
+            # Log parent/subtechnique relationships
+            parents_with_subs = {}
+            for tid in technique_ids:
+                if "." in tid:
+                    parent = tid.split(".")[0]
+                    if parent not in parents_with_subs:
+                        parents_with_subs[parent] = []
+                    parents_with_subs[parent].append(tid)
+            
+            logger.info(f"Optimized extraction complete: {len(technique_ids)} techniques "
+                       f"({parent_count} parent, {sub_count} subtechniques) from {len(all_spans)} pre-detected spans")
+            
+            for parent, subs in parents_with_subs.items():
+                if parent in technique_ids:
+                    logger.debug(f"  {parent} (parent) with subtechniques: {', '.join(subs)}")
+                else:
+                    logger.debug(f"  Subtechniques only (no parent): {', '.join(subs)}")
+        else:
+            logger.info(f"Optimized extraction complete: 0 techniques from {len(all_spans)} pre-detected spans")
         
         if progress_callback:
             progress_callback(75, f"Consolidating {len(merged['techniques'])} techniques")

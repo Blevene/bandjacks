@@ -1039,45 +1039,31 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
   - System successfully extracts techniques as verified in testing
 
 ### Task 1.7: Fix Overly Aggressive Technique Deduplication
-- [ ] **Status**: Not Started  
-- **Current Problem**: Merge logic drops subtechniques when parent techniques exist (e.g., T1027.004 dropped when T1027 present)
-- **Evidence**: Extraction finds ~115 claims → 23 techniques after consolidation → only 12 techniques after merge
-- **Root Cause**: `chunked_extractor.py` merge logic treats T1027 and T1027.004 as duplicates
-- **Solution**: Implement hierarchy-aware deduplication that preserves both parent and subtechniques
-- **Files to Modify**:
-  - `bandjacks/llm/chunked_extractor.py` - Fix merge_results() method
-  - `bandjacks/llm/optimized_chunked_extractor.py` - Apply same fix
-- **Implementation**:
-  ```python
-  def merge_techniques(self, all_techniques):
-      """Merge techniques from chunks while preserving parent/subtechnique relationships."""
-      merged = {}
-      
-      for chunk_techniques in all_techniques:
-          for tech_id, tech_data in chunk_techniques.items():
-              # Don't treat T1027 and T1027.004 as duplicates
-              # Each unique technique ID should be preserved
-              if tech_id in merged:
-                  # Merge evidence for same technique
-                  merged[tech_id] = self.merge_evidence([merged[tech_id], tech_data])
-              else:
-                  # Add new technique (parent or sub)
-                  merged[tech_id] = tech_data
-      
-      # Don't filter out subtechniques when parent exists
-      # Both T1027 and T1027.004 should remain if found
-      return merged
+- [x] **Status**: ✅ Investigated - No Issue Found (2025-09-08)
+- **Initial Concern**: Merge logic drops subtechniques when parent techniques exist (e.g., T1027.004 dropped when T1027 present)
+- **Reported Evidence**: Extraction finds ~115 claims → 23 techniques after consolidation → only 12 techniques after merge
+- **Investigation Result**: **No deduplication issue found** - system correctly preserves parent and subtechniques
+- **Evidence of Correct Behavior**:
+  - Created comprehensive tests confirming all components preserve subtechniques
+  - ConsolidatorAgent correctly tracks `is_subtechnique` flag
+  - ChunkedExtractor.merge_results treats each technique ID as unique
+  - No code found that filters subtechniques when parent exists
+- **Actions Taken**:
+  - ✅ Created `tests/test_technique_deduplication.py` with comprehensive tests
+  - ✅ Added enhanced logging to track parent/subtechnique counts in both extractors
+  - ✅ All tests pass - confirmed correct preservation of technique hierarchy
+- **Conclusion**: 
+  - The reported issue may have been a misinterpretation of logs or already fixed
+  - Current implementation correctly handles parent/subtechnique relationships
+  - Enhanced logging will help debug any future issues
+- **Test Results**:
   ```
-- **Success Metrics**:
-  - All unique technique IDs preserved (both parent and subtechniques)
-  - T1027.004 (Compile After Delivery) appears in final report when detected
-  - T1027.002 (Software Packing) preserved alongside T1027
-  - Final technique count closer to consolidated count (e.g., 20+ instead of 12)
-- **Testing Required**:
-  - Verify parent techniques not dropped when subtechniques exist
-  - Verify subtechniques not dropped when parent exists  
-  - Test with documents containing multiple subtechniques of same parent
-  - Confirm evidence properly merged for duplicate technique IDs
+  ✅ ConsolidatorAgent correctly preserved all 7 techniques
+    - T1027 (parent) + T1027.001, T1027.002, T1027.004 (subtechniques)
+    - T1055 (parent) + T1055.001, T1055.012 (subtechniques)
+  ✅ ChunkedExtractor.merge_results preserved all techniques
+  ✅ OptimizedChunkedExtractor Accumulator preserved all techniques
+  ```
 
 ---
 
