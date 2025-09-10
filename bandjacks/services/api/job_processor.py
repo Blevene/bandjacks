@@ -464,7 +464,8 @@ class JobProcessor:
                 "max_spans": 30,  # Increased for better coverage
                 "disable_discovery": False,
                 "disable_targeted_extraction": True,
-                "use_entity_claims": True  # Enable claim-based entity extraction with full sentences
+                "use_entity_claims": True,  # Enable claim-based entity extraction with full sentences
+                "mapper_batch_size": min(settings.mapper_batch_size, settings.max_mapper_batch_size)  # Use configured batch size
             }
             
             # Neo4j config for flow building
@@ -526,6 +527,7 @@ class JobProcessor:
                 "span_score_threshold": 0.9 if text_length > 100_000 else 0.85,  # Stricter for very large docs
                 "confidence_threshold": 60 if text_length > 100_000 else 50,
                 "use_entity_claims": True,  # Enable claim-based entity extraction with full sentences
+                "mapper_batch_size": min(settings.mapper_batch_size, settings.max_mapper_batch_size),  # Use configured batch size
                 # Progressive accumulation and early termination parameters
                 # These will be passed through to the accumulator, which reads from env vars
                 "enable_early_termination": config.get("enable_early_termination"),

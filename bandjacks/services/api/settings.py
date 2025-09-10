@@ -72,6 +72,10 @@ class Settings(BaseSettings):
     min_techniques_for_termination: int = 40
     confidence_boost: float = 5.0
     max_context_hints: int = 10
+    
+    # Mapper Batch Size Settings
+    mapper_batch_size: int = 20  # Default batch size for BatchMapperAgent
+    max_mapper_batch_size: int = 25  # Maximum allowed batch size
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
