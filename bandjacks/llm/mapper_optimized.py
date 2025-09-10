@@ -38,18 +38,25 @@ class BatchMapperAgent:
         if span_count == 0:
             return
             
-        # Dynamic batch size based on total spans (reduced to avoid response truncation)
-        if span_count <= 20:
-            batch_size = min(10, span_count)  # Small docs: up to 10 spans per batch
-        elif span_count <= 50:
-            batch_size = 12  # Medium docs: 12 spans per batch  
-        elif span_count <= 100:
-            batch_size = 15  # Large docs: 15 spans per batch
+        # Dynamic batch size based on total spans (increased for better efficiency)
+        if span_count <= 15:
+            default_batch_size = min(15, span_count)  # Single batch for small docs
+        elif span_count <= 30:
+            default_batch_size = 15  # Two batches for medium docs
+        elif span_count <= 60:
+            default_batch_size = 20  # Three batches for large docs
         else:
-            batch_size = 18  # Very large docs: 18 spans per batch
+            default_batch_size = 25  # Max batch size for very large docs
         
-        # Override with config if provided
-        batch_size = config.get("batch_size", batch_size)
+        # Token estimation safety check (~250 tokens per span average)
+        estimated_tokens_per_span = 250
+        max_safe_batch = 5000 // estimated_tokens_per_span  # Leave room for response
+        if default_batch_size * estimated_tokens_per_span > 5000:
+            logger.info(f"Reducing batch size from {default_batch_size} to {max_safe_batch} due to token limits")
+            default_batch_size = max_safe_batch
+        
+        # Override with config if provided - use mapper_batch_size key for clarity
+        batch_size = config.get("mapper_batch_size", config.get("batch_size", default_batch_size))
         
         # No more fallback to sequential - always use batching
         logger.info(f"Processing {span_count} spans with batch size {batch_size}")
