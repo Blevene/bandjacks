@@ -8,6 +8,7 @@ from opensearchpy import OpenSearch
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.loaders.embedder import batch_encode
 from bandjacks.llm.tools import graph_lookup
+from bandjacks.llm.vector_cache import get_vector_cache
 import os
 
 logger = logging.getLogger(__name__)
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Connection pooling - reuse client across calls
 _opensearch_client = None
 
-# Cache for embedding results - shared across all BatchRetrieverAgent instances
+# Cache for embedding results - keep for backward compatibility
 _embedding_cache = {}
 _cache_hits = 0
 _cache_misses = 0
@@ -48,9 +49,16 @@ class BatchRetrieverAgent:
             logger.info("[BatchRetrieverAgent] No spans to process")
             logger.debug("[BatchRetrieverAgent] No spans to process")
             return
-            
+        
+        # Get settings and cache instance
+        from bandjacks.services.api.settings import settings
         top_k = int(config.get("top_k", 8))
-        use_cache = config.get("use_embedding_cache", True)
+        use_new_cache = settings.vector_cache_enabled and config.get("use_vector_cache", True)
+        use_result_cache = settings.vector_result_cache_enabled and use_new_cache
+        use_legacy_cache = config.get("use_embedding_cache", True) and not use_new_cache
+        
+        # Get cache instance if using new cache
+        cache = get_vector_cache() if use_new_cache else None
         
         # Apply lexical hints to all span texts
         span_texts = [self._hinted_query(span["text"]) for span in mem.spans]
@@ -59,27 +67,69 @@ class BatchRetrieverAgent:
         unique_texts, text_to_indices = self._deduplicate_texts(span_texts)
         logger.info(f"[BatchRetriever] Deduplication: {len(span_texts)} spans → {len(unique_texts)} unique texts")
         
-        # Separate cached vs uncached texts
+        # Try to get cached results first (if using new result cache)
+        cached_results = {}
+        texts_needing_search = list(range(len(unique_texts)))
+        
+        if use_result_cache and cache:
+            cached_results = {}
+            texts_needing_search = []
+            
+            for i, text in enumerate(unique_texts):
+                candidates = cache.get_candidates(text, top_k)
+                if candidates is not None:
+                    cached_results[i] = candidates
+                else:
+                    texts_needing_search.append(i)
+            
+            if cached_results:
+                logger.info(f"[BatchRetriever] Result cache: {len(cached_results)} hits, {len(texts_needing_search)} misses")
+                
+                # If all results are cached, return early
+                if not texts_needing_search:
+                    # Map cached results back to original spans
+                    for span_idx, unique_idx in enumerate(text_to_indices):
+                        if unique_idx in cached_results:
+                            mem.candidates.setdefault(span_idx, [])
+                            mem.candidates[span_idx].extend(cached_results[unique_idx])
+                    
+                    # Log cache stats
+                    stats = cache.get_stats()
+                    logger.info(f"[BatchRetriever] Cache stats - Hit rate: {stats['overall_hit_rate']:.2%}")
+                    return
+        
+        # Filter unique_texts to only those needing search
+        unique_texts_to_search = [unique_texts[i] for i in texts_needing_search]
+        
+        # Separate cached vs uncached embeddings
         vectors_to_encode = []
         cached_vectors = {}
         
-        if use_cache:
-            for i, text in enumerate(unique_texts):
+        if use_new_cache and cache:
+            for local_idx, text in enumerate(unique_texts_to_search):
+                embedding = cache.get_embedding(text)
+                if embedding is not None:
+                    cached_vectors[local_idx] = embedding
+                else:
+                    vectors_to_encode.append((local_idx, text))
+        elif use_legacy_cache:
+            for local_idx, text in enumerate(unique_texts_to_search):
                 text_hash = self._get_text_hash(text)
                 if text_hash in _embedding_cache:
-                    cached_vectors[i] = _embedding_cache[text_hash]
+                    cached_vectors[local_idx] = _embedding_cache[text_hash]
                     _cache_hits += 1
                 else:
-                    vectors_to_encode.append((i, text))
+                    vectors_to_encode.append((local_idx, text))
                     _cache_misses += 1
             
-            logger.info(f"[BatchRetriever] Cache stats: {_cache_hits} hits, {_cache_misses} misses")
+            if use_legacy_cache:
+                logger.info(f"[BatchRetriever] Legacy cache stats: {_cache_hits} hits, {_cache_misses} misses")
         else:
-            vectors_to_encode = [(i, text) for i, text in enumerate(unique_texts)]
+            vectors_to_encode = [(i, text) for i, text in enumerate(unique_texts_to_search)]
         
         # Batch encode only uncached texts
         import time
-        vectors = [None] * len(unique_texts)
+        vectors = [None] * len(unique_texts_to_search)
         
         if vectors_to_encode:
             texts_to_encode = [text for _, text in vectors_to_encode]
@@ -91,7 +141,9 @@ class BatchRetrieverAgent:
             # Place encoded vectors and update cache
             for (idx, text), vec in zip(vectors_to_encode, encoded_vectors):
                 vectors[idx] = vec
-                if use_cache and vec is not None:
+                if use_new_cache and cache and vec is not None:
+                    cache.set_embedding(text, vec)
+                elif use_legacy_cache and vec is not None:
                     text_hash = self._get_text_hash(text)
                     _embedding_cache[text_hash] = vec
         
@@ -105,13 +157,13 @@ class BatchRetrieverAgent:
         
         # Build multi-search request for unique vectors only
         msearch_body = []
-        unique_to_search_idx = {}  # Maps unique text index to search result index
+        local_to_search_idx = {}  # Maps local index to search result index
         search_idx = 0
         
-        for unique_idx, vec in enumerate(vectors):
+        for local_idx, vec in enumerate(vectors):
             if vec is None:
                 continue
-            unique_to_search_idx[unique_idx] = search_idx
+            local_to_search_idx[local_idx] = search_idx
             search_idx += 1
             
             # Add index specification
@@ -140,22 +192,22 @@ class BatchRetrieverAgent:
             search_start = time.time()
             response = client.msearch(body=msearch_body)
             search_time = time.time() - search_start
-            logger.info(f"[BatchRetriever] msearch took {search_time:.2f}s for {len(unique_to_search_idx)} queries")
-            logger.debug(f"[BatchRetriever] msearch took {search_time:.2f}s for {len(unique_to_search_idx)} queries")
+            logger.info(f"[BatchRetriever] msearch took {search_time:.2f}s for {len(local_to_search_idx)} queries")
+            logger.debug(f"[BatchRetriever] msearch took {search_time:.2f}s for {len(local_to_search_idx)} queries")
             
-            # Process results and map back to original span indices
+            # Process results and map back to local indices
             unique_candidates = {}
-            for unique_idx, search_idx in unique_to_search_idx.items():
+            for local_idx, search_idx in local_to_search_idx.items():
                 if search_idx >= len(response["responses"]):
                     continue
                     
                 search_result = response["responses"][search_idx]
                 if "error" in search_result:
-                    logger.debug(f"[BatchRetriever] Error for unique text {unique_idx}: {search_result['error']}")
+                    logger.debug(f"[BatchRetriever] Error for search text {local_idx}: {search_result['error']}")
                     continue
                 
-                # Store candidates for this unique text
-                unique_candidates[unique_idx] = []
+                # Store candidates for this local text
+                unique_candidates[local_idx] = []
                 seen = set()  # Track seen external_ids to avoid duplicates
                 
                 # Filter to AttackPattern types and add candidates
@@ -188,7 +240,7 @@ class BatchRetrieverAgent:
                     if not name and meta:
                         name = meta.get("name", "")
                     
-                    unique_candidates[unique_idx].append({
+                    unique_candidates[local_idx].append({
                         "external_id": ext_id,
                         "name": name,
                         "score": hit.get("_score", 0.0),
@@ -200,13 +252,31 @@ class BatchRetrieverAgent:
                     if added >= top_k:
                         break
             
+            # Cache results if using new cache
+            if use_result_cache and cache:
+                for local_idx in unique_candidates:
+                    global_idx = texts_needing_search[local_idx] if texts_needing_search else local_idx
+                    text = unique_texts[global_idx]
+                    cache.set_candidates(text, top_k, unique_candidates[local_idx])
+            
+            # Combine cached and newly searched results
+            all_candidates = dict(cached_results)
+            for local_idx, candidates in unique_candidates.items():
+                global_idx = texts_needing_search[local_idx] if texts_needing_search else local_idx
+                all_candidates[global_idx] = candidates
+            
             # Map candidates from unique texts back to original span indices
             for span_idx, unique_idx in enumerate(text_to_indices):
-                if unique_idx in unique_candidates:
+                if unique_idx in all_candidates:
                     mem.candidates.setdefault(span_idx, [])
-                    mem.candidates[span_idx].extend(unique_candidates[unique_idx])
+                    mem.candidates[span_idx].extend(all_candidates[unique_idx])
                         
-            logger.debug(f"[BatchRetriever] Added candidates for {len(mem.candidates)} spans from {len(unique_candidates)} unique searches")
+            logger.debug(f"[BatchRetriever] Added candidates for {len(mem.candidates)} spans from {len(all_candidates)} unique searches")
+            
+            # Log cache stats if using new cache
+            if use_new_cache and cache:
+                stats = cache.get_stats()
+                logger.info(f"[BatchRetriever] Cache stats - Hit rate: {stats['overall_hit_rate']:.2%}")
             
         except Exception as e:
             logger.debug(f"[BatchRetriever] Error in batch search: {e}")

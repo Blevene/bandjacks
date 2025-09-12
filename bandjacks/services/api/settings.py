@@ -76,6 +76,13 @@ class Settings(BaseSettings):
     # Mapper Batch Size Settings
     mapper_batch_size: int = 20  # Default batch size for BatchMapperAgent
     max_mapper_batch_size: int = 25  # Maximum allowed batch size
+    
+    # Vector Search Cache Settings
+    vector_cache_enabled: bool = True  # Enable vector search caching
+    vector_cache_max_size: int = 5000  # Maximum cache entries (LRU eviction)
+    vector_cache_ttl: int = 3600  # Cache TTL in seconds (1 hour)
+    vector_result_cache_enabled: bool = True  # Cache full search results
+    vector_cache_redis_enabled: bool = True  # Use Redis for shared cache
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
