@@ -464,8 +464,10 @@ class JobProcessor:
                 "max_spans": 30,  # Increased for better coverage
                 "disable_discovery": False,
                 "disable_targeted_extraction": True,
-                "use_entity_claims": True,  # Enable claim-based entity extraction with full sentences
-                "mapper_batch_size": min(settings.mapper_batch_size, settings.max_mapper_batch_size)  # Use configured batch size
+                "use_entity_claims": settings.use_entity_claims,  # From settings
+                "mapper_batch_size": min(settings.mapper_batch_size, settings.max_mapper_batch_size),  # Use configured batch size
+                "enable_sentence_evidence": settings.enable_sentence_evidence,
+                "context_sentences": settings.context_sentences
             }
             
             # Neo4j config for flow building
@@ -526,37 +528,36 @@ class JobProcessor:
                 "max_spans": spans_per_chunk,  # Dynamic spans per chunk
                 "span_score_threshold": 0.9 if text_length > 100_000 else 0.85,  # Stricter for very large docs
                 "confidence_threshold": 60 if text_length > 100_000 else 50,
-                "use_entity_claims": True,  # Enable claim-based entity extraction with full sentences
+                "use_entity_claims": settings.use_entity_claims,  # From settings
                 "mapper_batch_size": min(settings.mapper_batch_size, settings.max_mapper_batch_size),  # Use configured batch size
-                # Progressive accumulation and early termination parameters
-                # These will be passed through to the accumulator, which reads from env vars
-                "enable_early_termination": config.get("enable_early_termination"),
-                "early_termination_threshold": config.get("early_termination_threshold"),
-                "min_techniques_for_termination": config.get("min_techniques_for_termination"),
-                "confidence_boost": config.get("confidence_boost"),
-                "max_context_hints": config.get("max_context_hints")
+                "enable_sentence_evidence": settings.enable_sentence_evidence,
+                "context_sentences": settings.context_sentences,
+                # Progressive accumulation and early termination parameters from settings
+                "enable_early_termination": config.get("enable_early_termination", settings.enable_early_termination),
+                "early_termination_threshold": config.get("early_termination_threshold", settings.early_termination_threshold),
+                "min_techniques_for_termination": config.get("min_techniques_for_termination", settings.min_techniques_for_termination),
+                "confidence_boost": config.get("confidence_boost", settings.confidence_boost),
+                "max_context_hints": config.get("max_context_hints", settings.max_context_hints)
             }
             
-            # Use optimized extractor if enabled (default: true)
-            use_optimized = os.getenv("USE_OPTIMIZED_EXTRACTOR", "true").lower() == "true"
-            
-            if use_optimized:
+            # Use optimized extractor if enabled (from settings)
+            if settings.use_optimized_extractor:
                 logger.info("Using OptimizedChunkedExtractor with smart span detection")
                 extractor = OptimizedChunkedExtractor(
-                    chunk_size=4000,  # Larger chunks for better context
-                    overlap=150,      # Less overlap
-                    max_chunks=max_chunks,
-                    parallel_workers=1,  # Sequential to avoid rate limits
-                    window_size=30000,  # ~8K tokens for span detection windows
-                    window_overlap=5000  # ~1.5K tokens overlap
+                    chunk_size=settings.chunk_size,  # From settings
+                    overlap=settings.chunk_overlap,  # From settings
+                    max_chunks=min(max_chunks, settings.max_chunks),  # Use the smaller value
+                    parallel_workers=settings.parallel_workers,  # From settings
+                    window_size=settings.span_window_size,  # From settings
+                    window_overlap=settings.span_overlap_size  # From settings
                 )
             else:
                 logger.info("Using standard ChunkedExtractor")
                 extractor = ChunkedExtractor(
-                    chunk_size=4000,  # Larger chunks for better context
-                    overlap=150,      # Less overlap
-                    max_chunks=max_chunks,
-                    parallel_workers=1  # Sequential to avoid rate limits
+                    chunk_size=settings.chunk_size,  # From settings
+                    overlap=settings.chunk_overlap,  # From settings
+                    max_chunks=min(max_chunks, settings.max_chunks),  # Use the smaller value
+                    parallel_workers=settings.parallel_workers  # From settings
                 )
             
             # Progress callback for chunked extraction

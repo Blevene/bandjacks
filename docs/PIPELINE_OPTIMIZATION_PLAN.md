@@ -1249,19 +1249,78 @@ The Bandjacks report processing pipeline has a **critical architectural ineffici
   - Better scalability for large flows
   - Reduced Neo4j database load
   - Improved response times for API endpoints
+- **Verified in Production**: ✅
+  - Successfully tested with DarkCloud Stealer PDF (1.4MB)
+  - BatchRetrieverAgent processing spans efficiently with deduplication
+  - Batch encoding working: "Batch encoding took 4.76s for 52 unique texts"
+  - Batch msearch operational: "msearch took 0.10s for 52 queries"
+  - No errors when creating flows or persisting to Neo4j
+  - Backend logs confirm batch operations are being used throughout the pipeline
 
 ### Task 2.5: Dynamic Configuration
-- [ ] **Status**: Not Started
-- **Solution**: Make all key parameters configurable
-- **New Parameters**:
-  ```python
-  # Environment variables
-  MAPPER_BATCH_SIZE = int(os.getenv("MAPPER_BATCH_SIZE", "15"))
-  CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "4000"))
-  MAX_CHUNKS = int(os.getenv("MAX_CHUNKS", "30"))
-  EARLY_TERMINATION_THRESHOLD = int(os.getenv("EARLY_TERMINATION_THRESHOLD", "50"))
-  USE_OPTIMIZED_EXTRACTOR = os.getenv("USE_OPTIMIZED_EXTRACTOR", "true") == "true"
-  ```
+- [x] **Status**: ✅ Completed (2025-09-14)
+- **Solution**: Made all key parameters configurable through environment variables
+- **Implementation Details**:
+  1. **Added 20+ Configuration Parameters** to `settings.py`:
+     - Extraction pipeline configs (chunk_size, max_chunks, use_optimized_extractor)
+     - Batch processing configs (parallel_workers, batch_encoding_size, opensearch_batch_size)
+     - Entity extraction configs (entity_single_pass_limit, entity_window_size)
+     - Span detection configs (span_detection_threshold, span_window_size)
+     - Quality improvement configs (enable_sentence_evidence, semantic_dedup_threshold)
+     - Performance monitoring configs (enable_performance_logging, log_batch_statistics)
+  
+  2. **Updated Pipeline Components**:
+     - `job_processor.py`: Now reads all configs from settings instead of hardcoded values
+     - `optimized_chunked_extractor.py`: Uses dynamic window sizes and thresholds
+     - Configuration precedence: Environment > .env file > defaults
+  
+  3. **Key Configurations Added**:
+     ```bash
+     # Extraction Pipeline
+     USE_OPTIMIZED_EXTRACTOR=true   # Feature flag for optimized pipeline
+     CHUNK_SIZE=4000                 # Configurable chunk size
+     MAX_CHUNKS=30                   # Max chunks to process
+     CHUNK_OVERLAP=200               # Overlap between chunks
+     
+     # Batch Processing
+     PARALLEL_WORKERS=4              # Parallel chunk processing
+     BATCH_ENCODING_SIZE=100         # Max texts per encoding batch
+     OPENSEARCH_BATCH_SIZE=50        # Max queries per msearch
+     
+     # Entity Extraction
+     USE_ENTITY_CLAIMS=true          # Enable claim-based extraction
+     ENTITY_SINGLE_PASS_LIMIT=30000  # Threshold for single-pass
+     ENTITY_WINDOW_SIZE=30000        # Window size for progressive
+     
+     # Span Detection
+     SPAN_DETECTION_THRESHOLD=30000  # Global vs windowed threshold
+     SPAN_WINDOW_SIZE=30000          # Detection window size
+     SPAN_OVERLAP_SIZE=5000          # Window overlap
+     
+     # Quality Settings
+     ENABLE_SENTENCE_EVIDENCE=true   # Complete sentence extraction
+     CONTEXT_SENTENCES=1             # Context around evidence
+     SEMANTIC_DEDUP_THRESHOLD=0.85   # Similarity threshold
+     ```
+  
+  4. **Validation & Clamping**:
+     - Mapper batch size clamped to MAX_MAPPER_BATCH_SIZE
+     - Chunk count limited by both calculated and configured max
+     - All boolean flags properly parsed from strings
+  
+- **Testing Completed**:
+  - ✅ Created `test_dynamic_config.py` with comprehensive tests
+  - ✅ Verified environment variables override defaults
+  - ✅ Tested configuration precedence and ranges
+  - ✅ Confirmed integration with extraction pipeline
+  - ✅ All tests passing with dynamic values
+  
+- **Benefits Achieved**:
+  - **Flexible deployment**: Different configurations for dev/staging/prod
+  - **Easy tuning**: Adjust performance without code changes
+  - **A/B testing**: Compare configurations side-by-side
+  - **Resource management**: Scale based on available resources
+  - **Debug control**: Toggle logging and monitoring dynamically
 
 ---
 

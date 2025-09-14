@@ -83,6 +83,37 @@ class Settings(BaseSettings):
     vector_cache_ttl: int = 3600  # Cache TTL in seconds (1 hour)
     vector_result_cache_enabled: bool = True  # Cache full search results
     vector_cache_redis_enabled: bool = True  # Use Redis for shared cache
+    
+    # Extraction Pipeline Configuration
+    use_optimized_extractor: bool = True  # Use optimized chunked extractor
+    chunk_size: int = 4000  # Size of text chunks for processing
+    max_chunks: int = 30  # Maximum number of chunks to process
+    chunk_overlap: int = 200  # Overlap between chunks
+    
+    # Batch Processing Configuration
+    parallel_workers: int = 4  # Number of parallel workers for chunk processing
+    batch_encoding_size: int = 100  # Max texts to encode in one batch
+    opensearch_batch_size: int = 50  # Max queries per OpenSearch msearch
+    
+    # Entity Extraction Configuration
+    use_entity_claims: bool = True  # Use claim-based entity extraction
+    entity_single_pass_limit: int = 30000  # Max text size for single-pass entity extraction
+    entity_window_size: int = 30000  # Window size for progressive entity extraction
+    entity_overlap_size: int = 5000  # Overlap for entity extraction windows
+    
+    # Span Detection Configuration  
+    span_detection_threshold: int = 30000  # Threshold for global vs windowed span detection
+    span_window_size: int = 30000  # Window size for span detection
+    span_overlap_size: int = 5000  # Overlap for span detection windows
+    
+    # Quality Improvement Configuration
+    enable_sentence_evidence: bool = True  # Extract complete sentences as evidence
+    context_sentences: int = 1  # Number of context sentences around evidence
+    semantic_dedup_threshold: float = 0.85  # Similarity threshold for deduplication
+    
+    # Performance Monitoring
+    enable_performance_logging: bool = True  # Log performance metrics
+    log_batch_statistics: bool = True  # Log batch processing statistics
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
