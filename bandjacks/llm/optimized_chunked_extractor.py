@@ -13,6 +13,7 @@ from bandjacks.llm.agents_v2 import SpanFinderAgent
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.entity_utils import consolidate_entities
 from bandjacks.llm.accumulator import ThreadSafeAccumulator
+from bandjacks.llm.token_utils import TokenEstimator
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,10 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
         max_chunks: int = 8,
         parallel_workers: int = 1,
         window_size: int = 30000,  # ~8K tokens for span detection
-        window_overlap: int = 5000  # ~1.5K tokens overlap
+        window_overlap: int = 5000,  # ~1.5K tokens overlap
+        enable_dynamic_chunking: bool = True,  # Enable dynamic chunk sizing
+        min_chunk_size: int = 1000,  # Minimum chunk size
+        max_chunk_size: int = 8000   # Maximum chunk size
     ):
         """
         Initialize optimized chunked extractor.
@@ -56,10 +60,98 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
             parallel_workers: Number of parallel workers for chunk processing
             window_size: Size of sliding window for span detection (large docs)
             window_overlap: Overlap between detection windows
+            enable_dynamic_chunking: Enable token-aware dynamic chunk sizing
+            min_chunk_size: Minimum chunk size in characters
+            max_chunk_size: Maximum chunk size in characters
         """
         super().__init__(chunk_size, overlap, max_chunks, parallel_workers)
         self.window_size = window_size
         self.window_overlap = window_overlap
+        self.enable_dynamic_chunking = enable_dynamic_chunking
+        self.min_chunk_size = min_chunk_size
+        self.max_chunk_size = max_chunk_size
+        
+        # Initialize token estimator if dynamic chunking enabled
+        if self.enable_dynamic_chunking:
+            self.token_estimator = TokenEstimator()
+            logger.info("Dynamic chunk sizing enabled with token estimation")
+    
+    def create_chunks(self, text: str) -> List[DocumentChunk]:
+        """
+        Create chunks with dynamic sizing based on token estimates.
+        
+        Overrides parent method to add token-aware chunking.
+        
+        Args:
+            text: Document text to chunk
+            
+        Returns:
+            List of DocumentChunk objects
+        """
+        if not self.enable_dynamic_chunking:
+            # Use parent's standard chunking
+            return super().create_chunks(text)
+        
+        logger.info("Creating chunks with dynamic sizing based on token estimates")
+        
+        # Estimate content density
+        density = self.token_estimator.estimate_content_density(text)
+        logger.info(f"Content density estimate: {density:.2f}")
+        
+        # Calculate safe chunk size for this content
+        safe_chunk_size = self.token_estimator.calculate_safe_chunk_size(
+            content_density=density,
+            target_operation='span_finder'  # Most token-sensitive operation
+        )
+        
+        # Clamp to configured limits
+        safe_chunk_size = max(self.min_chunk_size, min(safe_chunk_size, self.max_chunk_size))
+        logger.info(f"Adjusted chunk size from {self.chunk_size} to {safe_chunk_size} chars")
+        
+        # Create chunks with adjusted size
+        chunks = []
+        text_length = len(text)
+        chunk_id = 0
+        position = 0
+        
+        while position < text_length and chunk_id < self.max_chunks:
+            # Determine chunk end position
+            end_position = min(position + safe_chunk_size, text_length)
+            
+            # Extract chunk text
+            chunk_text = text[position:end_position]
+            
+            # Check if chunk is still too large in tokens
+            if self.token_estimator.should_split_chunk(chunk_text, 'span_finder'):
+                # Reduce chunk size further
+                token_count = self.token_estimator.estimate_tokens(chunk_text)
+                reduction_factor = 3000 / token_count  # Target 3000 tokens
+                new_size = int(safe_chunk_size * reduction_factor * 0.8)  # 80% for safety
+                end_position = min(position + new_size, text_length)
+                chunk_text = text[position:end_position]
+                logger.warning(f"Chunk {chunk_id} still too large, reduced to {len(chunk_text)} chars")
+            
+            # Create chunk object
+            chunk = DocumentChunk(
+                chunk_id=chunk_id,
+                text=chunk_text,
+                start_idx=position,
+                end_idx=end_position
+            )
+            
+            # Store metadata for logging (not part of DocumentChunk)
+            estimated_tokens = self.token_estimator.estimate_tokens(chunk_text)
+            chunks.append(chunk)
+            
+            logger.debug(f"Chunk {chunk_id}: {len(chunk_text)} chars, "
+                        f"~{estimated_tokens} tokens")
+            
+            # Move position with overlap
+            position = end_position - self.overlap if end_position < text_length else text_length
+            chunk_id += 1
+        
+        logger.info(f"Created {len(chunks)} dynamically sized chunks")
+        return chunks
         
     def detect_spans_global(self, text: str, config: Dict[str, Any]) -> List[DetectedSpan]:
         """
