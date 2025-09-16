@@ -4,6 +4,7 @@ import logging
 from typing import Dict, Any, List, Optional, Set
 from dataclasses import dataclass, field
 from bandjacks.llm.memory import WorkingMemory
+from bandjacks.llm.consolidator_base import ConsolidatorBase
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,7 @@ class EntityClaim:
     context: str = "primary_mention"  # primary_mention, alias, related
 
 
-class EntityConsolidatorAgent:
+class EntityConsolidatorAgent(ConsolidatorBase):
     """
     Consolidates entity claims from multiple chunks into entities with evidence.
     
@@ -34,6 +35,7 @@ class EntityConsolidatorAgent:
     """
     
     def __init__(self):
+        super().__init__()
         self.name = "EntityConsolidatorAgent"
         
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
@@ -146,6 +148,18 @@ class EntityConsolidatorAgent:
         # Store consolidated entities
         mem.consolidated_entities = consolidated
         
+        # Optionally deduplicate entire entities based on similarity (e.g., APT29 vs Cozy Bear)
+        if self.use_semantic_dedup and hasattr(self, 'semantic_dedup'):
+            try:
+                from bandjacks.services.api.settings import settings
+                if settings.deduplicate_entities:
+                    original_count = len(mem.consolidated_entities)
+                    mem.consolidated_entities = self.semantic_dedup.deduplicate_entities(mem.consolidated_entities)
+                    if len(mem.consolidated_entities) < original_count:
+                        logger.info(f"Semantic entity deduplication: {original_count} → {len(mem.consolidated_entities)} entities")
+            except Exception as e:
+                logger.warning(f"Entity deduplication failed: {e}")
+        
         # Also update mem.entities for backward compatibility
         if not hasattr(mem, 'entities') or not isinstance(mem.entities, dict):
             mem.entities = {"entities": [], "extraction_status": "success"}
@@ -179,74 +193,8 @@ class EntityConsolidatorAgent:
             f"Entity consolidation complete: {len(consolidated)} unique entities from {len(mem.entity_claims)} claims"
         )
     
-    def _merge_evidence_intelligently(self, evidence_list: List[str]) -> List[str]:
-        """
-        Merge evidence quotes intelligently, removing duplicates and near-duplicates.
-        
-        Args:
-            evidence_list: List of evidence quotes
-            
-        Returns:
-            Deduplicated list of evidence
-        """
-        if not evidence_list:
-            return []
-        
-        # Normalize and deduplicate
-        seen_normalized = set()
-        unique_evidence = []
-        
-        for evidence in evidence_list:
-            if not evidence or not isinstance(evidence, str):
-                continue
-                
-            # Normalize for comparison (lowercase, remove extra spaces)
-            normalized = ' '.join(evidence.lower().split())
-            
-            # Skip if we've seen this exact normalized version
-            if normalized in seen_normalized:
-                continue
-                
-            # Check for near duplicates (>85% similar using simple overlap)
-            is_duplicate = False
-            for seen in seen_normalized:
-                similarity = self._calculate_similarity(normalized, seen)
-                if similarity > 0.85:
-                    is_duplicate = True
-                    break
-            
-            if not is_duplicate:
-                unique_evidence.append(evidence)
-                seen_normalized.add(normalized)
-        
-        # Sort by length (longer evidence usually more informative)
-        unique_evidence.sort(key=len, reverse=True)
-        
-        return unique_evidence
-    
-    def _calculate_similarity(self, text1: str, text2: str) -> float:
-        """
-        Calculate similarity between two text strings using Jaccard similarity.
-        
-        Args:
-            text1: First text
-            text2: Second text
-            
-        Returns:
-            Similarity score between 0 and 1
-        """
-        if not text1 or not text2:
-            return 0.0
-        
-        # Tokenize
-        words1 = set(text1.lower().split())
-        words2 = set(text2.lower().split())
-        
-        # Jaccard similarity
-        intersection = words1.intersection(words2)
-        union = words1.union(words2)
-        
-        if not union:
-            return 0.0
-            
-        return len(intersection) / len(union)
+    # Methods inherited from ConsolidatorBase:
+    # - _merge_evidence_intelligently() - uses semantic or Jaccard based on config
+    # - _exact_dedup() - removes exact duplicates
+    # - _jaccard_dedup() - Jaccard-based deduplication
+    # - _calculate_similarity() - Jaccard similarity calculation

@@ -109,7 +109,13 @@ class Settings(BaseSettings):
     # Quality Improvement Configuration
     enable_sentence_evidence: bool = True  # Extract complete sentences as evidence
     context_sentences: int = 1  # Number of context sentences around evidence
-    semantic_dedup_threshold: float = 0.85  # Similarity threshold for deduplication
+    
+    # Semantic Deduplication Configuration
+    enable_semantic_dedup: bool = True  # Use embedding-based deduplication
+    semantic_dedup_threshold: float = 0.85  # Similarity threshold for techniques/evidence
+    entity_dedup_threshold: float = 0.90  # Higher threshold for entities (avoid false merges)
+    deduplicate_techniques: bool = True  # Deduplicate similar techniques
+    deduplicate_entities: bool = True  # Deduplicate similar entities (APT29/Cozy Bear)
     
     # Performance Monitoring
     enable_performance_logging: bool = True  # Log performance metrics
