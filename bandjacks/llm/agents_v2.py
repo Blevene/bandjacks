@@ -741,61 +741,21 @@ def _calibrate_confidence(
     return max(10, min(100, score))
 
 
-class ConsolidatorAgent:
+from bandjacks.llm.consolidator_base import ConsolidatorBase
+
+
+class ConsolidatorAgent(ConsolidatorBase):
     """Consolidate claims into unique techniques with intelligent evidence merging."""
     
-    def _merge_evidence_intelligently(self, evidence_list: List[str]) -> List[str]:
-        """
-        Intelligently merge evidence by removing duplicates and near-duplicates.
-        Uses semantic similarity to detect similar evidence quotes.
-        """
-        if not evidence_list:
-            return []
-        
-        # First pass: exact deduplication (case-insensitive)
-        unique_evidence = []
-        seen_normalized = set()
-        
-        for ev in evidence_list:
-            # Normalize for comparison: lowercase, strip whitespace, remove extra spaces
-            normalized = " ".join(ev.lower().strip().split())
-            
-            # Check for exact duplicates
-            if normalized not in seen_normalized:
-                unique_evidence.append(ev)
-                seen_normalized.add(normalized)
-        
-        # Second pass: semantic deduplication (remove highly similar evidence)
-        # This is a simple approach - could be enhanced with actual embeddings
-        final_evidence = []
-        for i, ev1 in enumerate(unique_evidence):
-            is_duplicate = False
-            ev1_words = set(ev1.lower().split())
-            
-            for ev2 in final_evidence:
-                ev2_words = set(ev2.lower().split())
-                
-                # Calculate Jaccard similarity
-                intersection = len(ev1_words & ev2_words)
-                union = len(ev1_words | ev2_words)
-                
-                if union > 0:
-                    similarity = intersection / union
-                    # If evidence is >85% similar, consider it a duplicate
-                    if similarity > 0.85:
-                        is_duplicate = True
-                        # Keep the longer evidence (more context)
-                        if len(ev1) > len(ev2):
-                            final_evidence[final_evidence.index(ev2)] = ev1
-                        break
-            
-            if not is_duplicate:
-                final_evidence.append(ev1)
-        
-        # Sort by length (longer evidence first) to preserve more context
-        final_evidence.sort(key=len, reverse=True)
-        
-        return final_evidence
+    def __init__(self):
+        """Initialize with base consolidator configuration."""
+        super().__init__()
+    
+    # Methods inherited from ConsolidatorBase:
+    # - _merge_evidence_intelligently() - uses semantic or Jaccard based on config
+    # - _exact_dedup() - removes exact duplicates
+    # - _jaccard_dedup() - Jaccard-based deduplication
+    # - _calculate_similarity() - Jaccard similarity calculation
     
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
         logger.debug(f"ConsolidatorAgent: Processing {len(mem.claims)} claims")
@@ -892,6 +852,18 @@ class ConsolidatorAgent:
                 "is_subtechnique": e["is_subtechnique"],
             }
             logger.debug(f"  → {tid}: {e['name']} (conf={final_confidence}, evidence={len(unique_evidence)}, chunks={len(e['chunks_found'])})")
+        
+        # Optionally deduplicate entire techniques based on similarity
+        if self.use_semantic_dedup and hasattr(self, 'semantic_dedup'):
+            try:
+                from bandjacks.services.api.settings import settings
+                if settings.deduplicate_techniques:
+                    original_count = len(mem.techniques)
+                    mem.techniques = self.semantic_dedup.deduplicate_techniques(mem.techniques)
+                    if len(mem.techniques) < original_count:
+                        logger.info(f"Semantic deduplication: {original_count} → {len(mem.techniques)} techniques")
+            except Exception as e:
+                logger.warning(f"Technique deduplication failed: {e}")
         
         logger.info(f"ConsolidatorAgent: Consolidated into {len(mem.techniques)} techniques")
 
