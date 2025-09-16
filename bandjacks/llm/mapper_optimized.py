@@ -3,12 +3,14 @@
 import json
 import re
 import logging
+import os
 from typing import Any, Dict, List
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.tools import list_subtechniques, resolve_technique_by_external_id
 from bandjacks.services.technique_cache import technique_cache
 from bandjacks.llm.json_utils import parse_json_with_fallback, validate_and_ensure_claims
+from bandjacks.llm.token_utils import TokenEstimator
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 class BatchMapperAgent:
     """Batch process spans in smaller groups to prevent LLM timeouts."""
+    
+    def __init__(self):
+        """Initialize the batch mapper with token estimator."""
+        self.token_estimator = TokenEstimator()
     
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
         # Check for valid memory object
@@ -37,26 +43,32 @@ class BatchMapperAgent:
         
         if span_count == 0:
             return
-            
-        # Dynamic batch size based on total spans (increased for better efficiency)
-        if span_count <= 15:
-            default_batch_size = min(15, span_count)  # Single batch for small docs
-        elif span_count <= 30:
-            default_batch_size = 15  # Two batches for medium docs
-        elif span_count <= 60:
-            default_batch_size = 20  # Three batches for large docs
-        else:
-            default_batch_size = 25  # Max batch size for very large docs
         
-        # Token estimation safety check (~250 tokens per span average)
-        estimated_tokens_per_span = 250
-        max_safe_batch = 5000 // estimated_tokens_per_span  # Leave room for response
-        if default_batch_size * estimated_tokens_per_span > 5000:
-            logger.info(f"Reducing batch size from {default_batch_size} to {max_safe_batch} due to token limits")
-            default_batch_size = max_safe_batch
+        # Use dynamic batch sizing if enabled
+        enable_dynamic_batching = config.get("enable_dynamic_batching", 
+                                            os.getenv("ENABLE_DYNAMIC_BATCHING", "true").lower() == "true")
+        
+        if enable_dynamic_batching:
+            default_batch_size = self._calculate_dynamic_batch_size(mem.spans, config)
+        else:
+            # Legacy batch size calculation
+            if span_count <= 15:
+                default_batch_size = min(15, span_count)
+            elif span_count <= 30:
+                default_batch_size = 15
+            elif span_count <= 60:
+                default_batch_size = 20
+            else:
+                default_batch_size = 25
         
         # Override with config if provided - use mapper_batch_size key for clarity
         batch_size = config.get("mapper_batch_size", config.get("batch_size", default_batch_size))
+        
+        # Apply maximum batch size limit from environment
+        max_batch_size = int(os.getenv("MAX_MAPPER_BATCH_SIZE", "30"))
+        if batch_size > max_batch_size:
+            logger.info(f"Capping batch size from {batch_size} to max {max_batch_size}")
+            batch_size = max_batch_size
         
         # No more fallback to sequential - always use batching
         logger.info(f"Processing {span_count} spans with batch size {batch_size}")
@@ -333,4 +345,52 @@ class BatchMapperAgent:
             logger.error(f"Batch processing failed: {e}")
             logger.debug(f"Error details: {str(e)}", exc_info=True)
             return 0
+    
+    def _calculate_dynamic_batch_size(self, spans: List[Dict], config: Dict[str, Any]) -> int:
+        """
+        Calculate optimal batch size based on token estimates.
+        
+        Args:
+            spans: List of span dictionaries
+            config: Configuration dictionary
+            
+        Returns:
+            Optimal batch size
+        """
+        if not spans:
+            return 1
+        
+        # Sample a few spans to estimate average tokens
+        sample_size = min(5, len(spans))
+        sample_spans = spans[:sample_size]
+        
+        total_tokens = 0
+        for span in sample_spans:
+            # Estimate tokens for span text
+            span_text = span.get("text", "")
+            span_tokens = self.token_estimator.estimate_tokens(span_text)
+            
+            # Add overhead for structure and candidates
+            overhead = 100  # JSON structure, candidates, etc.
+            total_tokens += span_tokens + overhead
+        
+        # Calculate average tokens per span
+        avg_tokens_per_span = total_tokens / sample_size if sample_size > 0 else 300
+        
+        # Get token limit for batch mapper operation
+        token_limit = self.token_estimator.limits.get('batch_mapper', 2500)
+        
+        # Calculate optimal batch size (leave 30% margin for response)
+        safe_token_limit = int(token_limit * 0.7)
+        optimal_batch_size = max(1, int(safe_token_limit / avg_tokens_per_span))
+        
+        # Apply reasonable bounds
+        min_batch = 5
+        max_batch = 30
+        optimal_batch_size = max(min_batch, min(optimal_batch_size, max_batch))
+        
+        logger.info(f"Dynamic batch sizing: avg {avg_tokens_per_span:.0f} tokens/span, "
+                   f"optimal batch size: {optimal_batch_size}")
+        
+        return optimal_batch_size
     
