@@ -24,11 +24,16 @@ class BatchEntityExtractor:
         self.client = LLMClient()
         self.ignorelist = get_entity_ignorelist()
         
-        # Configuration parameters
-        self.single_pass_limit = config.get("single_pass_limit", 30_000)  # ~8K tokens
-        self.window_size = config.get("window_size", 30_000)
-        self.overlap_size = config.get("overlap_size", 5_000)
-        self.max_windows_per_batch = config.get("max_windows_per_batch", 3)  # Process up to 3 windows at once
+        # Configuration parameters (with environment variable overrides)
+        import os
+        self.single_pass_limit = config.get("single_pass_limit",
+                                           int(os.getenv("ENTITY_SINGLE_PASS_LIMIT", "15000")))
+        self.window_size = config.get("window_size",
+                                     int(os.getenv("ENTITY_WINDOW_SIZE", "15000")))
+        self.overlap_size = config.get("overlap_size",
+                                      int(os.getenv("ENTITY_OVERLAP_SIZE", "2000")))
+        self.max_windows_per_batch = config.get("max_windows_per_batch",
+                                               int(os.getenv("ENTITY_MAX_WINDOWS_PER_BATCH", "1")))
         
         logger.info(f"BatchEntityExtractor initialized: single_pass={self.single_pass_limit}, "
                    f"window={self.window_size}, overlap={self.overlap_size}")
@@ -280,7 +285,7 @@ class BatchEntityExtractor:
         try:
             response = self.client.call(
                 messages=messages,
-                max_tokens=12000,  # Increased for batch processing
+                max_tokens=4000,  # Reduced to prevent truncation
                 response_format={
                     "type": "json_schema",
                     "json_schema": self._get_batch_schema()

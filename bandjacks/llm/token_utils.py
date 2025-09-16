@@ -30,6 +30,15 @@ class TokenEstimator:
             'entity_extractor': 2500, # EntityExtractionAgent limit
             'max_chunk': 4000,        # Maximum chunk size (conservative)
         }
+        
+        # Density-adjusted limits for very dense content
+        self.dense_limits = {
+            'span_finder': 2000,      # Reduced for dense content
+            'batch_mapper': 1500,     # Reduced for dense content
+            'consolidator': 1500,     # Reduced for dense content
+            'entity_extractor': 1800, # Reduced for dense content
+            'max_chunk': 2500,        # Much smaller for dense content
+        }
     
     def estimate_tokens(self, text: str) -> int:
         """
@@ -63,17 +72,34 @@ class TokenEstimator:
         Returns:
             Safe character count for chunk
         """
-        # Get token limit for operation
-        token_limit = self.limits.get(target_operation, self.limits['max_chunk'])
+        # Use dense limits for high-density content
+        if content_density > 1.5:
+            token_limit = self.dense_limits.get(target_operation, self.dense_limits['max_chunk'])
+            logger.info(f"Using dense limits for {target_operation}: {token_limit} tokens (density: {content_density})")
+        else:
+            token_limit = self.limits.get(target_operation, self.limits['max_chunk'])
         
         # Adjust for density (dense content = smaller chunks)
-        adjusted_limit = int(token_limit / content_density)
+        # More aggressive reduction for very dense content
+        if content_density > 2.0:
+            adjusted_limit = int(token_limit * 0.6)  # 60% of limit for very dense
+        elif content_density > 1.5:
+            adjusted_limit = int(token_limit * 0.75)  # 75% of limit for dense
+        else:
+            adjusted_limit = int(token_limit / content_density)
         
         # Convert to approximate character count (4 chars per token average)
         char_limit = adjusted_limit * 4
         
-        # Apply safety margin (80% of limit)
-        safe_limit = int(char_limit * 0.8)
+        # Apply safety margin (70% of limit for dense content, 80% for normal)
+        safety_factor = 0.7 if content_density > 1.5 else 0.8
+        safe_limit = int(char_limit * safety_factor)
+        
+        # Hard cap for very dense content
+        if content_density > 2.0:
+            safe_limit = min(safe_limit, 2000)  # Never exceed 2000 chars for very dense
+        elif content_density > 1.5:
+            safe_limit = min(safe_limit, 3000)  # Never exceed 3000 chars for dense
         
         logger.debug(f"Safe chunk size for {target_operation}: {safe_limit} chars "
                     f"(density: {content_density}, tokens: {adjusted_limit})")
