@@ -188,7 +188,7 @@ class BatchMapperAgent:
                     "type": "json_schema",
                     "json_schema": technique_schema
                 },
-                max_tokens=6000  # Increased to handle larger batches without truncation
+                max_tokens=4000  # Conservative limit to prevent truncation issues
             )
             content = response.get("content", "")
             
@@ -360,37 +360,66 @@ class BatchMapperAgent:
         if not spans:
             return 1
         
-        # Sample a few spans to estimate average tokens
-        sample_size = min(5, len(spans))
+        # Sample more spans for better estimation
+        sample_size = min(10, len(spans))
         sample_spans = spans[:sample_size]
         
         total_tokens = 0
+        max_span_tokens = 0
+        
         for span in sample_spans:
             # Estimate tokens for span text
             span_text = span.get("text", "")
             span_tokens = self.token_estimator.estimate_tokens(span_text)
             
-            # Add overhead for structure and candidates
-            overhead = 100  # JSON structure, candidates, etc.
+            # Track maximum span size
+            max_span_tokens = max(max_span_tokens, span_tokens)
+            
+            # Add overhead for structure, candidates, evidence lines
+            overhead = 150  # Increased overhead for JSON structure, candidates, etc.
             total_tokens += span_tokens + overhead
         
         # Calculate average tokens per span
         avg_tokens_per_span = total_tokens / sample_size if sample_size > 0 else 300
         
-        # Get token limit for batch mapper operation
-        token_limit = self.token_estimator.limits.get('batch_mapper', 2500)
+        # Detect if content is dense based on average tokens
+        is_dense = avg_tokens_per_span > 400 or max_span_tokens > 600
         
-        # Calculate optimal batch size (leave 30% margin for response)
-        safe_token_limit = int(token_limit * 0.7)
-        optimal_batch_size = max(1, int(safe_token_limit / avg_tokens_per_span))
+        # Get token limit for batch mapper operation (use dense limits if needed)
+        if is_dense:
+            token_limit = 1200  # Very conservative for dense content to prevent truncation
+            logger.info(f"Dense spans detected (avg: {avg_tokens_per_span:.0f}, max: {max_span_tokens})")
+        else:
+            token_limit = self.token_estimator.limits.get('batch_mapper', 2000)  # Reduced from 2500
         
-        # Apply reasonable bounds
-        min_batch = 5
-        max_batch = 30
+        # Calculate optimal batch size with better safety margin
+        # Use 50% margin for dense content, 60% for normal
+        safety_factor = 0.5 if is_dense else 0.6
+        safe_token_limit = int(token_limit * safety_factor)
+        
+        # Calculate batch size
+        if avg_tokens_per_span > 0:
+            optimal_batch_size = max(1, int(safe_token_limit / avg_tokens_per_span))
+        else:
+            optimal_batch_size = 10
+        
+        # Apply more conservative bounds
+        # Smaller batches for dense content
+        if is_dense:
+            min_batch = 3   # Allow smaller batches for very large spans
+            max_batch = 10  # Much smaller max for dense content
+        else:
+            min_batch = 5
+            max_batch = 15  # Reduced from 30
+        
+        # Override with environment variable if set
+        min_batch = int(os.getenv("MIN_BATCH_SIZE", str(min_batch)))
+        max_batch = int(os.getenv("MAX_MAPPER_BATCH_SIZE", str(max_batch)))
+        
         optimal_batch_size = max(min_batch, min(optimal_batch_size, max_batch))
         
         logger.info(f"Dynamic batch sizing: avg {avg_tokens_per_span:.0f} tokens/span, "
-                   f"optimal batch size: {optimal_batch_size}")
+                   f"max {max_span_tokens} tokens, optimal batch size: {optimal_batch_size}")
         
         return optimal_batch_size
     

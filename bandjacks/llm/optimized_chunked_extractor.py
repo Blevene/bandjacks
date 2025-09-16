@@ -104,6 +104,14 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
             target_operation='span_finder'  # Most token-sensitive operation
         )
         
+        # Apply hard caps based on density
+        if density > 2.0:
+            safe_chunk_size = min(safe_chunk_size, 2000)  # Very dense content
+            logger.info(f"Very dense content (density={density:.2f}), capping chunk size at 2000 chars")
+        elif density > 1.5:
+            safe_chunk_size = min(safe_chunk_size, 3000)  # Dense content
+            logger.info(f"Dense content (density={density:.2f}), capping chunk size at 3000 chars")
+        
         # Clamp to configured limits
         safe_chunk_size = max(self.min_chunk_size, min(safe_chunk_size, self.max_chunk_size))
         logger.info(f"Adjusted chunk size from {self.chunk_size} to {safe_chunk_size} chars")
@@ -122,14 +130,18 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
             chunk_text = text[position:end_position]
             
             # Check if chunk is still too large in tokens
-            if self.token_estimator.should_split_chunk(chunk_text, 'span_finder'):
+            estimated_tokens = self.token_estimator.estimate_tokens(chunk_text)
+            
+            # More aggressive limits for dense content
+            max_tokens = 2000 if density > 1.5 else 3000
+            
+            if estimated_tokens > max_tokens:
                 # Reduce chunk size further
-                token_count = self.token_estimator.estimate_tokens(chunk_text)
-                reduction_factor = 3000 / token_count  # Target 3000 tokens
-                new_size = int(safe_chunk_size * reduction_factor * 0.8)  # 80% for safety
+                reduction_factor = max_tokens / estimated_tokens
+                new_size = int(len(chunk_text) * reduction_factor * 0.7)  # 70% for extra safety
                 end_position = min(position + new_size, text_length)
                 chunk_text = text[position:end_position]
-                logger.warning(f"Chunk {chunk_id} still too large, reduced to {len(chunk_text)} chars")
+                logger.warning(f"Chunk {chunk_id} has {estimated_tokens} tokens, reduced to {len(chunk_text)} chars")
             
             # Create chunk object
             chunk = DocumentChunk(
@@ -834,7 +846,9 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
                 
                 for idx, (future, chunk_id) in enumerate(futures):
                     try:
-                        result = future.result(timeout=60)
+                        # Increased timeout for semantic deduplication operations
+                        chunk_timeout = int(os.getenv("CHUNK_PROCESSING_TIMEOUT", "180"))
+                        result = future.result(timeout=chunk_timeout)
                         chunk_results[idx] = result
                         completed += 1
                         

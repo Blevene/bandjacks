@@ -244,14 +244,46 @@ class JobProcessor:
                 file_ext = job.get("file_ext", ".txt")
                 config = job.get("config", {})
                 
-                if not file_path or not os.path.exists(file_path):
+                # Check if file is in Redis
+                if file_path and file_path.startswith("redis://"):
+                    # Extract Redis key from path
+                    redis_key = file_path.replace("redis://", "")
+                    logger.info(f"Retrieving file from Redis: {redis_key}")
+                    
+                    # Get file content from Redis
+                    file_content = self.job_store.redis.get(redis_key)
+                    if not file_content:
+                        raise ValueError(f"File content not found in Redis: {redis_key}")
+                    
+                    # Save to temp file for processing
+                    import tempfile
+                    temp_fd, temp_path = tempfile.mkstemp(suffix=file_ext)
+                    try:
+                        os.write(temp_fd, file_content)
+                        os.close(temp_fd)
+                        file_path = temp_path
+                        logger.info(f"Saved Redis content to temp file: {temp_path} ({len(file_content)} bytes)")
+                    except Exception as e:
+                        os.close(temp_fd)
+                        raise ValueError(f"Failed to save Redis content to temp file: {e}")
+                
+                elif not file_path or not os.path.exists(file_path):
                     raise ValueError(f"File not found: {file_path}")
                     
                 # Process based on file type
-                if file_ext == ".pdf":
-                    await self._process_pdf_job(job_id, file_path, file_name, config)
-                else:
-                    await self._process_text_job(job_id, file_path, file_name, config)
+                try:
+                    if file_ext == ".pdf":
+                        await self._process_pdf_job(job_id, file_path, file_name, config)
+                    else:
+                        await self._process_text_job(job_id, file_path, file_name, config)
+                finally:
+                    # Clean up temp file if created from Redis
+                    if file_path and 'temp_path' in locals() and file_path == temp_path:
+                        try:
+                            os.unlink(temp_path)
+                            logger.debug(f"Cleaned up temp file: {temp_path}")
+                        except:
+                            pass
                     
                 # Success - exit retry loop
                 return

@@ -417,6 +417,35 @@ class FlowBuilder:
         )
         return episode
 
+    def _normalize_evidence(self, evidence):
+        """
+        Normalize evidence to always be a list.
+        Handles both dict format (from optimized_chunked_extractor) and list format.
+        """
+        if not evidence:
+            return []
+
+        # If it's already a list, return it
+        if isinstance(evidence, list):
+            return evidence
+
+        # If it's a dict (from optimized_chunked_extractor), convert to list format
+        if isinstance(evidence, dict):
+            # Extract quotes/text from dict format
+            quotes = evidence.get("quotes", [])
+            if quotes:
+                return [{"text": quote, "line_refs": evidence.get("line_refs", [])} for quote in quotes]
+            elif evidence.get("text"):
+                return [{"text": evidence["text"], "line_refs": evidence.get("line_refs", [])}]
+            else:
+                return []
+
+        # If it's a string, wrap in list
+        if isinstance(evidence, str):
+            return [evidence]
+
+        return []
+
     def _resolve_technique_identifier(self, session, identifier: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
         Resolve a technique identifier (STIX ID or ATT&CK external ID) to (stix_id, name, description).
@@ -512,7 +541,7 @@ class FlowBuilder:
                 "description": step.get("description", ""),
                 "reason": step.get("reason", ""),
                 "confidence": step.get("confidence", 70.0),
-                "evidence": step.get("evidence", [])
+                "evidence": self._normalize_evidence(step.get("evidence", []))
             })
         
         # Create NEXT edges between consecutive steps
@@ -601,7 +630,7 @@ class FlowBuilder:
                         "name": tech_data.get("name", tech_id),
                         "description": tech_data.get("description", ""),
                         "confidence": tech_data.get("confidence", 50.0),
-                        "evidence": tech_data.get("evidence", [])
+                        "evidence": self._normalize_evidence(tech_data.get("evidence", []))
                     })
                     seen_techniques.add(tech_id)
         
@@ -964,7 +993,7 @@ class FlowBuilder:
                 "name": step.get("name", "Unknown"),
                 "description": step.get("description", ""),
                 "confidence": step.get("confidence", 50.0),
-                "evidence": step.get("evidence", []),
+                "evidence": self._normalize_evidence(step.get("evidence", [])),
                 "reason": step.get("reason", "")
             })
         

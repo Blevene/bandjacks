@@ -116,6 +116,12 @@ class Settings(BaseSettings):
     entity_dedup_threshold: float = 0.90  # Higher threshold for entities (avoid false merges)
     deduplicate_techniques: bool = True  # Deduplicate similar techniques
     deduplicate_entities: bool = True  # Deduplicate similar entities (APT29/Cozy Bear)
+
+    # Semantic Deduplication Performance Limits
+    semantic_dedup_max_items: int = 50  # Skip semantic dedup if more items
+    semantic_dedup_cache_size: int = 1000  # LRU cache size for embeddings
+    semantic_dedup_batch_size: int = 20  # Process in batches
+    chunk_processing_timeout: int = 180  # Timeout for chunk processing (seconds)
     
     # Performance Monitoring
     enable_performance_logging: bool = True  # Log performance metrics
