@@ -53,19 +53,19 @@ class BatchMapperAgent:
         else:
             # Legacy batch size calculation
             if span_count <= 15:
-                default_batch_size = min(15, span_count)
+                default_batch_size = min(8, span_count)  # Reduced from 15
             elif span_count <= 30:
-                default_batch_size = 15
+                default_batch_size = 8   # Reduced from 15
             elif span_count <= 60:
-                default_batch_size = 20
+                default_batch_size = 10  # Reduced from 20
             else:
-                default_batch_size = 25
+                default_batch_size = 12  # Reduced from 25
         
         # Override with config if provided - use mapper_batch_size key for clarity
         batch_size = config.get("mapper_batch_size", config.get("batch_size", default_batch_size))
         
         # Apply maximum batch size limit from environment
-        max_batch_size = int(os.getenv("MAX_MAPPER_BATCH_SIZE", "30"))
+        max_batch_size = int(os.getenv("MAX_MAPPER_BATCH_SIZE", "10"))  # Reduced to 10 to prevent timeouts
         if batch_size > max_batch_size:
             logger.info(f"Capping batch size from {batch_size} to max {max_batch_size}")
             batch_size = max_batch_size
@@ -180,95 +180,112 @@ class BatchMapperAgent:
         # Single LLM call for this batch with structured output
         logger.info(f"BatchMapper LLM request: batch of {len(spans_data)} spans")
         client = LLMClient()
-        try:
-            # Call LLM with proper response format
-            response = client.call(
-                messages,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": technique_schema
-                },
-                max_tokens=4000  # Conservative limit to prevent truncation issues
-            )
-            content = response.get("content", "")
-            
-            # Log response
-            logger.info(f"BatchMapper LLM response: {len(content)} chars")
-            logger.debug(f"BatchMapper raw response preview: {content[:500]}...")
-            
-            if not content:
-                logger.error("Empty response from LLM for batch technique extraction")
-                return 0
-            
-            # Parse the simplified JSON array
+
+        # Retry logic for empty responses
+        max_retries = 3
+        retry_delay = 2  # seconds
+
+        for retry_attempt in range(max_retries):
             try:
-                # Store original content for fallback
-                original_content = content
-                
-                # Strip markdown wrapper if present
-                if '```' in content:
-                    if '```json' in content:
-                        content = content.split('```json')[1].split('```')[0].strip()
-                    elif content.strip().startswith('```'):
-                        content = content.split('```')[1].split('```')[0].strip()
-                    logger.debug(f"Stripped markdown wrapper, new length: {len(content)}")
-                
-                # Parse the structured response - expects {"techniques": [...]}
-                parsed = json.loads(content)
-                if isinstance(parsed, dict) and "techniques" in parsed:
-                    results = parsed["techniques"]
-                else:
-                    # Fallback for unexpected structure
-                    logger.warning(f"Unexpected response structure: {type(parsed)}")
-                    results = []
-                
-                if not isinstance(results, list):
-                    logger.error(f"Expected list, got {type(results)}")
-                    results = []
-                    
-                logger.info(f"Successfully parsed {len(results)} technique extractions")
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"JSON parse error in technique extraction: {e}")
-                logger.debug(f"Failed content preview: {content[:200] if content else 'Empty'}")
-                
-                # Try fallback parsing with original content
-                parsed = parse_json_with_fallback(
-                    original_content,  # Use original content, not modified
-                    expected_structure=[],
-                    max_retries=2
+                # Call LLM with proper response format
+                response = client.call(
+                    messages,
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": technique_schema
+                    },
+                    max_tokens=8000  # Doubled to prevent truncation issues
                 )
-                results = parsed if isinstance(parsed, list) else []
-            
-            # Process simplified results
+                content = response.get("content", "")
+
+                # Log response
+                logger.info(f"BatchMapper LLM response (attempt {retry_attempt + 1}): {len(content)} chars")
+                logger.debug(f"BatchMapper raw response preview: {content[:500]}...")
+
+                if content:
+                    # Got a response, proceed
+                    break
+
+                # Empty response, retry if we have attempts left
+                if retry_attempt < max_retries - 1:
+                    logger.warning(f"Empty response from LLM, retrying in {retry_delay} seconds (attempt {retry_attempt + 1}/{max_retries})")
+                    import time
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error(f"Empty response from LLM after {max_retries} attempts for batch technique extraction")
+                    return 0
+            except Exception as e:
+                if retry_attempt < max_retries - 1:
+                    logger.warning(f"LLM call failed with error: {e}, retrying (attempt {retry_attempt + 1}/{max_retries})")
+                    import time
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.error(f"LLM call failed after {max_retries} attempts: {e}")
+                    raise
+
+        if not content:
+            logger.error("Failed to get non-empty response from LLM")
+            return 0
+
+        # Parse the simplified JSON array
+        try:
+            # Store original content for fallback
+            original_content = content
+
+            # Strip markdown wrapper if present
+            if '```' in content:
+                if '```json' in content:
+                    content = content.split('```json')[1].split('```')[0].strip()
+                elif content.strip().startswith('```'):
+                    content = content.split('```')[1].split('```')[0].strip()
+                logger.debug(f"Stripped markdown wrapper, new length: {len(content)}")
+
+            # Parse the structured response - expects {"techniques": [...]}
+            parsed = json.loads(content)
+            if isinstance(parsed, dict) and "techniques" in parsed:
+                results = parsed["techniques"]
+            else:
+                # Fallback for unexpected structure
+                logger.warning(f"Unexpected response structure: {type(parsed)}")
+                results = []
+
+            if not isinstance(results, list):
+                logger.error(f"Expected list, got {type(results)}")
+                results = []
+
+            logger.info(f"Successfully parsed {len(results)} technique extractions")
+
+            # Process the results for the success case
             added_claims = 0
-            
+
             if isinstance(results, list):
                 logger.debug(f"Processing {len(results)} technique items from LLM")
-                
+
                 for item in results:
                     if not isinstance(item, dict):
                         logger.warning(f"Skipping non-dict item: {type(item)}")
                         continue
-                    
+
                     # Extract from simplified format
                     span_id = item.get("span", -1)
                     technique_id = item.get("tid", "")
                     confidence = item.get("conf", 50)
-                    
+
                     if not technique_id:
                         logger.debug(f"Skipping item without technique ID: {item}")
                         continue
-                    
+
                     if span_id < 0 or span_id >= len(mem.spans):
                         logger.warning(f"Invalid span ID {span_id} for technique {technique_id}")
                         continue
-                    
+
                     # Get span text and line refs for evidence
                     span_data = mem.spans[span_id]
                     span_text = span_data.get("text", "")[:500]
                     line_refs = span_data.get("line_refs", [])
-                    
+
                     # Create simplified claim
                     claim = {
                         "external_id": technique_id,
@@ -280,7 +297,7 @@ class BatchMapperAgent:
                         "evidence_score": confidence,
                         "source": "batch_mapper"
                     }
-                    
+
                     # Try to enrich with candidate metadata if available
                     technique_name = ""
                     for cand in mem.candidates.get(span_id, []):
@@ -294,7 +311,7 @@ class BatchMapperAgent:
                                 "subtechnique_of": cand.get("subtechnique_of"),
                             }
                             break
-                    
+
                     # If name not found in candidates, try to look it up from cache
                     if not technique_name:
                         # First try the fast cache lookup
@@ -327,19 +344,34 @@ class BatchMapperAgent:
                                         }
                             except Exception as e:
                                 logger.debug(f"Failed to resolve technique {technique_id}: {e}")
-                    
+
                     # Set the name (fallback to technique_id if name not found)
                     claim["name"] = technique_name if technique_name else technique_id
-                    
+
                     mem.claims.append(claim)
                     added_claims += 1
-                    
+
                     logger.debug(f"Added claim: span={span_id}, technique={technique_id}, conf={confidence}")
             else:
                 logger.warning(f"Results is not a list after parsing: {type(results)}")
-            
+
             logger.info(f"BatchMapperAgent: Batch added {added_claims} claims")
             return added_claims
+
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON parse error in technique extraction: {e}")
+            logger.debug(f"Failed content preview: {content[:200] if content else 'Empty'}")
+
+            # Try fallback parsing with original content
+            parsed = parse_json_with_fallback(
+                original_content,  # Use original content, not modified
+                expected_structure=[],
+                max_retries=2
+            )
+            results = parsed if isinstance(parsed, list) else []
+
+            # Return 0 claims on parse error
+            return 0
                         
         except Exception as e:
             logger.error(f"Batch processing failed: {e}")
@@ -406,11 +438,11 @@ class BatchMapperAgent:
         # Apply more conservative bounds
         # Smaller batches for dense content
         if is_dense:
-            min_batch = 3   # Allow smaller batches for very large spans
-            max_batch = 10  # Much smaller max for dense content
+            min_batch = 2   # Allow smaller batches for very large spans
+            max_batch = 5   # Much smaller max for dense content to prevent timeouts
         else:
-            min_batch = 5
-            max_batch = 15  # Reduced from 30
+            min_batch = 3
+            max_batch = 10  # Reduced to 10 to prevent timeouts
         
         # Override with environment variable if set
         min_batch = int(os.getenv("MIN_BATCH_SIZE", str(min_batch)))

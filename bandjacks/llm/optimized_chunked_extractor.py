@@ -1,5 +1,6 @@
 """Optimized chunked document extraction with smart span detection."""
 
+import os
 import re
 import logging
 import time
@@ -651,10 +652,14 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
             else:
                 mapper = MapperAgent()
                 mapper.run(mem, config)
-        
-        # Run consolidator
-        consolidator = ConsolidatorAgent()
-        consolidator.run(mem, config)
+
+        # Run consolidator only if not skipping for global consolidation
+        if not config.get("skip_chunk_consolidation", False):
+            consolidator = ConsolidatorAgent()
+            consolidator.run(mem, config)
+            logger.debug(f"Chunk consolidation completed for chunk {config.get('chunk_id', 'unknown')}")
+        else:
+            logger.debug(f"Skipping chunk consolidation for chunk {config.get('chunk_id', 'unknown')} - will consolidate globally")
         
         # Run entity extraction if enabled
         entities = {}
@@ -816,9 +821,12 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
             )
             logger.info(f"Progressive context accumulation enabled (mode: {config.get('progressive_mode', 'async')})") 
         
+        # Enable skipping chunk consolidation for global consolidation
+        config["skip_chunk_consolidation"] = config.get("enable_global_consolidation", True)
+
         # Step 5: Process chunks with their pre-detected spans
         chunk_results = []
-        
+
         if parallel and len(chunks) > 1 and self.parallel_workers > 1:
             # Parallel processing
             logger.info(f"Processing {len(chunks)} chunks in parallel with {self.parallel_workers} workers")
@@ -905,7 +913,54 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
         
         # Step 6: Merge results (with accumulated techniques if available)
         merged = self.merge_results(chunk_results)
-        
+
+        # Run global consolidation if enabled (replaces per-chunk consolidation)
+        if config.get("enable_global_consolidation", True):
+            # Collect all raw claims and entities from chunks
+            all_claims = []
+            all_entities = []
+
+            for chunk_result in chunk_results:
+                if chunk_result and not chunk_result.get("failed"):
+                    # Collect claims
+                    all_claims.extend(chunk_result.get("claims", []))
+
+                    # Collect entities (handle different formats)
+                    entities_data = chunk_result.get("entities", {})
+                    if isinstance(entities_data, dict) and "entities" in entities_data:
+                        all_entities.extend(entities_data["entities"])
+                    elif isinstance(entities_data, list):
+                        all_entities.extend(entities_data)
+
+            logger.info(f"Running global consolidation on {len(all_claims)} claims and {len(all_entities)} entities")
+
+            # Run global consolidation
+            consolidated = self.run_global_consolidation(all_claims, all_entities, config)
+
+            # Merge consolidated techniques with existing merged techniques (don't replace!)
+            # This preserves techniques that may have been added via other paths
+            for tech_id, tech_data in consolidated["techniques"].items():
+                if tech_id not in merged["techniques"]:
+                    merged["techniques"][tech_id] = tech_data
+                else:
+                    # Keep the version with higher confidence
+                    existing_confidence = merged["techniques"][tech_id].get("confidence", 0)
+                    new_confidence = tech_data.get("confidence", 0)
+                    if new_confidence > existing_confidence:
+                        merged["techniques"][tech_id] = tech_data
+                    elif new_confidence == existing_confidence:
+                        # Merge evidence if confidence is the same
+                        existing_evidence = merged["techniques"][tech_id].get("evidence", [])
+                        new_evidence = tech_data.get("evidence", [])
+                        # Combine unique evidence
+                        combined_evidence = existing_evidence + [e for e in new_evidence if e not in existing_evidence]
+                        merged["techniques"][tech_id]["evidence"] = combined_evidence[:10]  # Limit evidence
+
+            # Replace entities with globally deduplicated version
+            merged["entities"] = {"entities": consolidated["entities"], "extraction_status": "consolidated"}
+
+            logger.info(f"Global consolidation complete: {len(consolidated['techniques'])} consolidated, {len(merged['techniques'])} total techniques, {len(consolidated['entities'])} entities")
+
         # Add accumulated techniques and entities if using progressive mode
         if accumulator:
             accumulated_techniques = accumulator.get_accumulated_techniques()
@@ -1005,3 +1060,101 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
             progress_callback(75, f"Consolidating {len(merged['techniques'])} techniques")
         
         return merged
+
+    def run_global_consolidation(self, all_claims: List[Dict], all_entities: List[Dict], config: Dict) -> Dict:
+        """
+        Run consolidation once on all accumulated claims and entities.
+
+        Args:
+            all_claims: Raw claims from all chunks
+            all_entities: Raw entities from all chunks
+            config: Extraction configuration
+
+        Returns:
+            Consolidated techniques and entities
+        """
+        from bandjacks.llm.agents_v2 import ConsolidatorAgent
+        from bandjacks.llm.memory import WorkingMemory
+
+        logger.info(f"Running global consolidation on {len(all_claims)} claims and {len(all_entities)} entities")
+
+        # Create a synthetic memory with all claims
+        global_mem = WorkingMemory()
+
+        # Clear span_idx references from claims since we don't have the original spans
+        # This prevents index errors in ConsolidatorAgent
+        cleaned_claims = []
+        for claim in all_claims:
+            cleaned_claim = claim.copy()
+            cleaned_claim["span_idx"] = -1  # Mark as no span reference
+            cleaned_claims.append(cleaned_claim)
+
+        global_mem.claims = cleaned_claims
+        # Initialize empty spans and candidates to avoid index errors
+        global_mem.spans = []
+        global_mem.candidates = {}
+
+        # Run consolidation ONCE on all claims
+        consolidator = ConsolidatorAgent()
+        consolidator.run(global_mem, config)
+
+        # Extract consolidated techniques
+        techniques = global_mem.techniques if hasattr(global_mem, 'techniques') else {}
+
+        # Deduplicate entities globally using simple name-based deduplication
+        unique_entities = self._global_entity_dedup(all_entities)
+
+        logger.info(f"Global consolidation complete: {len(techniques)} techniques, {len(unique_entities)} entities")
+
+        return {
+            "techniques": techniques,
+            "entities": unique_entities
+        }
+
+    def _global_entity_dedup(self, all_entities: List[Dict]) -> List[Dict]:
+        """
+        Deduplicate entities across all chunks.
+
+        Args:
+            all_entities: List of all entities from all chunks
+
+        Returns:
+            Deduplicated list of entities
+        """
+        if not all_entities:
+            return []
+
+        # Group by type and name for deduplication
+        entity_map = {}
+
+        for entity in all_entities:
+            # Create a key based on type and normalized name
+            entity_type = entity.get("type", "unknown")
+            entity_name = entity.get("name", "")
+            key = f"{entity_type}:{entity_name.lower().strip()}"
+
+            if key not in entity_map:
+                entity_map[key] = entity
+            else:
+                # Merge evidence and confidence
+                existing = entity_map[key]
+
+                # Take higher confidence
+                if entity.get("confidence", 0) > existing.get("confidence", 0):
+                    existing["confidence"] = entity["confidence"]
+
+                # Merge mentions/evidence
+                existing_mentions = existing.get("mentions", [])
+                new_mentions = entity.get("mentions", [])
+
+                # Add unique mentions
+                existing_quotes = {m.get("quote", "") for m in existing_mentions if m.get("quote")}
+                for mention in new_mentions:
+                    if mention.get("quote") and mention["quote"] not in existing_quotes:
+                        existing_mentions.append(mention)
+                        existing_quotes.add(mention["quote"])
+
+                # Keep the merged entity
+                entity_map[key] = existing
+
+        return list(entity_map.values())

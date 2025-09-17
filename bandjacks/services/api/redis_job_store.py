@@ -195,7 +195,7 @@ class RedisJobStore:
             
             # Check if job is already completed
             if job.get("status") == "completed":
-                logger.warning(f"Job {job_id} is already completed, skipping")
+                logger.warning(f"✅ Job {job_id} is already completed, skipping claim")
                 # Release lock and don't process
                 lock.release()
                 # Clean up if it's in processing set
@@ -212,12 +212,17 @@ class RedisJobStore:
             
             # Check if job is in retry state (waiting to retry)
             if job.get("status") == "retrying":
-                logger.info(f"Job {job_id} is in retry state, skipping")
-                lock.release()
-                # Put it back in queue for later
-                self.redis.rpush(self.QUEUE_KEY, job_id)
-                # Try next job
-                return self.claim_and_get_next_job(worker_id)
+                # Check if it's owned by current worker
+                if job.get("worker_id") == worker_id:
+                    logger.info(f"⚡ Job {job_id} is owned by this worker and in retry state - reclaiming for retry")
+                    # This worker owns it - allow reclaim for retry
+                else:
+                    logger.info(f"⏳ Job {job_id} is in retry state by worker {job.get('worker_id')}, skipping")
+                    lock.release()
+                    # Put it back in queue for later
+                    self.redis.rpush(self.QUEUE_KEY, job_id)
+                    # Try next job
+                    return self.claim_and_get_next_job(worker_id)
             
             # Update job with claim information
             job.update({
@@ -329,13 +334,14 @@ class RedisJobStore:
         
         # Check if already completed
         if job.get("status") == "completed":
-            logger.info(f"Job {job_id} already completed")
+            logger.warning(f"⚠️ Job {job_id} already completed - handling duplicate completion from worker {worker_id}")
             return self._handle_duplicate_result(job_id, job, result, worker_id)
-        
-        # Verify ownership (unless already completed)
-        if job.get("worker_id") != worker_id and job.get("status") != "completed":
-            logger.warning(f"Worker {worker_id} doesn't own job {job_id}")
-            return False
+
+        # Log ownership but don't block completion to avoid stuck jobs
+        expected_worker = job.get("worker_id")
+        if expected_worker != worker_id:
+            logger.warning(f"⚠️ Worker mismatch for job {job_id}: expected {expected_worker}, got {worker_id} - allowing completion anyway")
+            # Don't return False - allow the completion to proceed to avoid stuck jobs
         
         # Update job with result
         job.update({
@@ -367,7 +373,9 @@ class RedisJobStore:
         heartbeat_key = f"{self.HEARTBEAT_PREFIX}{job_id}"
         self.redis.delete(heartbeat_key)
         
-        logger.info(f"Job {job_id} completed by worker {worker_id}")
+        techniques_count = result.get('techniques_count', 0)
+        logger.info(f"✅ Job {job_id} SUCCESSFULLY COMPLETED by worker {worker_id} with {techniques_count} techniques")
+        logger.info(f"✅ Job {job_id} removed from processing set and added to completed set")
         return True
     
     def fail_job(
@@ -517,8 +525,8 @@ class RedisJobStore:
                             claimed_time = datetime.fromisoformat(claimed_at)
                             elapsed = (datetime.utcnow() - claimed_time).total_seconds()
                             
-                            # Reclaim if older than heartbeat TTL * 2
-                            if elapsed > self.heartbeat_ttl * 2:
+                            # Reclaim if older than heartbeat TTL * 3 (more tolerance)
+                            if elapsed > self.heartbeat_ttl * 3:
                                 logger.info(f"Reclaiming abandoned job {job_id} (elapsed: {elapsed}s)")
                                 
                                 # Reset job status
@@ -580,31 +588,34 @@ class RedisJobStore:
         
         # Keep the better result
         if new_techniques > existing_techniques:
-            logger.info(f"Updating job {job_id} with better result from worker {worker_id}")
-            
+            logger.info(f"📈 Updating job {job_id} with better result from worker {worker_id} ({new_techniques} > {existing_techniques} techniques)")
+
             existing_job.update({
                 "result": new_result,
                 "duplicate_count": existing_job.get("duplicate_count", 1) + 1,
                 "last_updated_by": worker_id,
                 "last_updated_at": datetime.utcnow().isoformat()
             })
-            
+
             job_key = f"{self.JOB_PREFIX}{job_id}"
             self.redis.set(job_key, json.dumps(existing_job))
-        
-        # CRITICAL: Ensure job is removed from processing set and added to completed set
+        else:
+            logger.info(f"📉 Keeping existing result for job {job_id} ({existing_techniques} >= {new_techniques} techniques)")
+
+        # CRITICAL: ALWAYS ensure job is removed from processing set and added to completed set
         # This handles the case where a job was completed but not properly cleaned up
+        logger.info(f"🧹 Cleaning up job {job_id} - ensuring it's in completed set and removed from processing")
         pipe = self.redis.pipeline()
         pipe.srem(self.PROCESSING_SET, job_id)
         pipe.sadd(self.COMPLETED_SET, job_id)
         pipe.execute()
-        
-        # Clean up any stale locks and heartbeats
+
+        # Clean up any stale locks and heartbeats (force cleanup even if they don't exist)
         lock_key = f"{self.LOCK_PREFIX}{job_id}"
         heartbeat_key = f"{self.HEARTBEAT_PREFIX}{job_id}"
-        self.redis.delete(lock_key)
-        self.redis.delete(heartbeat_key)
-        
+        self.redis.delete(lock_key, heartbeat_key)  # Delete both in one call
+
+        logger.info(f"✅ Job {job_id} fully cleaned up - locks and heartbeats removed")
         return True
     
     def get_queue_length(self) -> int:

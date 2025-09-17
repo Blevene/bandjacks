@@ -285,7 +285,7 @@ class BatchEntityExtractor:
         try:
             response = self.client.call(
                 messages=messages,
-                max_tokens=4000,  # Reduced to prevent truncation
+                max_tokens=8000,  # Increased to prevent truncation
                 response_format={
                     "type": "json_schema",
                     "json_schema": self._get_batch_schema()
