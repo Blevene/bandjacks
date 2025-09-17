@@ -518,7 +518,7 @@ class MapperAgent:
                         "type": "json_schema",
                         "json_schema": mapper_schema
                     },
-                    max_tokens=4000  # Reasonable for single span
+                    max_tokens=8000  # Doubled for complex spans
                 )
                 client.model = old_model  # Restore original
                 raw = response.get("content", "")

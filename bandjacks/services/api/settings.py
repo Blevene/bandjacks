@@ -52,12 +52,12 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: str = ""
-    redis_lock_timeout: int = 600  # 10 minutes max lock time
+    redis_lock_timeout: int = 1800  # 30 minutes max lock time (increased from 10 min)
     redis_heartbeat_interval: int = 30  # Worker heartbeat every 30s
     
     # Job processing settings
     job_claim_ttl: int = 300  # 5 minutes to process a job before it's reclaimed
-    job_heartbeat_ttl: int = 60  # Heartbeat expires after 60s
+    job_heartbeat_ttl: int = 300  # Heartbeat expires after 5 minutes (increased from 60s)
     worker_id_prefix: str = "worker"  # Prefix for worker IDs
     
     # Rate limiting settings
