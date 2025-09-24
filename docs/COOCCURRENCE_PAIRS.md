@@ -1,84 +1,192 @@
-## Co-occurrence (Pairs) — Method and UI Reference
+## Co-occurrence (Pairs) — Methodology, Filters, Metrics, and UI Reference
 
-This document explains how Bandjacks computes technique co-occurrence pairs, the meaning of filters, and the UI columns shown in the Pairs Explorer.
+This document describes how Bandjacks computes technique co‑occurrence (pairs), what each filter means, how metrics are derived, and how the UI maps to API endpoints.
 
-### Data model (source of truth)
-- Episodes: `AttackEpisode` nodes
-- Actions: `AttackAction` nodes with `attack_pattern_ref` → technique STIX ID
-- Technique: `AttackPattern` nodes (name, `stix_id`, `external_id` a.k.a. T-code)
-- Linkage: `(:AttackEpisode)-[:CONTAINS]->(:AttackAction)`; tactics via `(:AttackPattern)-[:HAS_TACTIC]->(:Tactic)`
+---
 
-During computation, each episode contributes a set of distinct techniques (deduplicated within an episode).
+### 1) Graph data model (source of truth)
+- Episodes: `AttackEpisode`
+- Actions: `AttackAction` with property `attack_pattern_ref` (technique STIX ID)
+- Techniques: `AttackPattern` with `stix_id`, `name`, and `external_id` (ATT&CK T‑code like T1007)
+- Tactics: `(:AttackPattern)-[:HAS_TACTIC]->(:Tactic)`
+- Core linkage: `(:AttackEpisode)-[:CONTAINS]->(:AttackAction)`
 
-### How pairs are formed
-1. For every episode, collect the distinct technique IDs used in that episode.
-2. Generate unordered pairs (A,B) with A < B to avoid duplicates.
-3. Count how many episodes contain A, how many contain B, and how many contain both together.
+Important schema properties we leverage:
+- Distinct techniques per episode: within a single `AttackEpisode`, repeated actions for the same technique are de‑duplicated.
+- Time fields (available for future filtering): `AttackAction.timestamp`, `AttackEpisode.created`.
 
-### Filters (Global co-occurrence endpoint)
-- min_support: Minimum number of episodes where each technique appears individually.
-  - Both A and B must satisfy support ≥ min_support.
-- min_episodes (min_episodes_per_pair): Minimum number of episodes where A and B co-occur together.
-- limit: Maximum number of returned pairs after sorting by the primary metric (NPMI in backend, additional UI sorting available).
+---
 
-Top co-occurrence (aggregate pair frequency) endpoint also supports:
-- tactic (optional): Only consider pairs where at least one technique maps to the selected tactic.
-- min_episode_size (optional): Minimum number of distinct techniques in an episode to be counted.
-
-### Metrics (how they are calculated)
-Let:
-- N = total number of episodes considered
-- support_A = episodes containing technique A
-- support_B = episodes containing technique B
-- count_AB = episodes containing both A and B
-- p(A) = support_A / N
-- p(B) = support_B / N
-- p(A,B) = count_AB / N
-
-- Confidence P(B|A) = count_AB / support_A (not shown in the pairs table by default; available in API)
-- Lift = p(A,B) / (p(A)*p(B)) = (count_AB * N) / (support_A * support_B)
-- PMI (Pointwise Mutual Information) = log2( p(A,B) / (p(A)*p(B)) )
-- NPMI (Normalized PMI) = PMI / ( -log2( p(A,B) ) ), range [-1, 1]
-- Jaccard = count_AB / (support_A + support_B - count_AB)
+### 2) Pair formation and counting
+For each episode:
+1. Collect the set of distinct technique IDs present (from `attack_pattern_ref`).
+2. Generate all unordered 2‑combinations (A,B) with a canonical order (A < B) to avoid duplicates.
+3. Maintain global counters across episodes:
+   - `support_A`: episodes containing A
+   - `support_B`: episodes containing B
+   - `count_AB`: episodes containing both A and B (co‑occurrence)
+4. `N`: total episodes considered in the scope of the query
 
 Notes:
-- Pairs are computed over distinct techniques per episode (duplicate actions in the same episode do not inflate counts).
-- Global endpoint uses raw counts (no smoothing). Actor-scoped endpoint applies Laplace-type smoothing for small-N; that is documented separately.
+- Counting is episode‑level (not action‑level). Multiple actions of the same technique in one episode still count once.
+- Technique names and T‑codes are looked up from `AttackPattern` for display (`name`, `external_id`).
 
-### UI columns (Pairs Explorer)
-- Technique A / Technique B
-  - Name
-  - T-code (external_id) — e.g., T1007
-  - STIX ID — e.g., attack-pattern--…
-- Count — number of episodes where A and B appear together
-- Lift — higher than 1 indicates positive association beyond chance
-- PMI / NPMI — PMI strength, with NPMI normalized to [-1, 1]
-- Jaccard — overlap ratio of A and B supports
+---
 
-### Interpreting filters
-- Increasing min_support removes rarely observed techniques (reducing noise, improving stability of metrics)
-- Increasing min_episodes removes weakly supported pairs (reduces spurious associations)
-- Sorting:
-  - NPMI: emphasizes de-biased association strength (recommended)
-  - Lift: emphasizes multiplicative association; can be large with low supports
-  - Count: emphasizes frequent pairs; may bias towards popular techniques
+### 3) Filters (Global co‑occurrence endpoint)
+- `min_support` (per‑technique):
+  - Minimum number of episodes where each technique (A and B) appears individually.
+  - Purpose: remove ultra‑rare techniques that can produce unstable metrics.
+- `min_episodes_per_pair` (pair co‑occurrence):
+  - Minimum number of episodes where A and B co‑occur together.
+  - Purpose: filter out weakly supported pairs.
+- `limit`:
+  - Maximum number of pairs returned after computing metrics and formatting.
 
-### API endpoints used by the UI
-- Global metrics (Pairs Explorer): `POST /v1/analytics/cooccurrence/global`
-  - Body: `{ min_support?: number, min_episodes_per_pair?: number, limit?: number }`
-  - Returns each pair with: `technique_a/b`, `name_a/b`, `external_id_a/b`, `count`, `support_a/b`, `lift`, `pmi`, `npmi`, `jaccard`, plus totals
-- Top pairs (frequency, optional tactic): `GET /v1/analytics/cooccurrence/top`
-  - Params: `limit`, `min_episode_size`, `tactic`
+Top pairs (frequency view) supports additional filters:
+- `tactic` (optional): Only count pairs where at least one technique maps to the selected tactic.
+- `min_episode_size` (optional): Ignore episodes with fewer than this many distinct techniques (helps avoid trivial or low‑signal episodes).
 
-### Caveats and best practices
-- Use NPMI as the primary ranking to avoid popularity bias; review Count to ensure adequate evidence.
-- Apply reasonable minimums (e.g., min_support ≥ 2, min_episodes ≥ 2) to avoid unstable pairs.
-- For tactic-specific work, use the tactic filter or pre-filter the set by tactic.
+Interpretation tips:
+- Increasing `min_support` improves metric stability by excluding rare techniques.
+- Increasing `min_episodes_per_pair` reduces spurious associations with low evidence.
 
-### Future extensions (not yet in this document)
-- Actor-scoped co-occurrence with small-sample smoothing
-- Bundle (itemset) mining with coverage overlays
-- Time-windowed co-occurrence and trending pairs
-- Statistical significance tests (e.g., Fisher’s exact with multiple-testing correction)
+---
+
+### 4) Metrics (definitions and properties)
+Let:
+- `N` = total episodes considered
+- `support_A` = episodes containing technique A
+- `support_B` = episodes containing technique B
+- `count_AB` = episodes containing both A and B
+- `p(A)` = `support_A / N`
+- `p(B)` = `support_B / N`
+- `p(A,B)` = `count_AB / N`
+
+Derived metrics:
+- Confidence: `P(B|A) = count_AB / support_A`
+  - Asymmetric; measures conditional probability of B given A.
+- Lift: `lift(A,B) = p(A,B) / (p(A) * p(B)) = (count_AB * N) / (support_A * support_B)`
+  - > 1 indicates positive association beyond chance; < 1 indicates negative association.
+- PMI (Pointwise Mutual Information): `PMI(A,B) = log2( p(A,B) / (p(A) * p(B)) )`
+  - Unbounded above; inflates with very small probabilities; use alongside supports.
+- NPMI (Normalized PMI): `NPMI = PMI / ( -log2( p(A,B) ) )`
+  - Range [-1, 1]; robust across popularity; recommended primary rank metric.
+- Jaccard: `count_AB / (support_A + support_B - count_AB)`
+  - Measures overlap of supports.
+
+Considerations:
+- Global endpoint uses raw counts (no smoothing). Actor‑scoped analysis applies Laplace‑style adjustments for small sample sizes (see below).
+- Always sanity‑check `count_AB` and supports when interpreting large lift/PMI values.
+
+---
+
+### 5) Actor‑scoped co‑occurrence (how it differs)
+When scoped to a single `IntrusionSet`, we compute the same counts but apply small‑sample stabilizers:
+- Confidence with pseudocounts: `(count_AB + 0.5) / (support_A + 1)`
+- Lift with Laplace smoothing: expected probabilities use `(support + 1)` and `(N + 2)`
+- PMI with additive smoothing: `p(A) = (support_A + 0.5) / (N + 1)` etc.
+
+Why: smaller `N` per actor can make raw estimates unstable; pseudocounts reduce variance and avoid zero‑division.
+
+---
+
+### 6) UI: Pairs Explorer (columns and controls)
+Columns:
+- Technique A / B
+  - Name (`AttackPattern.name`)
+  - T‑code (`AttackPattern.external_id`, e.g., T1007)
+  - STIX ID (`AttackPattern.stix_id`)
+- Count (`count_AB`)
+- Lift, PMI, NPMI, Jaccard
+
+Controls:
+- `min_support`, `min_episodes_per_pair`, `limit` (fetch‑time filters)
+- Sorting (client): by NPMI (recommended), Lift, Count
+
+---
+
+### 7) UI: Conditional Explorer (P(B|A))
+- Input A: Technique via STIX ID or name (autocomplete backed by `/v1/search/ttx`)
+- Output table for co‑techniques B with:
+  - Name, T‑code, STIX ID
+  - Episodes with A, co‑occurrence count
+  - `P(B|A)`
+- Client‑side filters: `limit`, `min_count`, `min_p`, sort (probability/count/name), text search
+- Backend: `GET /v1/analytics/cooccurrence/conditional?technique_id=A&limit=L` (returns external IDs)
+
+---
+
+### 8) UI: Actor Insights (overview)
+- Inputs: `intrusion_set_id`, `min_support`, metric (`npmi|lift|confidence`)
+- Top pairs for the actor (with Name, T‑code, STIX ID, Count, Conf A→B, Conf B→A, Lift, PMI, NPMI, Jaccard)
+- Signature bundles: technique chips, support, confidence, lift, tactic tags
+- Backend: `POST /v1/analytics/cooccurrence/actor`
+
+---
+
+### 9) UI: Bundles Explorer (overview)
+- Inputs: optional `intrusion_set_id`, `min_support`, `min_size`, `max_size`
+- Output: bundles with technique chips (names), size, support, confidence, lift, tactics, D3FEND coverage% and gap count
+- Backend: `POST /v1/analytics/cooccurrence/bundles`
+  - Coverage currently uses `(:D3fendTechnique)-[:COUNTERS]->(:AttackPattern)`; `DETECTS` relationships are not required.
+
+---
+
+### 10) UI: Bridging Techniques (overview)
+- Input: `min_actors` (default 3)
+- Output: techniques sorted by number of distinct actors using them, with tactics and a sample of actors
+- Backend: `GET /v1/analytics/cooccurrence/bridging`
+
+---
+
+### 11) API quick reference (Pairs)
+- Global pairs: `POST /v1/analytics/cooccurrence/global`
+  - Body:
+    ```json
+    { "min_support": 2, "min_episodes_per_pair": 2, "limit": 100 }
+    ```
+  - Returns for each pair:
+    ```json
+    {
+      "technique_a": "attack-pattern--…",
+      "technique_b": "attack-pattern--…",
+      "name_a": "PowerShell",
+      "name_b": "Ingress Tool Transfer",
+      "external_id_a": "T1059.001",
+      "external_id_b": "T1105",
+      "count": 44,
+      "support_a": 120,
+      "support_b": 80,
+      "lift": 1.72,
+      "pmi": 0.83,
+      "npmi": 0.41,
+      "jaccard": 0.15
+    }
+    ```
+
+---
+
+### 12) Known limitations and best practices
+- Popularity bias: Count favors popular techniques; use NPMI or Lift to mitigate.
+- Small sample sizes: For actors with few episodes, prefer actor endpoint (uses smoothing) or raise supports.
+- Tactic filter semantics: a pair is included if either technique has the selected tactic.
+- Episode size filter: set `min_episode_size` > 2 to focus on richer episodes.
+- Time‑windowing: timestamps exist, but time filters are not wired into endpoints yet (planned).
+
+---
+
+### 13) Performance and scalability
+- Current endpoints compute aggregates on the fly in Neo4j for the requested scope; keep reasonable limits.
+- For very large graphs, consider caching common queries and precomputing popular scopes.
+
+---
+
+### 14) Roadmap
+- Add time filters (`start`, `end`) to endpoints
+- Significance testing (Fisher’s exact test + Benjamini–Hochberg correction)
+- Community detection on co‑occurrence graph; surfacing cluster labels
+- Platform segmentation once platform attributes/edges are available
+
 
 

@@ -14,6 +14,12 @@ export default function ConditionalCooccurrencePage() {
   const [sortBy, setSortBy] = useState<'probability' | 'count' | 'name'>('probability');
   const [search, setSearch] = useState<string>('');
 
+  // Autocomplete state
+  const [techQuery, setTechQuery] = useState<string>('');
+  const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [suggesting, setSuggesting] = useState<boolean>(false);
+  const [showSuggestions, setShowSuggestions] = useState<boolean>(false);
+
   async function load() {
     if (!techId) return;
     setLoading(true);
@@ -32,6 +38,29 @@ export default function ConditionalCooccurrencePage() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Debounced technique autocomplete
+  useEffect(() => {
+    const q = techQuery.trim();
+    if (!q) {
+      setSuggestions([]);
+      return;
+    }
+    setSuggesting(true);
+    const t = setTimeout(async () => {
+      try {
+        const res = await api.search.ttx(q, 8, ['AttackPattern']);
+        const results = res.data?.results || [];
+        setSuggestions(results);
+        setShowSuggestions(true);
+      } catch (e) {
+        setSuggestions([]);
+      } finally {
+        setSuggesting(false);
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [techQuery]);
 
   const filtered = useMemo(() => {
     let r = rows;
@@ -57,8 +86,49 @@ export default function ConditionalCooccurrencePage() {
           <h1 className="text-xl font-semibold">Conditional Co-occurrence</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">P(B|A) for techniques co-occurring with a given technique</p>
         </div>
-        <div className="flex items-center gap-2">
-          <input value={techId} onChange={(e) => setTechId(e.target.value)} placeholder="Technique ID (e.g., T1007)" className="h-9 rounded-md border px-3 text-sm bg-transparent w-44" />
+        <div className="flex items-center gap-2 relative">
+          <div className="flex items-center gap-1">
+            <input
+              value={techId}
+              onChange={(e) => setTechId(e.target.value)}
+              placeholder="Technique ID (e.g., T1007)"
+              className="h-9 rounded-md border px-3 text-sm bg-transparent w-40"
+            />
+            <input
+              value={techQuery}
+              onChange={(e) => setTechQuery(e.target.value)}
+              placeholder="Search technique name"
+              className="h-9 rounded-md border px-3 text-sm bg-transparent w-56"
+              onFocus={() => techQuery && setShowSuggestions(true)}
+              onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+            />
+          </div>
+          {showSuggestions && (suggestions?.length > 0 || suggesting) && (
+            <div className="absolute top-10 left-0 z-10 w-[24rem] rounded-md border bg-background shadow">
+              {suggesting && <div className="px-3 py-2 text-xs text-gray-500">Searching…</div>}
+              {!suggesting && suggestions.map((s: any, idx: number) => {
+                const id = s?.stix_id || s?.id || s?.technique_id || '';
+                const name = s?.name || s?.title || id;
+                const ext = s?.external_id || s?.externalId || '';
+                return (
+                  <button
+                    type="button"
+                    key={idx}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setTechId(id);
+                      setTechQuery('');
+                      setShowSuggestions(false);
+                    }}
+                    className="block w-full text-left px-3 py-2 hover:bg-accent"
+                  >
+                    <div className="text-sm">{name}</div>
+                    <div className="text-[11px] text-gray-500">{ext || id}</div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <label className="text-xs text-gray-500">limit</label>
           <input type="number" value={limit} onChange={(e) => setLimit(parseInt(e.target.value || '25', 10))} className="h-9 w-24 rounded-md border px-3 text-sm bg-transparent" />
           <label className="text-xs text-gray-500">min_count</label>
