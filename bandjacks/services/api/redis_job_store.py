@@ -112,7 +112,7 @@ class RedisJobStore:
             "status": "queued",
             "progress": 0,
             "message": "Job queued for processing",
-            "created_at": datetime.utcnow().isoformat(),
+            "created_at": datetime.utcnow().isoformat() + "Z",
             "file_path": file_path,
             "file_name": file_name,
             "file_ext": file_ext,
@@ -228,8 +228,8 @@ class RedisJobStore:
             job.update({
                 "status": "processing",
                 "worker_id": worker_id,
-                "claimed_at": datetime.utcnow().isoformat(),
-                "started_at": datetime.utcnow().isoformat(),
+                "claimed_at": datetime.utcnow().isoformat() + "Z",
+                "started_at": datetime.utcnow().isoformat() + "Z",
                 "message": f"Processing by worker {worker_id}"
             })
             
@@ -296,7 +296,7 @@ class RedisJobStore:
                 logger.warning(f"Worker {worker_id} doesn't own job {job_id}")
                 return False
             
-            job["last_heartbeat"] = datetime.utcnow().isoformat()
+            job["last_heartbeat"] = datetime.utcnow().isoformat() + "Z"
             self.redis.set(job_key, json.dumps(job))
             return True
         
@@ -347,7 +347,7 @@ class RedisJobStore:
         job.update({
             "status": "completed",
             "result": result,
-            "completed_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.utcnow().isoformat() + "Z",
             "message": "Processing completed successfully",
             "progress": 100
         })
@@ -415,7 +415,7 @@ class RedisJobStore:
         job.update({
             "status": "failed",
             "error": error,
-            "completed_at": datetime.utcnow().isoformat(),
+            "completed_at": datetime.utcnow().isoformat() + "Z",
             "message": f"Processing failed: {error[:200]}"
         })
         
@@ -620,7 +620,7 @@ class RedisJobStore:
                 "result": new_result,
                 "duplicate_count": existing_job.get("duplicate_count", 1) + 1,
                 "last_updated_by": worker_id,
-                "last_updated_at": datetime.utcnow().isoformat()
+                "last_updated_at": datetime.utcnow().isoformat() + "Z"
             })
 
             job_key = f"{self.JOB_PREFIX}{job_id}"
