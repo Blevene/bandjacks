@@ -153,12 +153,18 @@ These modules are actively used in the extraction pipeline and must be preserved
 ### Phase 3: Consolidate Core Modules
 **Goal**: Merge related functionality to reduce module count.
 
-#### Task 3.1: Consolidate Entity Processing
-- [ ] Merge `entity_utils.py` functions into `entity_consolidator.py`
-- [ ] Update all imports from entity_utils to entity_consolidator
-- [ ] Delete `entity_utils.py`
-- [ ] Run tests to verify
-- **Commit**: "Consolidate entity processing modules"
+#### Task 3.1: Consolidate Entity Processing ✅ COMPLETED (2025-01-24)
+- [x] Merge `entity_utils.py` functions into `entity_consolidator.py`
+  - Added `consolidate_entities()` as @classmethod to EntityConsolidatorAgent
+  - Moved helper functions `_extract_primary_from_alias_quote()` and `_extract_aliases_from_quote()`
+- [x] Update all imports from entity_utils to entity_consolidator
+  - Updated extraction_pipeline.py to use EntityConsolidatorAgent.consolidate_entities()
+  - Removed unused imports from chunked_extractor.py and optimized_chunked_extractor.py
+- [x] Delete `entity_utils.py`
+- [x] Run tests to verify
+  - Verified entity consolidation still works (APT29/Cozy Bear alias merging)
+  - Verified extraction pipeline instantiates correctly
+- **Completed**: Successfully consolidated entity processing modules
 
 #### Task 3.2: Consolidate Evidence Processing
 - [ ] Merge `evidence_utils.py` functions into `consolidator_base.py`
@@ -227,14 +233,14 @@ After each phase, verify:
 
 ### After Full Cleanup (Projected)
 - **~38 modules remaining in llm/** after Phase 3 consolidation
-  - 41 production modules currently in `bandjacks/llm/`
+  - 40 production modules currently in `bandjacks/llm/` (was 41, now entity_utils.py deleted)
   - 11 modules in `bandjacks/llm/experimental/` (judge, PTG, simulation, etc.)
-  - 7 modules deleted total (2 legacy extractors, 3 active learning, 2 route files)
+  - 8 modules deleted total (2 legacy extractors, 3 active learning, 2 route files, 1 entity_utils)
   - Clear separation between production and experimental
 - Single extraction pipeline path (`extraction_pipeline.py`)
 - No dead code paths
 - Well-documented module purposes
-- Phase 3 would further consolidate by ~3 modules through merging
+- Phase 3 will further consolidate by ~2 more modules (evidence_utils, budget)
 
 ## Module Status Reference
 
@@ -274,7 +280,7 @@ After each phase, verify:
 ✅ entity_resolver.py
 
 ### To Be Consolidated
-🔀 entity_utils.py → entity_consolidator.py
+✅ ~~entity_utils.py~~ → entity_consolidator.py (COMPLETED)
 🔀 evidence_utils.py → consolidator_base.py
 🔀 token_utils.py + budget.py → token_utils.py
 
@@ -363,8 +369,19 @@ Based on the complete flow analysis, here's the safest order:
 - ✅ Core extraction pipeline remains unaffected
 - ✅ Experimental endpoints (`/sequence/*`, `/attackflow/*`) still functional
 
+### Phase 3 - IN PROGRESS (2025-01-24)
+
+#### Phase 3.1 - Consolidate Entity Processing
+- ✅ Added `consolidate_entities()` as @classmethod to EntityConsolidatorAgent
+- ✅ Moved helper functions as private methods
+- ✅ Updated extraction_pipeline.py to use new consolidated method
+- ✅ Removed unused imports from chunked extractors
+- ✅ Deleted entity_utils.py
+- ✅ Verified consolidation still works correctly
+
 ### Next Steps
-- Phase 3: Consolidate core modules (requires careful testing)
+- Phase 3.2: Consolidate evidence_utils.py into consolidator_base.py
+- Phase 3.3: Consolidate budget.py into token_utils.py
 
 ## Notes
 - Each task should be a separate commit for easy rollback

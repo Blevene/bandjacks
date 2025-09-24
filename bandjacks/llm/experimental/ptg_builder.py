@@ -11,7 +11,7 @@ import numpy as np
 from neo4j import GraphDatabase
 
 from .sequence_extractor import PairwiseStatistics, SequenceExtractor
-from .tactic_priors import TacticPriors, get_technique_tactic_prior
+from bandjacks.llm.tactic_priors import TacticPriors, get_technique_tactic_prior
 
 logger = logging.getLogger(__name__)
 

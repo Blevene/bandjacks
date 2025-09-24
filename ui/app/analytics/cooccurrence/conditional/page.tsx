@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 
 export default function ConditionalCooccurrencePage() {
@@ -9,6 +9,10 @@ export default function ConditionalCooccurrencePage() {
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [minCount, setMinCount] = useState<number>(0);
+  const [minProb, setMinProb] = useState<number>(0);
+  const [sortBy, setSortBy] = useState<'probability' | 'count' | 'name'>('probability');
+  const [search, setSearch] = useState<string>('');
 
   async function load() {
     if (!techId) return;
@@ -29,6 +33,23 @@ export default function ConditionalCooccurrencePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const filtered = useMemo(() => {
+    let r = rows;
+    if (minCount > 0) r = r.filter((x: any) => (x.co_occurrence_count ?? 0) >= minCount);
+    if (minProb > 0) r = r.filter((x: any) => (x.probability ?? 0) >= minProb);
+    if (search) {
+      const q = search.toLowerCase();
+      r = r.filter((x: any) =>
+        (x.co_technique_name || '').toLowerCase().includes(q) ||
+        (x.co_technique_external_id || '').toLowerCase().includes(q) ||
+        (x.co_technique || '').toLowerCase().includes(q)
+      );
+    }
+    if (sortBy === 'probability') return [...r].sort((a, b) => (b.probability ?? 0) - (a.probability ?? 0));
+    if (sortBy === 'count') return [...r].sort((a, b) => (b.co_occurrence_count ?? 0) - (a.co_occurrence_count ?? 0));
+    return [...r].sort((a, b) => (a.co_technique_name || '').localeCompare(b.co_technique_name || ''));
+  }, [rows, minCount, minProb, sortBy, search]);
+
   return (
     <div className="mx-auto max-w-6xl p-6 space-y-6">
       <div className="flex items-end justify-between gap-4 flex-wrap">
@@ -37,8 +58,19 @@ export default function ConditionalCooccurrencePage() {
           <p className="text-sm text-gray-500 dark:text-gray-400">P(B|A) for techniques co-occurring with a given technique</p>
         </div>
         <div className="flex items-center gap-2">
-          <input value={techId} onChange={(e) => setTechId(e.target.value)} placeholder="Technique ID (e.g., T1007)" className="h-9 rounded-md border px-3 text-sm bg-transparent" />
+          <input value={techId} onChange={(e) => setTechId(e.target.value)} placeholder="Technique ID (e.g., T1007)" className="h-9 rounded-md border px-3 text-sm bg-transparent w-44" />
+          <label className="text-xs text-gray-500">limit</label>
           <input type="number" value={limit} onChange={(e) => setLimit(parseInt(e.target.value || '25', 10))} className="h-9 w-24 rounded-md border px-3 text-sm bg-transparent" />
+          <label className="text-xs text-gray-500">min_count</label>
+          <input type="number" value={minCount} onChange={(e) => setMinCount(parseInt(e.target.value || '0', 10))} className="h-9 w-24 rounded-md border px-3 text-sm bg-transparent" />
+          <label className="text-xs text-gray-500">min_p</label>
+          <input type="number" step="0.01" value={minProb} onChange={(e) => setMinProb(parseFloat(e.target.value || '0'))} className="h-9 w-24 rounded-md border px-3 text-sm bg-transparent" />
+          <select value={sortBy} onChange={(e) => setSortBy(e.target.value as any)} className="h-9 rounded-md border px-2 text-sm bg-transparent">
+            <option value="probability">Sort: P(B|A)</option>
+            <option value="count">Sort: Count</option>
+            <option value="name">Sort: Name</option>
+          </select>
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search B name/T-code/STIX" className="h-9 rounded-md border px-3 text-sm bg-transparent w-56" />
           <button onClick={load} className="h-9 rounded-md bg-black text-white dark:bg-white dark:text-black px-3 text-sm">Run</button>
         </div>
       </div>
@@ -57,7 +89,7 @@ export default function ConditionalCooccurrencePage() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r: any, idx: number) => (
+            {filtered.map((r: any, idx: number) => (
               <tr key={idx} className="border-t">
                 <td className="px-3 py-2">
                   <div className="text-sm font-medium">{r.co_technique_name}</div>
