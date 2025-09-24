@@ -57,9 +57,15 @@ export default function ConditionalCooccurrencePage() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, idx) => (
+            {rows.map((r: any, idx: number) => (
               <tr key={idx} className="border-t">
-                <td className="px-3 py-2">{r.co_technique_name} <span className="text-xs text-gray-500">({r.co_technique})</span></td>
+                <td className="px-3 py-2">
+                  <div className="text-sm font-medium">{r.co_technique_name}</div>
+                  {r.co_technique_external_id && (
+                    <div className="text-[11px] text-gray-500">{r.co_technique_external_id}</div>
+                  )}
+                  <div className="text-[11px] text-gray-500">{r.co_technique}</div>
+                </td>
                 <td className="px-3 py-2 text-right">{r.episodes_with_given}</td>
                 <td className="px-3 py-2 text-right">{r.co_occurrence_count}</td>
                 <td className="px-3 py-2 text-right">{Number(r.probability).toFixed(3)}</td>

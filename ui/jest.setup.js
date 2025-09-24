@@ -77,7 +77,7 @@ jest.mock('next/navigation', () => ({
 }))
 
 // Mock environment variables
-process.env.NEXT_PUBLIC_API_URL = 'http://localhost:8001'
+process.env.NEXT_PUBLIC_API_URL = 'http://localhost:8000'
 
 // Silence console errors during tests unless explicitly testing error scenarios
 const originalError = console.error

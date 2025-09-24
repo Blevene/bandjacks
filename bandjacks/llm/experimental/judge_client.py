@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import Enum
 
 from bandjacks.llm.client import LLMClient, call_llm, validate_json_response
-from bandjacks.llm.evidence_pack import EvidencePack
+from bandjacks.llm.experimental.evidence_pack import EvidencePack
 
 logger = logging.getLogger(__name__)
 

@@ -13,7 +13,7 @@ from bandjacks.services.api.deps import get_neo4j_session
 from bandjacks.services.api.settings import settings
 from bandjacks.llm.attack_flow_validator import AttackFlowValidator
 from bandjacks.llm.flow_builder import FlowBuilder
-from bandjacks.llm.attack_flow_simulator import AttackFlowSimulator
+from bandjacks.llm.experimental.attack_flow_simulator import AttackFlowSimulator
 
 
 router = APIRouter(prefix="/attackflow", tags=["attackflow"])

@@ -769,6 +769,8 @@ class CooccurrencePair(BaseModel):
     technique_a_name: Optional[str] = None
     technique_b_name: Optional[str] = None
     count: int
+    technique_a_external_id: Optional[str] = None
+    technique_b_external_id: Optional[str] = None
 
 
 class CooccurrenceTopResponse(BaseModel):
@@ -822,7 +824,9 @@ async def get_top_cooccurring_pairs(
                 OPTIONAL MATCH (pa:AttackPattern {stix_id: technique_a})
                 OPTIONAL MATCH (pb:AttackPattern {stix_id: technique_b})
                 RETURN technique_a, coalesce(pa.name, technique_a) as name_a,
-                       technique_b, coalesce(pb.name, technique_b) as name_b, cnt
+                       technique_b, coalesce(pb.name, technique_b) as name_b, cnt,
+                       pa.external_id as external_id_a,
+                       pb.external_id as external_id_b
             """
 
             result = session.run(
@@ -842,6 +846,8 @@ async def get_top_cooccurring_pairs(
                     technique_a_name=rec["name_a"],
                     technique_b_name=rec["name_b"],
                     count=rec["cnt"],
+                    technique_a_external_id=rec.get("external_id_a"),
+                    technique_b_external_id=rec.get("external_id_b"),
                 ))
 
             return CooccurrenceTopResponse(
@@ -861,6 +867,7 @@ class ConditionalCooccurrence(BaseModel):
     given_technique: str
     co_technique: str
     co_technique_name: Optional[str] = None
+    co_technique_external_id: Optional[str] = None
     episodes_with_given: int
     co_occurrence_count: int
     probability: float
@@ -895,6 +902,7 @@ async def get_conditional_cooccurrence(
                 OPTIONAL MATCH (pb:AttackPattern {stix_id: b})
                 RETURN b as technique_id,
                        coalesce(pb.name, b) as name,
+                       pb.external_id as external_id,
                        co_count as co_occurrence_count,
                        totalA as episodes_with_given,
                        (1.0 * co_count) / CASE WHEN totalA = 0 THEN 1 ELSE totalA END as p
@@ -909,6 +917,7 @@ async def get_conditional_cooccurrence(
                     given_technique=technique_id,
                     co_technique=rec["technique_id"],
                     co_technique_name=rec["name"],
+                    co_technique_external_id=rec.get("external_id"),
                     episodes_with_given=rec["episodes_with_given"],
                     co_occurrence_count=rec["co_occurrence_count"],
                     probability=round(float(rec["p"]), 4)
@@ -998,12 +1007,13 @@ async def analyze_actor_cooccurrence(request: ActorCooccurrenceRequest) -> Actor
         top_pairs = []
         
         for metric in metrics[:20]:  # Top 20 pairs
-            # Get technique names
+            # Get technique names and external IDs
             with driver.session() as session:
                 names_result = session.run("""
                     MATCH (t1:AttackPattern {stix_id: $t1})
                     MATCH (t2:AttackPattern {stix_id: $t2})
-                    RETURN t1.name as name1, t2.name as name2
+                    RETURN t1.name as name1, t2.name as name2,
+                           t1.external_id as ext1, t2.external_id as ext2
                 """, t1=metric.technique_a, t2=metric.technique_b)
                 names = names_result.single()
                 
@@ -1012,6 +1022,8 @@ async def analyze_actor_cooccurrence(request: ActorCooccurrenceRequest) -> Actor
                 "technique_b": metric.technique_b,
                 "name_a": names["name1"] if names else metric.technique_a,
                 "name_b": names["name2"] if names else metric.technique_b,
+                "external_id_a": names["ext1"] if names else None,
+                "external_id_b": names["ext2"] if names else None,
                 "count": metric.count,
                 "confidence_a_to_b": round(metric.confidence_a_to_b, 3),
                 "confidence_b_to_a": round(metric.confidence_b_to_a, 3),
@@ -1396,7 +1408,8 @@ async def analyze_global_cooccurrence(request: GlobalCooccurrenceRequest) -> Glo
                 names_result = session.run("""
                     MATCH (t1:AttackPattern {stix_id: $t1})
                     MATCH (t2:AttackPattern {stix_id: $t2})
-                    RETURN t1.name as name1, t2.name as name2
+                    RETURN t1.name as name1, t2.name as name2,
+                           t1.external_id as ext1, t2.external_id as ext2
                 """, t1=metric.technique_a, t2=metric.technique_b)
                 names = names_result.single()
                 
@@ -1405,6 +1418,8 @@ async def analyze_global_cooccurrence(request: GlobalCooccurrenceRequest) -> Glo
                 "technique_b": metric.technique_b,
                 "name_a": names["name1"] if names else metric.technique_a,
                 "name_b": names["name2"] if names else metric.technique_b,
+                "external_id_a": names["ext1"] if names else None,
+                "external_id_b": names["ext2"] if names else None,
                 "count": metric.count,
                 "support_a": metric.support_a,
                 "support_b": metric.support_b,
