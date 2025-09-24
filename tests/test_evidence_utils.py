@@ -1,12 +1,13 @@
 """Test sentence-based evidence extraction utilities."""
 
 import pytest
-from bandjacks.llm.evidence_utils import (
-    find_sentence_boundaries,
-    extract_sentence_evidence,
-    extract_sentence_for_line,
-    calculate_line_refs
-)
+from bandjacks.llm.consolidator_base import ConsolidatorBase
+
+# Create aliases for backward compatibility
+find_sentence_boundaries = ConsolidatorBase.find_sentence_boundaries
+extract_sentence_evidence = ConsolidatorBase.extract_sentence_evidence
+extract_sentence_for_line = ConsolidatorBase.extract_sentence_for_line
+calculate_line_refs = ConsolidatorBase.calculate_line_refs
 
 
 class TestSentenceBoundaries:

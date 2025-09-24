@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '@/lib/api';
 
 export default function ConditionalCooccurrencePage() {
-  const [techId, setTechId] = useState('T1007');
+  const [techId, setTechId] = useState('T1007'); // display value (T-code or STIX)
+  const [selectedStixId, setSelectedStixId] = useState(''); // resolved STIX id from autocomplete
   const [limit, setLimit] = useState(25);
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
@@ -21,11 +22,12 @@ export default function ConditionalCooccurrencePage() {
   const [showSuggestions, setShowSuggestions] = useState<boolean>(false);
 
   async function load() {
-    if (!techId) return;
+    if (!techId && !selectedStixId) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await api.cooccurrence.getConditional(techId, limit);
+      const idToQuery = selectedStixId || techId; // prefer resolved STIX id if available
+      const res = await api.cooccurrence.getConditional(idToQuery, limit);
       setRows(res.data?.results ?? []);
     } catch (e: any) {
       setError(e?.message || 'Failed to load');
@@ -87,11 +89,12 @@ export default function ConditionalCooccurrencePage() {
           <p className="text-sm text-gray-500 dark:text-gray-400">P(B|A) for techniques co-occurring with a given technique</p>
         </div>
         <div className="flex items-center gap-2 relative">
-          <div className="flex items-center gap-1">
+          <div className="flex flex-col">
+            <div className="flex items-center gap-1">
             <input
               value={techId}
-              onChange={(e) => setTechId(e.target.value)}
-              placeholder="Technique ID (e.g., T1007)"
+              onChange={(e) => { setTechId(e.target.value); setSelectedStixId(''); }}
+              placeholder="Technique (T-code or STIX)"
               className="h-9 rounded-md border px-3 text-sm bg-transparent w-40"
             />
             <input
@@ -102,6 +105,12 @@ export default function ConditionalCooccurrencePage() {
               onFocus={() => techQuery && setShowSuggestions(true)}
               onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
             />
+            </div>
+            <div className="text-[11px] text-gray-500 mt-1">
+              <span className="mr-3">Name: {techQuery || '—'}</span>
+              <span className="mr-3">T-code: {techId || '—'}</span>
+              <span>STIX: {selectedStixId || '—'}</span>
+            </div>
           </div>
           {showSuggestions && (suggestions?.length > 0 || suggesting) && (
             <div className="absolute top-10 left-0 z-10 w-[24rem] rounded-md border bg-background shadow">
@@ -116,8 +125,9 @@ export default function ConditionalCooccurrencePage() {
                     key={idx}
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => {
-                      setTechId(id);
-                      setTechQuery('');
+                      setTechId(ext || id); // display T-code (or STIX) in the left box
+                      setSelectedStixId(id); // keep resolved STIX id for API calls
+                      setTechQuery(name); // keep the selected technique name visible in the search box
                       setShowSuggestions(false);
                     }}
                     className="block w-full text-left px-3 py-2 hover:bg-accent"
@@ -140,7 +150,10 @@ export default function ConditionalCooccurrencePage() {
             <option value="count">Sort: Count</option>
             <option value="name">Sort: Name</option>
           </select>
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search B name/T-code/STIX" className="h-9 rounded-md border px-3 text-sm bg-transparent w-56" />
+          <div className="flex flex-col">
+            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search B name/T-code/STIX" className="h-9 rounded-md border px-3 text-sm bg-transparent w-56" />
+            <div className="text-[11px] text-gray-500 mt-1">B filter: {search || '—'}</div>
+          </div>
           <button onClick={load} className="h-9 rounded-md bg-black text-white dark:bg-white dark:text-black px-3 text-sm">Run</button>
         </div>
       </div>

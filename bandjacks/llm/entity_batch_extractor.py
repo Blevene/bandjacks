@@ -5,7 +5,7 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.entity_ignorelist import get_entity_ignorelist
-from bandjacks.llm.evidence_utils import calculate_line_refs, extract_sentence_evidence
+from bandjacks.llm.consolidator_base import ConsolidatorBase
 from bandjacks.llm.json_utils import parse_json_with_fallback
 
 logger = logging.getLogger(__name__)
@@ -502,7 +502,7 @@ Return a JSON object with a "windows" array, where each window contains its extr
         
         if evidence_pos >= 0:
             # Extract full sentences around the evidence
-            sentence_evidence = extract_sentence_evidence(
+            sentence_evidence = ConsolidatorBase.extract_sentence_evidence(
                 text,
                 evidence_pos,
                 context_sentences=1  # Get 1 sentence before and after
@@ -514,7 +514,7 @@ Return a JSON object with a "windows" array, where each window contains its extr
                 entity["line_refs"] = sentence_evidence.get("line_refs", [])
             else:
                 # Fallback to original line refs if sentence extraction fails
-                line_refs = calculate_line_refs(
+                line_refs = ConsolidatorBase.calculate_line_refs(
                     text,
                     evidence_pos,
                     evidence_pos + len(evidence)
@@ -670,7 +670,7 @@ Return a JSON object with a "windows" array, where each window contains its extr
             
             if evidence_pos >= 0:
                 # Extract full sentences around the evidence
-                sentence_evidence = extract_sentence_evidence(
+                sentence_evidence = ConsolidatorBase.extract_sentence_evidence(
                     doc_text,
                     evidence_pos,
                     context_sentences=1  # Get 1 sentence before and after
@@ -682,7 +682,7 @@ Return a JSON object with a "windows" array, where each window contains its extr
                 else:
                     # Fallback to original if sentence extraction fails
                     enhanced_quotes.append(original_evidence)
-                    line_refs = calculate_line_refs(
+                    line_refs = ConsolidatorBase.calculate_line_refs(
                         doc_text,
                         evidence_pos,
                         evidence_pos + len(original_evidence)

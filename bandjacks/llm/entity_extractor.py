@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Optional
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.json_utils import parse_json_with_fallback
-from bandjacks.llm.evidence_utils import extract_sentence_evidence, calculate_line_refs
+from bandjacks.llm.consolidator_base import ConsolidatorBase
 
 logger = logging.getLogger(__name__)
 
@@ -437,7 +437,7 @@ Text: {doc_text[:2000]}"""
         
         if evidence_pos >= 0:
             # Calculate line references for the evidence
-            line_refs = calculate_line_refs(
+            line_refs = ConsolidatorBase.calculate_line_refs(
                 text, 
                 evidence_pos, 
                 evidence_pos + len(evidence)
@@ -449,7 +449,7 @@ Text: {doc_text[:2000]}"""
             lower_evidence = evidence.lower()
             evidence_pos = lower_text.find(lower_evidence)
             if evidence_pos >= 0:
-                line_refs = calculate_line_refs(
+                line_refs = ConsolidatorBase.calculate_line_refs(
                     text,
                     evidence_pos,
                     evidence_pos + len(evidence)
@@ -640,7 +640,7 @@ Text: {doc_text[:2000]}"""
                 
                 if evidence_pos >= 0:
                     # Extract full sentences around the evidence
-                    sentence_evidence = extract_sentence_evidence(
+                    sentence_evidence = ConsolidatorBase.extract_sentence_evidence(
                         doc_text,
                         evidence_pos,
                         context_sentences=1  # Get 1 sentence before and after
@@ -652,7 +652,7 @@ Text: {doc_text[:2000]}"""
                     else:
                         # Fallback to original if sentence extraction fails
                         enhanced_quotes.append(original_evidence)
-                        line_refs = calculate_line_refs(
+                        line_refs = ConsolidatorBase.calculate_line_refs(
                             doc_text,
                             evidence_pos,
                             evidence_pos + len(original_evidence)
@@ -666,7 +666,7 @@ Text: {doc_text[:2000]}"""
                     
                     if name_pos >= 0:
                         # Extract sentences around the entity name
-                        sentence_evidence = extract_sentence_evidence(
+                        sentence_evidence = ConsolidatorBase.extract_sentence_evidence(
                             doc_text,
                             name_pos,
                             context_sentences=1
@@ -685,7 +685,7 @@ Text: {doc_text[:2000]}"""
                     name_pos = doc_text.lower().find(entity_name.lower())
                 
                 if name_pos >= 0:
-                    sentence_evidence = extract_sentence_evidence(
+                    sentence_evidence = ConsolidatorBase.extract_sentence_evidence(
                         doc_text,
                         name_pos,
                         context_sentences=1

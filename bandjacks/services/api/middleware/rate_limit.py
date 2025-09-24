@@ -163,16 +163,20 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         
         # Get client identifier
         client_key = self._get_client_key(request)
-        
+
         # Get limit for this endpoint
         limit = self._get_endpoint_limit(request.url.path)
-        
+
+        # Log the endpoint being accessed
+        logger.debug(f"Rate limit check: path={request.url.path}, client={client_key}, limit={limit}/min")
+
         # Check rate limit
         allowed, headers = self.limiter.is_allowed(client_key, limit)
-        
+
         if not allowed:
             # Rate limit exceeded
             retry_after = headers.get("Retry-After", "60")
+            logger.warning(f"Rate limit exceeded for {request.url.path} by {client_key} (limit={limit}/min)")
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=f"Rate limit exceeded. Retry after {retry_after} seconds",

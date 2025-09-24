@@ -52,10 +52,10 @@ These modules are actively used in the extraction pipeline and must be preserved
 - `tracker.py` - ExtractionTracker
 
 #### Utilities
-- `entity_utils.py` - Entity consolidation
-- `evidence_utils.py` - Evidence extraction
+- ~~`entity_utils.py`~~ - **MERGED** into entity_consolidator.py (Phase 3.1)
+- ~~`evidence_utils.py`~~ - **MERGED** into consolidator_base.py (Phase 3.2)
 - `json_utils.py` - JSON parsing
-- `consolidator_base.py` - Base consolidation class
+- `consolidator_base.py` - Base consolidation class (now includes evidence extraction)
 - `accumulator.py` - ThreadSafeAccumulator
 - `token_utils.py` - Token estimation
 - `semantic_dedup.py` - Deduplication
@@ -166,12 +166,24 @@ These modules are actively used in the extraction pipeline and must be preserved
   - Verified extraction pipeline instantiates correctly
 - **Completed**: Successfully consolidated entity processing modules
 
-#### Task 3.2: Consolidate Evidence Processing
-- [ ] Merge `evidence_utils.py` functions into `consolidator_base.py`
-- [ ] Update all imports
-- [ ] Delete `evidence_utils.py`
-- [ ] Verify with tests
-- **Commit**: "Consolidate evidence processing modules"
+#### Task 3.2: Consolidate Evidence Processing ✅ COMPLETED (2025-01-24)
+- [x] Merge `evidence_utils.py` functions into `consolidator_base.py`
+  - Added 5 @classmethod functions for evidence extraction:
+    - `find_sentence_boundaries()` - Sentence boundary detection
+    - `calculate_line_refs()` - Line number mapping
+    - `extract_sentence_evidence()` - Context extraction around matches
+    - `extract_sentence_for_line()` - Line-specific extraction
+    - `merge_overlapping_evidence()` - Evidence deduplication
+- [x] Update all imports
+  - Updated agents_v2.py to use ConsolidatorBase
+  - Updated entity_extractor.py to use ConsolidatorBase
+  - Updated entity_batch_extractor.py to use ConsolidatorBase
+  - Updated test_evidence_utils.py with compatibility aliases
+- [x] Delete `evidence_utils.py`
+- [x] Verify with tests
+  - Test file still works with aliased imports
+  - All extraction functions accessible from ConsolidatorBase
+- **Completed**: Successfully consolidated evidence processing modules
 
 #### Task 3.3: Consolidate Token Management
 - [ ] Merge `budget.py` into `token_utils.py`
@@ -233,14 +245,14 @@ After each phase, verify:
 
 ### After Full Cleanup (Projected)
 - **~38 modules remaining in llm/** after Phase 3 consolidation
-  - 40 production modules currently in `bandjacks/llm/` (was 41, now entity_utils.py deleted)
+  - 39 production modules currently in `bandjacks/llm/` (was 41, now entity_utils.py and evidence_utils.py deleted)
   - 11 modules in `bandjacks/llm/experimental/` (judge, PTG, simulation, etc.)
-  - 8 modules deleted total (2 legacy extractors, 3 active learning, 2 route files, 1 entity_utils)
+  - 9 modules deleted total (2 legacy extractors, 3 active learning, 2 route files, entity_utils, evidence_utils)
   - Clear separation between production and experimental
 - Single extraction pipeline path (`extraction_pipeline.py`)
 - No dead code paths
 - Well-documented module purposes
-- Phase 3 will further consolidate by ~2 more modules (evidence_utils, budget)
+- Phase 3 will further consolidate by ~1 more module (budget)
 
 ## Module Status Reference
 

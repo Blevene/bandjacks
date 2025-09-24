@@ -34,7 +34,11 @@ type ActorResponse = {
 };
 
 export default function ActorCooccurrencePage() {
-  const [actorId, setActorId] = useState('');
+  const [actorId, setActorId] = useState(''); // STIX id or selected id
+  const [actorQuery, setActorQuery] = useState(''); // name search
+  const [actorSuggestions, setActorSuggestions] = useState<any[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
   const [minSupport, setMinSupport] = useState(1);
   const [metric, setMetric] = useState<'npmi' | 'lift' | 'confidence'>('npmi');
   const [data, setData] = useState<ActorResponse | null>(null);
@@ -59,6 +63,28 @@ export default function ActorCooccurrencePage() {
     // no auto-load until an actor is provided
   }, []);
 
+  // Debounced actor name search
+  useEffect(() => {
+    const q = actorQuery.trim();
+    if (!q) {
+      setActorSuggestions([]);
+      return;
+    }
+    setSuggesting(true);
+    const t = setTimeout(async () => {
+      try {
+        const res = await api.reports.searchAttributionCandidates(q);
+        setActorSuggestions(res.data?.results || []);
+        setShowSuggestions(true);
+      } catch {
+        setActorSuggestions([]);
+      } finally {
+        setSuggesting(false);
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [actorQuery]);
+
   return (
     <div className="mx-auto max-w-6xl p-6 space-y-6">
       <div className="flex items-end justify-between gap-4 flex-wrap">
@@ -66,8 +92,47 @@ export default function ActorCooccurrencePage() {
           <h1 className="text-xl font-semibold">Actor Insights</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400">Top pairs and bundles for a selected intrusion set</p>
         </div>
-        <div className="flex items-center gap-2">
-          <input value={actorId} onChange={(e) => setActorId(e.target.value)} placeholder="Intrusion Set STIX ID" className="h-9 rounded-md border px-3 text-sm bg-transparent w-80" />
+        <div className="flex items-center gap-2 relative">
+          <div className="flex flex-col">
+            <div className="flex items-center gap-1">
+              <input value={actorId} onChange={(e) => setActorId(e.target.value)} placeholder="Intrusion Set STIX ID" className="h-9 rounded-md border px-3 text-sm bg-transparent w-80" />
+              <input
+                value={actorQuery}
+                onChange={(e) => setActorQuery(e.target.value)}
+                placeholder="Search actor by name or alias"
+                className="h-9 rounded-md border px-3 text-sm bg-transparent w-72"
+                onFocus={() => actorQuery && setShowSuggestions(true)}
+                onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+              />
+            </div>
+            <div className="text-[11px] text-gray-500 mt-1">
+              <span className="mr-3">Actor name: {actorQuery || '—'}</span>
+              <span>STIX: {actorId || '—'}</span>
+            </div>
+          </div>
+          {showSuggestions && (actorSuggestions.length > 0 || suggesting) && (
+            <div className="absolute top-10 left-0 z-10 w-[36rem] rounded-md border bg-background shadow">
+              {suggesting && <div className="px-3 py-2 text-xs text-gray-500">Searching…</div>}
+              {!suggesting && actorSuggestions.map((s: any, idx: number) => (
+                <button
+                  type="button"
+                  key={idx}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setActorId(s?.id || s?.stix_id || '');
+                    setActorQuery(s?.name || '');
+                    setShowSuggestions(false);
+                  }}
+                  className="block w-full text-left px-3 py-2 hover:bg-accent"
+                >
+                  <div className="text-sm">{s?.name || s?.id}</div>
+                  {Array.isArray(s?.aliases) && s.aliases.length > 0 && (
+                    <div className="text-[11px] text-gray-500">Aliases: {s.aliases.slice(0,5).join(', ')}</div>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
           <label className="text-xs text-gray-500">min_support</label>
           <input type="number" value={minSupport} onChange={(e) => setMinSupport(parseInt(e.target.value || '1', 10))} className="h-9 w-24 rounded-md border px-3 text-sm bg-transparent" />
           <select value={metric} onChange={(e) => setMetric(e.target.value as any)} className="h-9 rounded-md border px-2 text-sm bg-transparent">
