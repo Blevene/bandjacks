@@ -7,7 +7,7 @@ from datetime import datetime
 import logging
 from neo4j import GraphDatabase
 
-from bandjacks.llm.judge_client import JudgeVerdict, VerdictType
+from bandjacks.llm.experimental.judge_client import JudgeVerdict, VerdictType
 
 logger = logging.getLogger(__name__)
 
