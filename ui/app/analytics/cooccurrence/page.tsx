@@ -1,20 +1,23 @@
 import { api } from '@/lib/api';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 export default async function CooccurrenceHubPage() {
   let episodes: number | undefined;
   let techniques: number | undefined;
-  let topPair: { name_a?: string; name_b?: string; npmi?: number } | null = null;
+  let intrusionSets: number | undefined;
 
   try {
-    const res = await api.cooccurrence.postGlobal({ min_support: 1, min_episodes_per_pair: 1, limit: 1 });
-    const data = res.data as any;
-    episodes = data?.episode_count;
-    techniques = data?.technique_count;
-    if (data?.pairs?.length) {
-      const p = data.pairs[0];
-      topPair = { name_a: p.name_a, name_b: p.name_b, npmi: p.npmi };
-    }
-  } catch {}
+    // Prefer lightweight stats endpoint for totals
+    const statsRes = await api.analytics.getStatistics();
+    const s = statsRes.data || {};
+    episodes = s?.attack_flows?.total_flows || s?.attack_flows?.total || s?.attack_flows || undefined;
+    techniques = s?.attack_patterns?.techniques || s?.attack_patterns?.total || s?.attack_patterns || undefined;
+    intrusionSets = s?.threat_groups?.total || s?.threat_groups || undefined;
+  } catch (e) {
+    // leave KPIs as placeholders; page still renders
+  }
 
   return (
     <div className="mx-auto max-w-6xl p-6 space-y-6">
@@ -36,13 +39,8 @@ export default async function CooccurrenceHubPage() {
           <div className="text-xl font-semibold">{techniques ?? '—'}</div>
         </div>
         <div className="rounded-lg border p-4">
-          <div className="text-xs text-gray-500">Top pair (by NPMI)</div>
-          <div className="text-sm font-medium">
-            {topPair ? `${topPair.name_a} · ${topPair.name_b}` : '—'}
-          </div>
-          {topPair && (
-            <div className="text-xs text-gray-500">NPMI {Number(topPair.npmi).toFixed(3)}</div>
-          )}
+          <div className="text-xs text-gray-500">Intrusion sets</div>
+          <div className="text-xl font-semibold">{intrusionSets ?? '—'}</div>
         </div>
       </div>
 
