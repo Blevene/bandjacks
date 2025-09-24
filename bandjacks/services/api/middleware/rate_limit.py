@@ -29,6 +29,10 @@ ENDPOINT_LIMITS = {
     "/v1/flows/build": 15,  # Complex operation
     "/v1/sequence/judge": 10,  # LLM judge calls - Epic 4 T26
     "/v1/sequence/infer": 5,  # PTG inference with judge - Epic 4 T26
+    "/v1/reports/jobs": 300,  # Job status polling - high frequency allowed
+    "/v1/reports/ingest": 30,  # Report ingestion - moderate
+    "/v1/reports/ingest_async": 30,  # Async report ingestion
+    "/v1/reports/ingest_file_async": 30,  # Async file ingestion
 }
 
 
