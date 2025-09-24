@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from bandjacks.llm.agentic_v2 import run_agentic_v2
+from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 from bandjacks.llm.bundle_validator import validate_bundle_for_upsert, print_validation_report
 from bandjacks.loaders.attack_upsert import upsert_to_graph_and_vectors
 import os
@@ -59,7 +59,7 @@ def test_extraction_to_graph():
     
     print("\n1. Running agentic_v2 extraction...")
     try:
-        result = run_agentic_v2(test_text, config)
+        result = run_extraction_pipeline(test_text, config)
         
         techniques = result.get("techniques", {})
         bundle = result.get("bundle", {})

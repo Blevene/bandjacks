@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Tuple
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import PyPDF2
-from bandjacks.llm.agentic_v2 import run_agentic_v2
+from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 
 
 def extract_pdf_text(pdf_path: Path) -> str:
@@ -92,7 +92,7 @@ def test_pdf_report(pdf_path: Path) -> Dict[str, Any]:
     
     try:
         start_time = time.time()
-        result = run_agentic_v2(text, config)
+        result = run_extraction_pipeline(text, config)
         elapsed = time.time() - start_time
         
         print(f"   ✅ Extraction completed in {elapsed:.1f} seconds")
