@@ -70,7 +70,7 @@ LOGGING_CONFIG = {
 }
 
 logging.config.dictConfig(LOGGING_CONFIG)
-from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, sequence, simulate, analyze, entity_review, unified_review
+from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, sequence, simulate, analyze, entity_review, unified_review
 from bandjacks.services.api.middleware import TracingMiddleware
 from bandjacks.services.api.middleware.error_handler import ErrorHandlerMiddleware
 from bandjacks.services.api.middleware.auth import JWTAuthMiddleware
@@ -317,7 +317,6 @@ app.include_router(stix_loader.router, prefix=settings.api_prefix)
 app.include_router(search.router, prefix=settings.api_prefix)
 app.include_router(mapper.router, prefix=settings.api_prefix)
 app.include_router(review.router, prefix=settings.api_prefix)
-app.include_router(extract.router, prefix=settings.api_prefix)
 app.include_router(query.router, prefix=settings.api_prefix)
 app.include_router(graph.router, prefix=settings.api_prefix)
 app.include_router(feedback.router, prefix=settings.api_prefix)
@@ -331,7 +330,6 @@ app.include_router(analyze.router, prefix=settings.api_prefix)
 app.include_router(analytics.router, prefix=settings.api_prefix)
 app.include_router(provenance.router, prefix=settings.api_prefix)
 app.include_router(drift.router, prefix=settings.api_prefix)
-app.include_router(extract_runs.router, prefix=settings.api_prefix)
 app.include_router(attackflow.router, prefix=settings.api_prefix)
 app.include_router(detections.router, prefix=settings.api_prefix)
 app.include_router(coverage.router, prefix=settings.api_prefix)
