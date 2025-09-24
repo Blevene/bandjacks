@@ -21,7 +21,7 @@ import {
   GitBranch,
 } from "lucide-react";
 import { typedApi } from "@/lib/api-client";
-import { JobStatus } from "@/components/reports/job-status";
+import { JobStatusStream } from "@/components/reports/job-status-stream";
 
 interface IngestConfig {
   use_batch_mapper: boolean;
@@ -463,8 +463,9 @@ export default function NewReportPage() {
 
       {/* Async Job Status */}
       {asyncJobId && !ingestResult && (
-        <JobStatus
+        <JobStatusStream
           jobId={asyncJobId}
+          useSSE={true}
           onComplete={(result) => {
             setLoading(false);
             // Navigate to report after completion
