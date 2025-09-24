@@ -22,13 +22,15 @@ from pathlib import Path
 import httpx
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, status
+from fastapi.responses import StreamingResponse
 from opensearchpy import OpenSearch
 from pydantic import BaseModel, Field
 from neo4j import Session
+import redis
 
 from bandjacks.services.api.deps import get_neo4j_session, get_opensearch_client
 from bandjacks.services.api.settings import settings
-from bandjacks.services.api.job_store import get_job_store
+from bandjacks.services.api.redis_job_store import get_redis_job_store
 from bandjacks.store.report_store import ReportStore
 from bandjacks.store.campaign_store import CampaignStore
 from bandjacks.store.opensearch_report_store import OpenSearchReportStore
@@ -376,7 +378,7 @@ async def ingest_report_async(request: IngestRequest):
         )
     
     # Create job in the persistent job store (queued status)
-    job_store = get_job_store()
+    job_store = get_redis_job_store()
     job_data = job_store.create_job(
         job_id=job_id,
         file_path=temp_path,
@@ -454,8 +456,12 @@ async def ingest_file_async(
             detail=f"Failed to save file: {str(e)}"
         )
     
+    # Read file content for Redis storage
+    with open(temp_path, "rb") as f:
+        file_content = f.read()
+    
     # Create job in the persistent job store (queued status)
-    job_store = get_job_store()
+    job_store = get_redis_job_store()
     job_data = job_store.create_job(
         job_id=job_id,
         file_path=temp_path,
@@ -467,7 +473,8 @@ async def ingest_file_async(
             "skip_verification": skip_verification,
             "auto_generate_flow": auto_generate_flow,
             "webhook_url": webhook_url
-        }
+        },
+        file_content=file_content  # Pass content to Redis
     )
     
     # FileJobStore is already updated above
@@ -611,7 +618,7 @@ async def get_job_status(job_id: str):
     """Get job status from persistent store or in-memory cache."""
     
     # First check persistent store
-    job_store = get_job_store()
+    job_store = get_redis_job_store()
     job = job_store.get(job_id)
     
     if not job:
@@ -632,6 +639,125 @@ async def get_job_status(job_id: str):
 
 
 @router.get(
+    "/jobs/{job_id}/stream",
+    summary="Stream Job Progress",
+    description="Stream real-time job progress updates using Server-Sent Events (SSE).",
+    response_class=StreamingResponse
+)
+async def stream_job_progress(job_id: str):
+    """Stream job progress using SSE.
+
+    Returns a stream of Server-Sent Events with real-time job updates.
+    Falls back to periodic polling if pub/sub is not available.
+    """
+
+    async def event_generator():
+        """Generate SSE events for job progress."""
+
+        # Get job store and Redis connection
+        job_store = get_redis_job_store()
+
+        # Check if job exists
+        job = job_store.get(job_id)
+        if not job:
+            yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
+            return
+
+        # Try to use Redis pub/sub for real-time updates
+        try:
+            # Get Redis connection from job store
+            redis_client = job_store.redis
+            pubsub = redis_client.pubsub()
+
+            # Subscribe to job updates channel
+            channel = f"job:updates:{job_id}"
+            pubsub.subscribe(channel)
+
+            # Send initial status
+            yield f"data: {json.dumps(job)}\n\n"
+
+            # Set up timeout for pub/sub
+            last_update = asyncio.get_event_loop().time()
+            timeout = 30  # Send heartbeat every 30 seconds
+
+            while True:
+                # Check for pub/sub message with timeout
+                message = pubsub.get_message(timeout=0.1)
+
+                if message and message['type'] == 'message':
+                    # Parse and send the update
+                    try:
+                        update = json.loads(message['data'])
+                        yield f"data: {json.dumps(update)}\n\n"
+                        last_update = asyncio.get_event_loop().time()
+
+                        # Check if job is completed or failed
+                        if update.get('status') in ['completed', 'failed']:
+                            break
+                    except json.JSONDecodeError:
+                        pass  # Ignore invalid messages
+
+                # Send heartbeat if no update for a while
+                current_time = asyncio.get_event_loop().time()
+                if current_time - last_update > timeout:
+                    # Also fetch latest status as heartbeat
+                    job = job_store.get(job_id)
+                    if job:
+                        yield f"event: heartbeat\ndata: {json.dumps(job)}\n\n"
+
+                        # Check if job is completed or failed
+                        if job.get('status') in ['completed', 'failed']:
+                            break
+                    else:
+                        # Job no longer exists
+                        yield f"data: {json.dumps({'error': 'Job no longer exists'})}\n\n"
+                        break
+
+                    last_update = current_time
+
+                # Small delay to prevent busy loop
+                await asyncio.sleep(0.1)
+
+        except redis.ConnectionError:
+            # Fallback to polling if Redis pub/sub is not available
+            logger.warning(f"Redis pub/sub not available, falling back to polling for job {job_id}")
+
+            while True:
+                job = job_store.get(job_id)
+                if not job:
+                    yield f"data: {json.dumps({'error': 'Job no longer exists'})}\n\n"
+                    break
+
+                yield f"data: {json.dumps(job)}\n\n"
+
+                # Check if job is completed or failed
+                if job.get('status') in ['completed', 'failed']:
+                    break
+
+                # Poll every 2 seconds
+                await asyncio.sleep(2)
+
+        finally:
+            # Clean up pub/sub subscription
+            if 'pubsub' in locals():
+                try:
+                    pubsub.unsubscribe(channel)
+                    pubsub.close()
+                except Exception:
+                    pass
+
+    # Return streaming response with SSE content type
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
+
+
+@router.get(
     "/jobs",
     response_model=JobListResponse,
     summary="List Jobs",
@@ -641,8 +767,8 @@ async def list_jobs():
     """List all jobs."""
     
     try:
-        # Use FileJobStore instead of in-memory store
-        job_store = get_job_store()
+        # Use RedisJobStore instead of in-memory store
+        job_store = get_redis_job_store()
         all_jobs = job_store.list_all()
         
         jobs = []
@@ -674,8 +800,8 @@ async def list_jobs():
 async def delete_job(job_id: str):
     """Delete a job."""
     
-    # Use FileJobStore instead of in-memory store
-    job_store = get_job_store()
+    # Use RedisJobStore instead of in-memory store
+    job_store = get_redis_job_store()
     job = job_store.get(job_id)
     
     if not job:

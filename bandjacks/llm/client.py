@@ -43,7 +43,8 @@ class LLMClient:
         self.base_url = os.getenv("LITELLM_BASE_URL", "http://localhost:4000")
         self.api_key = os.getenv("LITELLM_API_KEY", "")
         self.model = os.getenv("LITELLM_MODEL", "gpt-4o-mini")
-        self.timeout = int(os.getenv("LITELLM_TIMEOUT_MS", "60000")) / 1000
+        # Increase timeout from 60s to 120s for large chunks
+        self.timeout = int(os.getenv("LITELLM_TIMEOUT_MS", os.getenv("LLM_TIMEOUT_MS", "120000"))) / 1000
         self.temperature = float(os.getenv("LITELLM_TEMPERATURE", "0.3"))  # Lower for more consistent output
         self.max_tokens = int(os.getenv("LITELLM_MAX_TOKENS", "8000"))  # Increased for comprehensive extraction
         
@@ -158,10 +159,11 @@ class LLMClient:
             if response_format:
                 # Check if we're using Gemini which needs special handling
                 if "gemini" in self.model.lower():
-                    # For Gemini, we need to enable JSON schema validation
-                    # and ensure the system message mentions JSON output
-                    import litellm
-                    litellm.enable_json_schema_validation = True
+                    # For Gemini, we used to enable JSON schema validation
+                    # but this causes the response content to be None
+                    # import litellm
+                    # litellm.enable_json_schema_validation = True
+                    pass
                     
                     # Ensure there's a system message mentioning JSON
                     has_json_instruction = any(
@@ -234,7 +236,12 @@ class LLMClient:
             logger.debug(f"[{request_id}] Response type: {type(response)}")
             logger.debug(f"[{request_id}] Choice type: {type(choice)}")
             logger.debug(f"[{request_id}] Message type: {type(choice.message)}")
-            
+
+            # Debug: Log the entire response object for json_schema responses
+            if response_format and response_format.get("type") == "json_schema":
+                logger.debug(f"[{request_id}] Full response.model_dump(): {response.model_dump() if hasattr(response, 'model_dump') else 'No model_dump'}")
+                logger.debug(f"[{request_id}] Full choice dict: {choice.__dict__ if hasattr(choice, '__dict__') else 'No dict'}")
+
             # Try to get content from various possible locations
             content = choice.message.content
             

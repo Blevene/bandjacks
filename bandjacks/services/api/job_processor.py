@@ -10,8 +10,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from bandjacks.services.api.job_store import FileJobStore
+from bandjacks.services.api.redis_job_store import RedisJobStore, get_redis_job_store
 from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 from bandjacks.llm.chunked_extractor import ChunkedExtractor
+from bandjacks.llm.optimized_chunked_extractor import OptimizedChunkedExtractor
 from bandjacks.store.opensearch_report_store import OpenSearchReportStore
 from bandjacks.services.api.deps import get_opensearch_client
 from bandjacks.services.api.settings import settings
@@ -22,18 +24,33 @@ logger = logging.getLogger(__name__)
 class JobProcessor:
     """Processes queued jobs asynchronously in the background."""
     
-    def __init__(self, job_store: FileJobStore, poll_interval: int = 2):
+    def __init__(self, job_store: FileJobStore = None, poll_interval: int = 2, use_redis: bool = True):
         """Initialize the job processor.
         
         Args:
-            job_store: File-based job store instance
+            job_store: File-based job store instance (deprecated)
             poll_interval: Seconds between polling for new jobs
+            use_redis: Whether to use Redis job store (default: True)
         """
-        self.job_store = job_store
+        if use_redis:
+            try:
+                self.job_store = get_redis_job_store()
+                self.use_redis = True
+                logger.info(f"Using Redis job store with worker ID: {self.job_store.worker_id}")
+            except Exception as e:
+                logger.warning(f"Failed to connect to Redis: {e}. Falling back to file store.")
+                self.job_store = job_store
+                self.use_redis = False
+        else:
+            self.job_store = job_store
+            self.use_redis = False
+            
         self.poll_interval = poll_interval
         self.running = False
         self.processing_task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
+        self.heartbeat_task: Optional[asyncio.Task] = None
+        self.current_job_id: Optional[str] = None
     
     def calculate_chunks_and_spans(self, text_length: int) -> Tuple[int, int, int]:
         """Dynamically calculate chunks and spans based on document size.
@@ -87,13 +104,48 @@ class JobProcessor:
     async def stop(self):
         """Stop the job processor."""
         self.running = False
+        
+        # Cancel heartbeat if running
+        if self.heartbeat_task:
+            self.heartbeat_task.cancel()
+            try:
+                await self.heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Cancel processing task
         if self.processing_task:
             self.processing_task.cancel()
             try:
                 await self.processing_task
             except asyncio.CancelledError:
                 pass
+        
         logger.info("Job processor stopped")
+    
+    async def _heartbeat_loop(self, job_id: str):
+        """Send periodic heartbeats for the current job.
+        
+        Args:
+            job_id: Job being processed
+        """
+        try:
+            while True:
+                # Wait for heartbeat interval
+                await asyncio.sleep(settings.redis_heartbeat_interval)
+                
+                # Update heartbeat
+                if self.use_redis:
+                    success = self.job_store.update_heartbeat(job_id)
+                    if not success:
+                        logger.warning(f"Failed to update heartbeat for job {job_id}")
+                        break
+                    logger.debug(f"Heartbeat updated for job {job_id}")
+        except asyncio.CancelledError:
+            logger.debug(f"Heartbeat loop cancelled for job {job_id}")
+            raise
+        except Exception as e:
+            logger.error(f"Error in heartbeat loop for job {job_id}: {e}")
         
     async def _process_loop(self):
         """Main processing loop that polls for jobs."""
@@ -101,16 +153,39 @@ class JobProcessor:
         
         while self.running:
             try:
-                # Get all queued jobs
-                jobs = self.job_store.get_queued_jobs()
-                
-                for job_id in jobs:
-                    if not self.running:
-                        break
+                if self.use_redis:
+                    # Atomically claim next job from Redis
+                    job = self.job_store.claim_and_get_next_job()
+                    
+                    if job:
+                        job_id = job['job_id']
+                        logger.info(f"Worker {self.job_store.worker_id} claimed job {job_id}")
                         
-                    # Process job with lock to prevent concurrent processing
-                    async with self._lock:
+                        # Start heartbeat for this job
+                        self.current_job_id = job_id
+                        if self.heartbeat_task:
+                            self.heartbeat_task.cancel()
+                        self.heartbeat_task = asyncio.create_task(self._heartbeat_loop(job_id))
+                        
+                        # Process the job
                         await self._process_job(job_id)
+                        
+                        # Stop heartbeat
+                        if self.heartbeat_task:
+                            self.heartbeat_task.cancel()
+                            self.heartbeat_task = None
+                        self.current_job_id = None
+                else:
+                    # Legacy file-based processing
+                    jobs = self.job_store.get_queued_jobs()
+                    
+                    for job_id in jobs:
+                        if not self.running:
+                            break
+                            
+                        # Process job with lock to prevent concurrent processing
+                        async with self._lock:
+                            await self._process_job(job_id)
                         
                 # Wait before next poll
                 await asyncio.sleep(self.poll_interval)
@@ -151,14 +226,15 @@ class JobProcessor:
                     })
                     return
                     
-                # Mark as processing
-                self.job_store.update(job_id, {
-                    "status": "processing",
-                    "started_at": datetime.utcnow().isoformat(),
-                    "progress": job.get("checkpoint_progress", 0),
-                    "message": f"Processing (attempt {retry_count + 1}/{max_retries})...",
-                    "retry_count": retry_count
-                })
+                # Mark as processing (Redis store handles this atomically in claim_and_get_next_job)
+                if not self.use_redis:
+                    self.job_store.update(job_id, {
+                        "status": "processing",
+                        "started_at": datetime.utcnow().isoformat(),
+                        "progress": job.get("checkpoint_progress", 0),
+                        "message": f"Processing (attempt {retry_count + 1}/{max_retries})...",
+                        "retry_count": retry_count
+                    })
             
                 logger.info(f"Processing job {job_id} (attempt {retry_count + 1})")
                 
@@ -168,14 +244,46 @@ class JobProcessor:
                 file_ext = job.get("file_ext", ".txt")
                 config = job.get("config", {})
                 
-                if not file_path or not os.path.exists(file_path):
+                # Check if file is in Redis
+                if file_path and file_path.startswith("redis://"):
+                    # Extract Redis key from path
+                    redis_key = file_path.replace("redis://", "")
+                    logger.info(f"Retrieving file from Redis: {redis_key}")
+                    
+                    # Get file content from Redis
+                    file_content = self.job_store.redis.get(redis_key)
+                    if not file_content:
+                        raise ValueError(f"File content not found in Redis: {redis_key}")
+                    
+                    # Save to temp file for processing
+                    import tempfile
+                    temp_fd, temp_path = tempfile.mkstemp(suffix=file_ext)
+                    try:
+                        os.write(temp_fd, file_content)
+                        os.close(temp_fd)
+                        file_path = temp_path
+                        logger.info(f"Saved Redis content to temp file: {temp_path} ({len(file_content)} bytes)")
+                    except Exception as e:
+                        os.close(temp_fd)
+                        raise ValueError(f"Failed to save Redis content to temp file: {e}")
+                
+                elif not file_path or not os.path.exists(file_path):
                     raise ValueError(f"File not found: {file_path}")
                     
                 # Process based on file type
-                if file_ext == ".pdf":
-                    await self._process_pdf_job(job_id, file_path, file_name, config)
-                else:
-                    await self._process_text_job(job_id, file_path, file_name, config)
+                try:
+                    if file_ext == ".pdf":
+                        await self._process_pdf_job(job_id, file_path, file_name, config)
+                    else:
+                        await self._process_text_job(job_id, file_path, file_name, config)
+                finally:
+                    # Clean up temp file if created from Redis
+                    if file_path and 'temp_path' in locals() and file_path == temp_path:
+                        try:
+                            os.unlink(temp_path)
+                            logger.debug(f"Cleaned up temp file: {temp_path}")
+                        except:
+                            pass
                     
                 # Success - exit retry loop
                 return
@@ -193,8 +301,11 @@ class JobProcessor:
                     retry_count += 1
                     wait_time = (2 ** retry_count) * 5  # Exponential backoff: 10s, 20s, 40s
                     
+                    # Use "retrying" status to prevent reclaim while waiting
+                    # Maintain worker_id to preserve ownership
                     self.job_store.update(job_id, {
-                        "status": "queued",  # Re-queue for retry
+                        "status": "retrying",  # New status to prevent reclaim
+                        "worker_id": self.job_store.worker_id if self.use_redis else None,  # Maintain ownership
                         "retry_count": retry_count,
                         "checkpoint_progress": job.get("progress", 0),
                         "last_error": error_msg,
@@ -205,15 +316,24 @@ class JobProcessor:
                     logger.info(f"Job {job_id} will retry in {wait_time}s (attempt {retry_count}/{max_retries})")
                     await asyncio.sleep(wait_time)
                     
+                    # After waiting, change status back to queued for retry
+                    self.job_store.update(job_id, {
+                        "status": "queued",
+                        "message": f"Ready for retry attempt {retry_count + 1}"
+                    })
+                    
                 else:
                     # Non-retryable error or max retries exceeded
-                    self.job_store.update(job_id, {
-                        "status": "failed",
-                        "error": error_msg,
-                        "completed_at": datetime.utcnow().isoformat(),
-                        "message": f"Processing failed after {retry_count + 1} attempts: {error_msg[:200]}",
-                        "partial_results": job.get("partial_results", {})
-                    })
+                    if self.use_redis:
+                        self.job_store.fail_job(job_id, error_msg)
+                    else:
+                        self.job_store.update(job_id, {
+                            "status": "failed",
+                            "error": error_msg,
+                            "completed_at": datetime.utcnow().isoformat(),
+                            "message": f"Processing failed after {retry_count + 1} attempts: {error_msg[:200]}",
+                            "partial_results": job.get("partial_results", {})
+                        })
                     return
             
     async def _process_pdf_job(
@@ -375,7 +495,11 @@ class JobProcessor:
                 "skip_verification": config.get("skip_verification", False),
                 "max_spans": 30,  # Increased for better coverage
                 "disable_discovery": False,
-                "disable_targeted_extraction": True
+                "disable_targeted_extraction": True,
+                "use_entity_claims": settings.use_entity_claims,  # From settings
+                "mapper_batch_size": min(settings.mapper_batch_size, settings.max_mapper_batch_size),  # Use configured batch size
+                "enable_sentence_evidence": settings.enable_sentence_evidence,
+                "context_sentences": settings.context_sentences
             }
             
             # Neo4j config for flow building
@@ -391,14 +515,26 @@ class JobProcessor:
                     "progress": progress,
                     "message": message
                 })
+                # Critical: Always update heartbeat during progress updates
+                # This ensures heartbeat is updated even during long operations
+                if self.use_redis:
+                    try:
+                        self.job_store.update_heartbeat(job_id)
+                        logger.debug(f"Heartbeat updated for job {job_id} at progress {progress}%")
+                    except Exception as e:
+                        logger.warning(f"Failed to update heartbeat: {e}")
             
             # Run unified extraction pipeline (extraction + flow + review package)
-            pipeline_results = run_extraction_pipeline(
-                report_text=text_content,
-                config=extraction_config,
-                source_id=report_sdo["id"],
-                neo4j_config=neo4j_config,
-                progress_callback=update_progress
+            # Use run_in_executor to avoid blocking the event loop
+            loop = asyncio.get_event_loop()
+            pipeline_results = await loop.run_in_executor(
+                None,  # Use default ThreadPoolExecutor
+                run_extraction_pipeline,
+                text_content,  # report_text
+                extraction_config,  # config
+                report_sdo["id"],  # source_id
+                neo4j_config,  # neo4j_config
+                update_progress  # progress_callback
             )
             
         else:
@@ -423,16 +559,38 @@ class JobProcessor:
                 "disable_targeted_extraction": True,
                 "max_spans": spans_per_chunk,  # Dynamic spans per chunk
                 "span_score_threshold": 0.9 if text_length > 100_000 else 0.85,  # Stricter for very large docs
-                "confidence_threshold": 60 if text_length > 100_000 else 50
+                "confidence_threshold": 60 if text_length > 100_000 else 50,
+                "use_entity_claims": settings.use_entity_claims,  # From settings
+                "mapper_batch_size": min(settings.mapper_batch_size, settings.max_mapper_batch_size),  # Use configured batch size
+                "enable_sentence_evidence": settings.enable_sentence_evidence,
+                "context_sentences": settings.context_sentences,
+                # Progressive accumulation and early termination parameters from settings
+                "enable_early_termination": config.get("enable_early_termination", settings.enable_early_termination),
+                "early_termination_threshold": config.get("early_termination_threshold", settings.early_termination_threshold),
+                "min_techniques_for_termination": config.get("min_techniques_for_termination", settings.min_techniques_for_termination),
+                "confidence_boost": config.get("confidence_boost", settings.confidence_boost),
+                "max_context_hints": config.get("max_context_hints", settings.max_context_hints)
             }
             
-            # Create chunked extractor with optimized parameters
-            extractor = ChunkedExtractor(
-                chunk_size=4000,  # Larger chunks for better context
-                overlap=150,      # Less overlap
-                max_chunks=max_chunks,
-                parallel_workers=1  # Sequential to avoid rate limits
-            )
+            # Use optimized extractor if enabled (from settings)
+            if settings.use_optimized_extractor:
+                logger.info("Using OptimizedChunkedExtractor with smart span detection")
+                extractor = OptimizedChunkedExtractor(
+                    chunk_size=settings.chunk_size,  # From settings
+                    overlap=settings.chunk_overlap,  # From settings
+                    max_chunks=min(max_chunks, settings.max_chunks),  # Use the smaller value
+                    parallel_workers=settings.parallel_workers,  # From settings
+                    window_size=settings.span_window_size,  # From settings
+                    window_overlap=settings.span_overlap_size  # From settings
+                )
+            else:
+                logger.info("Using standard ChunkedExtractor")
+                extractor = ChunkedExtractor(
+                    chunk_size=settings.chunk_size,  # From settings
+                    overlap=settings.chunk_overlap,  # From settings
+                    max_chunks=min(max_chunks, settings.max_chunks),  # Use the smaller value
+                    parallel_workers=settings.parallel_workers  # From settings
+                )
             
             # Progress callback for chunked extraction
             def update_chunk_progress(progress: int, message: str):
@@ -440,13 +598,25 @@ class JobProcessor:
                     "progress": progress,
                     "message": message
                 })
+                # Critical: Update heartbeat during chunk processing
+                # This prevents job from being marked abandoned during long extractions
+                if self.use_redis:
+                    try:
+                        self.job_store.update_heartbeat(job_id)
+                        logger.debug(f"Heartbeat updated for job {job_id} during chunk processing at {progress}%")
+                    except Exception as e:
+                        logger.warning(f"Failed to update heartbeat during chunk processing: {e}")
             
             # Run chunked extraction with progress callback
-            extraction_results = extractor.extract(
-                text=text_content,
-                config=chunk_config,
-                parallel=True,
-                progress_callback=update_chunk_progress
+            # Use run_in_executor to avoid blocking the event loop
+            loop = asyncio.get_event_loop()
+            extraction_results = await loop.run_in_executor(
+                None,  # Use default ThreadPoolExecutor
+                extractor.extract,
+                text_content,  # text
+                chunk_config,  # config
+                True,  # parallel
+                update_chunk_progress  # progress_callback
             )
             
             # Build flow from chunked results
@@ -583,20 +753,27 @@ class JobProcessor:
         )
         
         # Mark job as completed
-        self.job_store.update(job_id, {
-            "status": "completed",
-            "progress": 100,
-            "message": f"Extracted {extraction_results.get('techniques_count', 0)} techniques",
-            "completed_at": datetime.utcnow().isoformat(),
-            "result": {
-                "report_id": report_sdo["id"],
-                "techniques_count": extraction_results.get("techniques_count", 0),
-                "claims_count": len(claims),
-                "flow_generated": flow_data is not None,
-                "bundle_size": len(bundle.get("objects", [])),
-                "review_required": True
-            }
-        })
+        result_data = {
+            "report_id": report_sdo["id"],
+            "techniques_count": extraction_results.get("techniques_count", 0),
+            "claims_count": len(claims),
+            "flow_generated": flow_data is not None,
+            "bundle_size": len(bundle.get("objects", [])),
+            "review_required": True
+        }
+        
+        if self.use_redis:
+            # Use Redis store's atomic completion
+            self.job_store.complete_job(job_id, result_data)
+        else:
+            # Legacy file-based completion
+            self.job_store.update(job_id, {
+                "status": "completed",
+                "progress": 100,
+                "message": f"Extracted {extraction_results.get('techniques_count', 0)} techniques",
+                "completed_at": datetime.utcnow().isoformat(),
+                "result": result_data
+            })
         
         logger.info(f"Completed job {job_id}: {extraction_results.get('techniques_count', 0)} techniques")
         
@@ -861,6 +1038,6 @@ def get_job_processor() -> JobProcessor:
     """Get the global job processor instance."""
     global _job_processor
     if _job_processor is None:
-        from bandjacks.services.api.job_store import get_job_store
-        _job_processor = JobProcessor(get_job_store())
+        # Always use Redis job store
+        _job_processor = JobProcessor(get_redis_job_store())
     return _job_processor

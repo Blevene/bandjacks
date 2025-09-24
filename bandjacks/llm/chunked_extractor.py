@@ -418,6 +418,29 @@ class ChunkedExtractor:
                     "line_refs": claim.get("evidence", {}).get("line_refs", claim.get("line_refs", []))
                 }
         
+        # Log technique preservation for debugging Task 1.7
+        if merged["techniques"]:
+            technique_ids = sorted(merged["techniques"].keys())
+            parent_count = sum(1 for tid in technique_ids if "." not in tid)
+            sub_count = sum(1 for tid in technique_ids if "." in tid)
+            logger.info(f"ChunkedExtractor.merge_results: {len(technique_ids)} techniques "
+                       f"({parent_count} parent, {sub_count} subtechniques)")
+            
+            # Log specific parent/subtechnique relationships
+            parents_with_subs = {}
+            for tid in technique_ids:
+                if "." in tid:
+                    parent = tid.split(".")[0]
+                    if parent not in parents_with_subs:
+                        parents_with_subs[parent] = []
+                    parents_with_subs[parent].append(tid)
+            
+            for parent, subs in parents_with_subs.items():
+                if parent in technique_ids:
+                    logger.debug(f"  {parent} (parent) + subtechniques: {', '.join(subs)}")
+                else:
+                    logger.debug(f"  Subtechniques without parent: {', '.join(subs)}")
+        
         # Merge entities from all chunks with evidence consolidation
         # Group entities by (name.lower(), type) for merging
         entity_groups = {}  # Key: (name_lower, type) -> Value: list of entity instances

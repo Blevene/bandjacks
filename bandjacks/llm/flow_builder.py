@@ -11,6 +11,7 @@ from opensearchpy import OpenSearch
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.schemas import ATTACK_FLOW_SCHEMA
 from bandjacks.llm.attack_flow_validator import AttackFlowValidator
+from bandjacks.llm.batch_neo4j import BatchNeo4jHelper
 from bandjacks.loaders.embedder import encode
 
 
@@ -35,6 +36,7 @@ class FlowBuilder:
         self.opensearch = opensearch_client
         self.llm_client = LLMClient()
         self.validator = AttackFlowValidator()
+        self.batch_helper = BatchNeo4jHelper(self.driver)
     
     def build_from_extraction(
         self,
@@ -415,6 +417,35 @@ class FlowBuilder:
         )
         return episode
 
+    def _normalize_evidence(self, evidence):
+        """
+        Normalize evidence to always be a list.
+        Handles both dict format (from optimized_chunked_extractor) and list format.
+        """
+        if not evidence:
+            return []
+
+        # If it's already a list, return it
+        if isinstance(evidence, list):
+            return evidence
+
+        # If it's a dict (from optimized_chunked_extractor), convert to list format
+        if isinstance(evidence, dict):
+            # Extract quotes/text from dict format
+            quotes = evidence.get("quotes", [])
+            if quotes:
+                return [{"text": quote, "line_refs": evidence.get("line_refs", [])} for quote in quotes]
+            elif evidence.get("text"):
+                return [{"text": evidence["text"], "line_refs": evidence.get("line_refs", [])}]
+            else:
+                return []
+
+        # If it's a string, wrap in list
+        if isinstance(evidence, str):
+            return [evidence]
+
+        return []
+
     def _resolve_technique_identifier(self, session, identifier: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
         """
         Resolve a technique identifier (STIX ID or ATT&CK external ID) to (stix_id, name, description).
@@ -510,7 +541,7 @@ class FlowBuilder:
                 "description": step.get("description", ""),
                 "reason": step.get("reason", ""),
                 "confidence": step.get("confidence", 70.0),
-                "evidence": step.get("evidence", [])
+                "evidence": self._normalize_evidence(step.get("evidence", []))
             })
         
         # Create NEXT edges between consecutive steps
@@ -599,7 +630,7 @@ class FlowBuilder:
                         "name": tech_data.get("name", tech_id),
                         "description": tech_data.get("description", ""),
                         "confidence": tech_data.get("confidence", 50.0),
-                        "evidence": tech_data.get("evidence", [])
+                        "evidence": self._normalize_evidence(tech_data.get("evidence", []))
                     })
                     seen_techniques.add(tech_id)
         
@@ -658,33 +689,18 @@ class FlowBuilder:
             else:
                 step["temporal_priority"] = 2  # Default middle
         
-        # Get tactic order for techniques
-        with self.driver.session() as session:
-            for step in steps:
-                result = session.run(
-                    """
-                    MATCH (t:AttackPattern {stix_id: $tech_id})-[:HAS_TACTIC]->(tac:Tactic)
-                    RETURN tac.shortname as tactic
-                    ORDER BY tac.shortname
-                    LIMIT 1
-                    """,
-                    tech_id=step["technique_id"]
-                )
-                record = result.single()
-                if record:
-                    # Map tactics to rough order
-                    tactic_order = {
-                        "reconnaissance": 1, "resource-development": 2,
-                        "initial-access": 3, "execution": 4,
-                        "persistence": 5, "privilege-escalation": 6,
-                        "defense-evasion": 7, "credential-access": 8,
-                        "discovery": 9, "lateral-movement": 10,
-                        "collection": 11, "command-and-control": 12,
-                        "exfiltration": 13, "impact": 14
-                    }
-                    step["tactic_order"] = tactic_order.get(record["tactic"], 7)
-                else:
-                    step["tactic_order"] = 7  # Default middle
+        # Get tactic order for techniques using batch query
+        technique_ids = [step["technique_id"] for step in steps]
+        tactics_map = self.batch_helper.batch_get_technique_tactics(technique_ids)
+        
+        for step in steps:
+            tactics = tactics_map.get(step["technique_id"], [])
+            if tactics:
+                # Use first tactic for ordering
+                primary_tactic = tactics[0]
+                step["tactic_order"] = self.batch_helper.get_tactic_order(primary_tactic)
+            else:
+                step["tactic_order"] = 7  # Default middle
         
         # Sort by: temporal > tactic > confidence > name
         steps.sort(key=lambda x: (
@@ -788,11 +804,58 @@ class FlowBuilder:
         """
         edges = []
         
+        # Prepare all technique pairs for batch queries
+        technique_pairs = []
+        for i in range(len(ordered_steps) - 1):
+            current = ordered_steps[i]
+            next_step = ordered_steps[i + 1]
+            tech1 = current.get("attack_pattern_ref") or current.get("technique_id")
+            tech2 = next_step.get("attack_pattern_ref") or next_step.get("technique_id")
+            if tech1 and tech2:
+                technique_pairs.append((tech1, tech2))
+        
+        # Batch get adjacencies and tactic alignments
+        adjacencies = self.batch_helper.batch_check_adjacencies(technique_pairs) if technique_pairs else {}
+        tactic_alignments = self.batch_helper.batch_get_tactic_alignments(technique_pairs) if technique_pairs else {}
+        
+        # Compute edges with batch results
         for i in range(len(ordered_steps) - 1):
             current = ordered_steps[i]
             next_step = ordered_steps[i + 1]
             
-            probability = self._calculate_probability(current, next_step)
+            tech1 = current.get("attack_pattern_ref") or current.get("technique_id")
+            tech2 = next_step.get("attack_pattern_ref") or next_step.get("technique_id")
+            
+            # Calculate probability using batch results
+            base_p = 0.6
+            
+            if tech1 and tech2:
+                pair = (tech1, tech2)
+                
+                # Check adjacency from batch results
+                if adjacencies.get(pair, 0) > 0:
+                    base_p += 0.2
+                
+                # Check tactic alignment from batch results
+                alignment = tactic_alignments.get(pair, {})
+                if alignment.get("same_tactic"):
+                    base_p += 0.1
+                elif alignment.get("source_tactics") and alignment.get("target_tactics"):
+                    # Check for regression
+                    for t1 in alignment["source_tactics"]:
+                        for t2 in alignment["target_tactics"]:
+                            if self._is_tactic_regression(t1, t2):
+                                base_p -= 0.1
+                                break
+            
+            # Factor in confidence
+            avg_confidence = (current.get("confidence", 50) + next_step.get("confidence", 50)) / 2
+            if avg_confidence > 80:
+                base_p += 0.05
+            elif avg_confidence < 40:
+                base_p -= 0.05
+            
+            probability = min(1.0, max(0.1, base_p))
             
             edges.append({
                 "source": current["action_id"],
@@ -930,7 +993,7 @@ class FlowBuilder:
                 "name": step.get("name", "Unknown"),
                 "description": step.get("description", ""),
                 "confidence": step.get("confidence", 50.0),
-                "evidence": step.get("evidence", []),
+                "evidence": self._normalize_evidence(step.get("evidence", [])),
                 "reason": step.get("reason", "")
             })
         
@@ -1049,49 +1112,56 @@ class FlowBuilder:
                     strategy=flow_data.get("flow_type", "sequential")
                 )
                 
-                # Create AttackActions and CONTAINS edges
-                for action in flow_data["actions"]:
-                    session.run(
-                        """
-                        MATCH (e:AttackEpisode {episode_id: $episode_id})
-                        CREATE (a:AttackAction {
-                            action_id: $action_id,
-                            attack_pattern_ref: $attack_pattern_ref,
-                            confidence: $confidence,
-                            order: $order,
-                            description: $description,
-                            evidence: $evidence,
-                            rationale: $rationale,
-                            timestamp: datetime()
-                        })
-                        CREATE (e)-[:CONTAINS {order: $order}]->(a)
-                        WITH a
-                        MATCH (t:AttackPattern {stix_id: $attack_pattern_ref})
-                        CREATE (a)-[:OF_TECHNIQUE]->(t)
-                        """,
-                        episode_id=flow_data["episode_id"],
-                        action_id=action["action_id"],
-                        attack_pattern_ref=action["attack_pattern_ref"],
-                        confidence=action["confidence"],
-                        order=action["order"],
-                        description=action["description"],
-                        evidence=json.dumps(action.get("evidence", [])),
-                        rationale=action.get("reason", "")
-                    )
+                # Batch create AttackActions and CONTAINS edges
+                if not self.batch_helper.batch_create_attack_actions(
+                    flow_data["episode_id"], 
+                    flow_data["actions"]
+                ):
+                    # Fallback to individual queries if batch fails
+                    for action in flow_data["actions"]:
+                        session.run(
+                            """
+                            MATCH (e:AttackEpisode {episode_id: $episode_id})
+                            CREATE (a:AttackAction {
+                                action_id: $action_id,
+                                attack_pattern_ref: $attack_pattern_ref,
+                                confidence: $confidence,
+                                order: $order,
+                                description: $description,
+                                evidence: $evidence,
+                                rationale: $rationale,
+                                timestamp: datetime()
+                            })
+                            CREATE (e)-[:CONTAINS {order: $order}]->(a)
+                            WITH a
+                            MATCH (t:AttackPattern {stix_id: $attack_pattern_ref})
+                            CREATE (a)-[:OF_TECHNIQUE]->(t)
+                            """,
+                            episode_id=flow_data["episode_id"],
+                            action_id=action["action_id"],
+                            attack_pattern_ref=action["attack_pattern_ref"],
+                            confidence=action["confidence"],
+                            order=action["order"],
+                            description=action["description"],
+                            evidence=json.dumps(action.get("evidence", [])),
+                            rationale=action.get("reason", "")
+                        )
                 
-                # Create NEXT edges
-                for edge in flow_data["edges"]:
-                    session.run(
-                        """
-                        MATCH (a1:AttackAction {action_id: $source})
-                        MATCH (a2:AttackAction {action_id: $target})
-                        CREATE (a1)-[:NEXT {p: $probability, rationale: $rationale}]->(a2)
-                        """,
-                        source=edge["source"],
-                        target=edge["target"],
-                        probability=edge["probability"],
-                        rationale=edge["rationale"]
-                    )
+                # Batch create NEXT edges
+                if not self.batch_helper.batch_create_next_edges(flow_data["edges"]):
+                    # Fallback to individual queries if batch fails
+                    for edge in flow_data["edges"]:
+                        session.run(
+                            """
+                            MATCH (a1:AttackAction {action_id: $source})
+                            MATCH (a2:AttackAction {action_id: $target})
+                            CREATE (a1)-[:NEXT {p: $probability, rationale: $rationale}]->(a2)
+                            """,
+                            source=edge["source"],
+                            target=edge["target"],
+                            probability=edge["probability"],
+                            rationale=edge["rationale"]
+                        )
                 
                 # Link to source if exists
                 if flow_data.get("source_id"):
@@ -1145,6 +1215,10 @@ class FlowBuilder:
         tactics_seen = set()
         techniques = []
         
+        # Batch get tactics for all techniques
+        technique_ids = [action["attack_pattern_ref"] for action in flow_data["actions"]]
+        tactics_map = self.batch_helper.batch_get_technique_tactics(technique_ids)
+        
         for action in flow_data["actions"]:
             flow_text_parts.append(
                 f"Step {action['order']}: {action['name']}"
@@ -1166,17 +1240,9 @@ class FlowBuilder:
             
             techniques.append(action["attack_pattern_ref"])
             
-            # Get tactic for this technique
-            with self.driver.session() as session:
-                result = session.run(
-                    """
-                    MATCH (t:AttackPattern {stix_id: $tech_id})-[:HAS_TACTIC]->(tac:Tactic)
-                    RETURN tac.shortname as tactic
-                    """,
-                    tech_id=action["attack_pattern_ref"]
-                )
-                for record in result:
-                    tactics_seen.add(record["tactic"])
+            # Get tactics from batch results
+            for tactic in tactics_map.get(action["attack_pattern_ref"], []):
+                tactics_seen.add(tactic)
         
         # Add edge information
         if flow_data["edges"]:

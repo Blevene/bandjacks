@@ -24,6 +24,7 @@ from bandjacks.llm.agents_v2 import (
 from bandjacks.llm.mapper_optimized import BatchMapperAgent
 from bandjacks.llm.batch_retriever import BatchRetrieverAgent
 from bandjacks.llm.entity_extractor import EntityExtractionAgent
+from bandjacks.llm.entity_consolidator import EntityConsolidatorAgent
 from bandjacks.llm.tracker import ExtractionTracker
 from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.loaders.embedder import encode
@@ -207,6 +208,14 @@ class ExtractionPipeline:
             progress_callback(65, "Consolidating techniques...")
         ConsolidatorAgent().run(mem, config)
         tracker.counters["techniques"] = len(mem.techniques)
+        
+        # Consolidate entity claims if they exist
+        if hasattr(mem, 'entity_claims') and mem.entity_claims:
+            tracker.set_stage("EntityConsolidator")
+            if progress_callback:
+                progress_callback(68, f"Consolidating {len(mem.entity_claims)} entity claims...")
+            EntityConsolidatorAgent().run(mem, config)
+            logger.info(f"Entity consolidation complete: {len(getattr(mem, 'consolidated_entities', {}))} unique entities")
         
         # Optional targeted extraction for missing tactics
         if not config.get("disable_targeted_extraction", True):
