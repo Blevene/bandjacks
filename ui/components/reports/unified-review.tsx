@@ -71,9 +71,9 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
   // Filter items based on search and state
   const filteredItems = filterReviewableItems(
     state.items.filter(item => 
-      searchTerm === "" || 
+      searchTerm === "" ||
       item.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.evidence.some(e => e.toLowerCase().includes(searchTerm.toLowerCase()))
+      item.evidence.some(e => typeof e === 'string' ? e.toLowerCase().includes(searchTerm.toLowerCase()) : e.text.toLowerCase().includes(searchTerm.toLowerCase()))
     ),
     state
   );

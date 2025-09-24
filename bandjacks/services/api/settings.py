@@ -127,6 +127,12 @@ class Settings(BaseSettings):
     enable_performance_logging: bool = True  # Log performance metrics
     log_batch_statistics: bool = True  # Log batch processing statistics
 
+    # SSE (Server-Sent Events) Configuration
+    use_sse_streaming: bool = True  # Enable SSE for real-time job updates
+    sse_heartbeat_interval: int = 30  # Send heartbeat every N seconds
+    sse_reconnect_max_attempts: int = 5  # Max reconnection attempts
+    sse_fallback_to_polling: bool = True  # Fall back to polling if SSE fails
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 

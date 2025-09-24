@@ -354,13 +354,16 @@ class RedisJobStore:
         
         # Save updated job
         self.redis.set(job_key, json.dumps(job))
-        
+
+        # Publish update to subscribers
+        self.publish_update(job_id, job)
+
         # Move from processing to completed set (ensure atomic operation)
         pipe = self.redis.pipeline()
         pipe.srem(self.PROCESSING_SET, job_id)
         pipe.sadd(self.COMPLETED_SET, job_id)
         pipe.execute()
-        
+
         # Release lock
         lock_key = f"{self.LOCK_PREFIX}{job_id}"
         lock = Lock(self.redis, lock_key, timeout=self.lock_timeout, thread_local=False)
@@ -368,11 +371,11 @@ class RedisJobStore:
             lock.release()
         except:
             pass  # Lock may have expired
-        
+
         # Remove heartbeat
         heartbeat_key = f"{self.HEARTBEAT_PREFIX}{job_id}"
         self.redis.delete(heartbeat_key)
-        
+
         techniques_count = result.get('techniques_count', 0)
         logger.info(f"✅ Job {job_id} SUCCESSFULLY COMPLETED by worker {worker_id} with {techniques_count} techniques")
         logger.info(f"✅ Job {job_id} removed from processing set and added to completed set")
@@ -418,7 +421,10 @@ class RedisJobStore:
         
         # Save updated job
         self.redis.set(job_key, json.dumps(job))
-        
+
+        # Publish update to subscribers
+        self.publish_update(job_id, job)
+
         # Move from processing to completed set (ensure atomic operation)
         pipe = self.redis.pipeline()
         pipe.srem(self.PROCESSING_SET, job_id)
@@ -461,23 +467,43 @@ class RedisJobStore:
         return json.loads(job_data)
     
     def update(self, job_id: str, updates: Dict[str, Any]) -> bool:
-        """Update job fields.
-        
+        """Update job fields and publish update event.
+
         Args:
             job_id: Job identifier
             updates: Dictionary of fields to update
-            
+
         Returns:
             True if updated, False if job not found
         """
         job = self.get(job_id)
         if not job:
             return False
-        
+
         job.update(updates)
         job_key = f"{self.JOB_PREFIX}{job_id}"
         self.redis.set(job_key, json.dumps(job))
+
+        # Publish update to Redis pub/sub channel
+        self.publish_update(job_id, job)
+
         return True
+
+    def publish_update(self, job_id: str, job_data: Dict[str, Any]) -> None:
+        """Publish job update to Redis pub/sub channel.
+
+        Args:
+            job_id: Job identifier
+            job_data: Complete job data to publish
+        """
+        try:
+            channel = f"job:updates:{job_id}"
+            message = json.dumps(job_data)
+            self.redis.publish(channel, message)
+            logger.debug(f"Published update for job {job_id} to channel {channel}")
+        except Exception as e:
+            # Don't fail if pub/sub fails - it's optional
+            logger.warning(f"Failed to publish job update: {e}")
     
     def _reclaim_abandoned_jobs(self) -> int:
         """Reclaim jobs abandoned by dead workers.
