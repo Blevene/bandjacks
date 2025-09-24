@@ -11,8 +11,8 @@ from opensearchpy import OpenSearch
 from neo4j import GraphDatabase
 
 from .sequence_extractor import PairwiseStatistics
-from .tactic_priors import TacticPriors
-from ..loaders.embedder import encode
+from bandjacks.llm.tactic_priors import TacticPriors
+from bandjacks.loaders.embedder import encode
 
 logger = logging.getLogger(__name__)
 

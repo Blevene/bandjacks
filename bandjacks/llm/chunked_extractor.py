@@ -8,7 +8,6 @@ from dataclasses import dataclass
 import concurrent.futures
 from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 from bandjacks.llm.tracker import ExtractionTracker
-from bandjacks.llm.entity_utils import consolidate_entities
 # Removed hardcoded threat actor and malware extraction - handled by proper entity recognition
 
 logger = logging.getLogger(__name__)
