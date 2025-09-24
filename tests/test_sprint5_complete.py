@@ -6,7 +6,7 @@ from datetime import datetime
 import json
 
 # Import Sprint 5 modules
-from bandjacks.llm.embedding_refresher import EmbeddingRefresher
+# from bandjacks.llm.embedding_refresher import EmbeddingRefresher  # Module removed in cleanup
 from bandjacks.services.cache_manager import CacheManager, EmbeddingCache, LLMResponseCache
 from bandjacks.services.api.middleware.auth import JWTAuthMiddleware
 from bandjacks.services.api.middleware.rate_limit import RateLimiter

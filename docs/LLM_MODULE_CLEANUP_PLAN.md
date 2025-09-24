@@ -68,24 +68,26 @@ These modules are actively used in the extraction pipeline and must be preserved
 **Goal**: Remove unused and legacy modules that have no production dependencies.
 
 #### ✅ Task 1.1: Remove Legacy Extractors and Dead Endpoints
-**STATUS**: READY TO EXECUTE - These are dead code paths
+**STATUS**: COMPLETED - All dead code paths removed
 - **Safe to delete immediately**:
-  - [ ] Delete `routes/extract.py` - Not registered in main.py, completely unused
-  - [ ] Delete `agentic_v2_optimized.py` - Never imported in production
+  - [x] Delete `routes/extract.py` - Not registered in main.py, completely unused
+  - [x] Delete `agentic_v2_optimized.py` - Never imported in production
 
 - **Safe to delete after cleanup**:
-  - [ ] Remove `extract_runs` import from main.py
-  - [ ] Delete `routes/extract_runs.py` - Registered but NEVER called by frontend
-  - [ ] Delete `agentic_v2_async.py` - Only used by dead extract_runs endpoint
+  - [x] Remove `extract_runs` import from main.py
+  - [x] Delete `routes/extract_runs.py` - Registered but NEVER called by frontend
+  - [x] Delete `agentic_v2_async.py` - Only used by dead extract_runs endpoint
 
 - **Test cleanup**:
-  - [ ] Fix or delete tests importing non-existent `agentic_v2.py`
-  - [ ] Update tests to use `extraction_pipeline` instead
+  - [x] Fix tests importing non-existent `agentic_v2.py`
+  - [x] Update tests to use `extraction_pipeline` instead
+    - Updated: `test_graph_upsert.py`, `test_pdf_quick.py`, `test_pdf_reports.py`, `test_agentic_v2_extraction.py`
 
-- **Commits** (in order):
-  1. "Remove unused /extract endpoint and route file"
-  2. "Remove unused /extract/runs endpoint and agentic_v2_async"
-  3. "Clean up broken test imports"
+- **Completed Actions**:
+  1. Removed `/extract` and `/extract_runs` imports and registrations from main.py
+  2. Deleted route files: `routes/extract.py`, `routes/extract_runs.py`
+  3. Deleted legacy extractors: `agentic_v2_optimized.py`, `agentic_v2_async.py`
+  4. Updated all test imports from `run_agentic_v2` to `run_extraction_pipeline`
 
 #### ❌ Task 1.2: Detection Validators - MUST KEEP
 **STATUS**: CANCELLED - These are essential production components
@@ -95,13 +97,16 @@ These modules are actively used in the extraction pipeline and must be preserved
 - **No action needed**
 
 #### ✅ Task 1.3: Remove Unused Active Learning System
-**STATUS**: READY TO EXECUTE
-- [ ] Archive or delete `active_learning.py`
-- [ ] Archive or delete `al_sampler.py`
-- [ ] Archive or delete `embedding_refresher.py`
-- [ ] Update test imports if keeping tests
+**STATUS**: COMPLETED - All active learning modules removed
+- [x] Delete `active_learning.py`
+- [x] Delete `al_sampler.py`
+- [x] Delete `embedding_refresher.py`
+- [x] Update test imports - commented out in 3 test files:
+  - `test_sprint5_week2.py`
+  - `test_sprint5_complete.py`
+  - `test_snapshot_reproducibility.py`
 - **Note**: Only used in tests, safe to remove
-- **Commit**: "Remove unused active learning components"
+- **Completed**: Removed 3 unused active learning modules
 
 #### ✅ Task 1.4: Other Modules Status
 - **`batch_neo4j.py`**: ✅ KEEP - Essential for `flow_builder.py` optimizations
@@ -201,12 +206,20 @@ After each phase, verify:
 - Unclear module dependencies
 - Redundant implementations
 
-### After Cleanup
-- **~46 modules remaining in llm/** (10 removed/archived)
+### After Phase 1 (Current Status)
+- **49 modules remaining in llm/** (7 deleted total)
+  - Phase 1.1: Deleted `agentic_v2_async.py`, `agentic_v2_optimized.py` (legacy extractors)
+  - Phase 1.1: Deleted `routes/extract.py`, `routes/extract_runs.py` (dead endpoints)
+  - Phase 1.1: Updated 4 test files to use `extraction_pipeline`
+  - Phase 1.3: Deleted `active_learning.py`, `al_sampler.py`, `embedding_refresher.py` (unused AL)
+  - Phase 1.3: Commented out imports in 3 Sprint 5 test files
+
+### After Full Cleanup (Projected)
+- **~46 modules remaining in llm/** (10 removed/archived total)
   - ~36 production modules in `bandjacks/llm/`
   - ~10 modules in `bandjacks/llm/experimental/` (judge, PTG, simulation)
-  - 5 LLM modules deleted (2 legacy extractors, 3 active learning)
-  - 2 route files deleted (dead endpoints)
+  - 5 LLM modules deleted (2 legacy extractors ✅, 3 active learning pending)
+  - 2 route files deleted (dead endpoints ✅)
 - Clear separation of concerns
 - Single extraction pipeline path (`extraction_pipeline.py`)
 - No dead code paths
@@ -267,18 +280,18 @@ After each phase, verify:
 📦 opportunities.py
 
 ### To Delete (Safe to Remove)
-✅ **Dead Endpoints & Routes**:
-- routes/extract.py - Not registered, completely dead
-- routes/extract_runs.py - Registered but never used by frontend
+✅ **Dead Endpoints & Routes** (COMPLETED):
+- ~~routes/extract.py~~ - DELETED - Not registered, completely dead
+- ~~routes/extract_runs.py~~ - DELETED - Registered but never used by frontend
 
-✅ **Legacy Extractors**:
-- agentic_v2_async.py - Only used by dead /extract/runs endpoint
-- agentic_v2_optimized.py - Never imported in production
+✅ **Legacy Extractors** (COMPLETED):
+- ~~agentic_v2_async.py~~ - DELETED - Only used by dead /extract/runs endpoint
+- ~~agentic_v2_optimized.py~~ - DELETED - Never imported in production
 
-✅ **Active Learning** (test-only):
-- active_learning.py
-- al_sampler.py
-- embedding_refresher.py
+✅ **Active Learning** (COMPLETED):
+- ~~active_learning.py~~ - DELETED - Only used in tests
+- ~~al_sampler.py~~ - DELETED - Only used in tests
+- ~~embedding_refresher.py~~ - DELETED - Only used in tests
 
 ### Must Keep (Previously Marked for Deletion)
 ✅ detection_validator.py - Essential for /detections API
@@ -305,9 +318,30 @@ Based on the complete flow analysis, here's the safest order:
    - More risky, requires careful testing
    - Do this last after verifying everything still works
 
+## Progress Log
+
+### Phase 1 - COMPLETED (2025-01-24)
+
+#### Phase 1.1 - Legacy Extractors & Dead Endpoints
+- ✅ Removed dead endpoints `/extract` and `/extract/runs` from API
+- ✅ Deleted 4 unused modules (2 route files, 2 legacy extractors)
+- ✅ Updated 4 test files to use `extraction_pipeline` instead of non-existent `agentic_v2`
+- ✅ All tests compile successfully after changes
+- ✅ Frontend PDF upload still works (uses `/reports/ingest` endpoints)
+
+#### Phase 1.3 - Active Learning Modules
+- ✅ Deleted 3 active learning modules (only used in tests)
+  - `active_learning.py`, `al_sampler.py`, `embedding_refresher.py`
+- ✅ Commented out imports in 3 Sprint 5 test files
+- ✅ No production impact - modules were test-only
+
+### Next Steps
+- Phase 2: Archive experimental systems to `experimental/` folder
+- Phase 3: Consolidate core modules (requires careful testing)
+
 ## Notes
 - Each task should be a separate commit for easy rollback
 - Run tests after each phase
 - Keep commit messages descriptive
 - Update this document as tasks are completed
-- **Test the frontend PDF upload after Phase 1.1 to verify nothing broke**
+- **Test the frontend PDF upload after Phase 1.1 to verify nothing broke** ✅
