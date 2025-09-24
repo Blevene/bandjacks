@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     redis_heartbeat_interval: int = 30  # Worker heartbeat every 30s
     
     # Job processing settings
-    job_claim_ttl: int = 300  # 5 minutes to process a job before it's reclaimed
+    job_claim_ttl: int = 1800  # 30 minutes to process a job before it's reclaimed (increased for large PDFs)
     job_heartbeat_ttl: int = 300  # Heartbeat expires after 5 minutes (increased from 60s)
     worker_id_prefix: str = "worker"  # Prefix for worker IDs
     
