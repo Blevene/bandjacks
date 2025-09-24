@@ -1,6 +1,7 @@
-"""Base class for consolidators with shared deduplication logic."""
+"""Base class for consolidators with shared deduplication and evidence extraction logic."""
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
+import re
 import logging
 
 logger = logging.getLogger(__name__)
