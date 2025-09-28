@@ -15,11 +15,17 @@ from rich.progress import track
 # Add parent to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from bandjacks.loaders.hybrid_search import HybridSearcher
+# Removed top-level HybridSearcher import to avoid optional dependency at import time
 from bandjacks.store.candidate_store import CandidateStore
 from bandjacks.core.cache import get_cache_manager
 from bandjacks.core.connection_pool import get_connection_manager
 from bandjacks.core.query_optimizer import QueryOptimizer
+
+# New imports for analytics CLI
+from neo4j import GraphDatabase
+from bandjacks.analytics.cooccurrence import (
+    CooccurrenceAnalyzer,
+)
 
 console = Console()
 
@@ -60,6 +66,9 @@ def search(ctx, search_query, top_k, entity_type, no_context):
     
     with console.status("[bold green]Searching..."):
         try:
+            # Lazy import to avoid requiring OpenSearch when not using search
+            from bandjacks.loaders.hybrid_search import HybridSearcher
+            
             searcher = HybridSearcher(
                 ctx.obj['opensearch_url'],
                 ctx.obj['opensearch_index'],
@@ -519,6 +528,358 @@ def health(ctx):
             console.print(f"  [yellow]⚠[/yellow] Redis: Not connected")
     except:
         console.print(f"  [yellow]⚠[/yellow] Redis: Not available")
+
+
+@cli.group()
+@click.pass_context
+def analytics(ctx):
+    """Analytics and co-occurrence operations."""
+    pass
+
+
+@analytics.command("top-cooccurrence")
+@click.option('--limit', default=25, help='Max pairs to return', show_default=True)
+@click.option('--min-episode-size', default=2, help='Min actions per episode to count', show_default=True)
+@click.option('--tactic', default=None, help='Filter by tactic shortname (e.g., discovery)')
+@click.pass_context
+def analytics_top_cooccurrence(ctx, limit, min_episode_size, tactic):
+    """Show top co-occurring technique pairs across all episodes."""
+    neo4j_uri = ctx.obj['neo4j_uri']
+    neo4j_user = ctx.obj['neo4j_user']
+    neo4j_password = ctx.obj['neo4j_password']
+
+    with console.status("[bold green]Computing co-occurrence pairs..."):
+        try:
+            driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+            with driver.session() as session:
+                query = """
+                    MATCH (e:AttackEpisode)
+                    WITH e
+                    MATCH (e)-[:CONTAINS]->(a1:AttackAction)
+                    MATCH (e)-[:CONTAINS]->(a2:AttackAction)
+                    WHERE a1.attack_pattern_ref < a2.attack_pattern_ref
+                    WITH e, a1, a2
+                    OPTIONAL MATCH (t1:AttackPattern {stix_id: a1.attack_pattern_ref})-[:HAS_TACTIC]->(ta1:Tactic)
+                    OPTIONAL MATCH (t2:AttackPattern {stix_id: a2.attack_pattern_ref})-[:HAS_TACTIC]->(ta2:Tactic)
+                    WITH e, a1, a2,
+                         coalesce(ta1.shortname, "") as tact1,
+                         coalesce(ta2.shortname, "") as tact2
+                    WHERE $tactic IS NULL OR tact1 = $tactic OR tact2 = $tactic
+                    WITH e, collect(DISTINCT a1.attack_pattern_ref) as tset1,
+                           collect(DISTINCT a2.attack_pattern_ref) as tset2
+                    WITH apoc.coll.toSet(tset1 + tset2) as techniques, e
+                    WHERE size(techniques) >= $min_episode_size
+                    UNWIND techniques as tA
+                    UNWIND techniques as tB
+                    WITH tA, tB
+                    WHERE tA < tB
+                    WITH tA as technique_a, tB as technique_b, count(*) as cnt
+                    ORDER BY cnt DESC
+                    LIMIT $limit
+                    WITH technique_a, technique_b, cnt
+                    OPTIONAL MATCH (pa:AttackPattern {stix_id: technique_a})
+                    OPTIONAL MATCH (pb:AttackPattern {stix_id: technique_b})
+                    RETURN technique_a, coalesce(pa.name, technique_a) as name_a,
+                           technique_b, coalesce(pb.name, technique_b) as name_b, cnt
+                """
+                rows = session.run(
+                    query,
+                    limit=limit,
+                    min_episode_size=min_episode_size,
+                    tactic=tactic,
+                )
+                data = list(rows)
+        except Exception as e:
+            console.print(f"[red]Failed: {e}[/red]")
+            return
+        finally:
+            try:
+                driver.close()
+            except Exception:
+                pass
+
+    if not data:
+        console.print("[yellow]No pairs found[/yellow]")
+        return
+
+    table = Table(title="Top Co-occurring Technique Pairs")
+    table.add_column("#", style="cyan", width=4)
+    table.add_column("Technique A", style="green")
+    table.add_column("Technique B", style="green")
+    table.add_column("Count", style="yellow", justify="right")
+
+    for idx, rec in enumerate(data, 1):
+        table.add_row(
+            str(idx),
+            f"{rec['name_a']} ({rec['technique_a']})",
+            f"{rec['name_b']} ({rec['technique_b']})",
+            str(rec['cnt']),
+        )
+    console.print(table)
+
+
+@analytics.command("conditional")
+@click.argument('technique_id')
+@click.option('--limit', default=25, help='Max related techniques to return', show_default=True)
+@click.pass_context
+def analytics_conditional(ctx, technique_id, limit):
+    """Compute conditional co-occurrence P(B|A) for a given technique A."""
+    neo4j_uri = ctx.obj['neo4j_uri']
+    neo4j_user = ctx.obj['neo4j_user']
+    neo4j_password = ctx.obj['neo4j_password']
+
+    with console.status("[bold green]Computing conditional co-occurrence..."):
+        try:
+            driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+            with driver.session() as session:
+                query = """
+                    MATCH (e:AttackEpisode)-[:CONTAINS]->(aA:AttackAction {attack_pattern_ref: $tech})
+                    WITH collect(DISTINCT e) as episodesA
+                    WITH episodesA, size(episodesA) as totalA
+                    UNWIND episodesA as e
+                    MATCH (e)-[:CONTAINS]->(aB:AttackAction)
+                    WHERE aB.attack_pattern_ref <> $tech
+                    WITH aB.attack_pattern_ref as b, totalA, count(DISTINCT e) as co_count
+                    OPTIONAL MATCH (pb:AttackPattern {stix_id: b})
+                    RETURN b as technique_id,
+                           coalesce(pb.name, b) as name,
+                           co_count as co_occurrence_count,
+                           totalA as episodes_with_given,
+                           (1.0 * co_count) / CASE WHEN totalA = 0 THEN 1 ELSE totalA END as p
+                    ORDER BY p DESC, co_occurrence_count DESC
+                    LIMIT $limit
+                """
+                rows = session.run(query, tech=technique_id, limit=limit)
+                data = list(rows)
+        except Exception as e:
+            console.print(f"[red]Failed: {e}[/red]")
+            return
+        finally:
+            try:
+                driver.close()
+            except Exception:
+                pass
+
+    if not data:
+        console.print("[yellow]No conditional results found[/yellow]")
+        return
+
+    table = Table(title=f"Conditional Co-occurrence given {technique_id}")
+    table.add_column("#", style="cyan", width=4)
+    table.add_column("Co-technique", style="green")
+    table.add_column("Episodes with A", justify="right")
+    table.add_column("Co-occurrence", justify="right")
+    table.add_column("P(B|A)", style="yellow", justify="right")
+
+    for idx, rec in enumerate(data, 1):
+        table.add_row(
+            str(idx),
+            f"{rec['name']} ({rec['technique_id']})",
+            str(rec['episodes_with_given']),
+            str(rec['co_occurrence_count']),
+            f"{float(rec['p']):.3f}",
+        )
+    console.print(table)
+
+
+@analytics.command("actor")
+@click.argument('intrusion_set_id')
+@click.option('--min-support', default=1, show_default=True, help='Minimum episode support')
+@click.option('--metric', type=click.Choice(['npmi', 'lift', 'confidence']), default='npmi', show_default=True)
+@click.pass_context
+def analytics_actor(ctx, intrusion_set_id, min_support, metric):
+    """Analyze co-occurrence for a specific intrusion set (top pairs and bundles)."""
+    analyzer = CooccurrenceAnalyzer(
+        ctx.obj['neo4j_uri'], ctx.obj['neo4j_user'], ctx.obj['neo4j_password']
+    )
+    try:
+        metrics = analyzer.calculate_actor_cooccurrence(intrusion_set_id, min_support)
+
+        if metric == 'lift':
+            metrics.sort(key=lambda m: m.lift, reverse=True)
+        elif metric == 'confidence':
+            metrics.sort(key=lambda m: max(m.confidence_a_to_b, m.confidence_b_to_a), reverse=True)
+        else:
+            metrics.sort(key=lambda m: m.npmi, reverse=True)
+
+        table = Table(title=f"Actor Co-occurrence: {intrusion_set_id}")
+        table.add_column("#", style="cyan", width=4)
+        table.add_column("Technique A", style="green")
+        table.add_column("Technique B", style="green")
+        table.add_column("Count", justify="right")
+        table.add_column("Conf A→B", justify="right")
+        table.add_column("Conf B→A", justify="right")
+        table.add_column("Lift", justify="right")
+        table.add_column("NPMI", style="yellow", justify="right")
+
+        # Resolve names in one go for the top rows
+        top = metrics[:20]
+        if top:
+            driver = GraphDatabase.driver(ctx.obj['neo4j_uri'], auth=(ctx.obj['neo4j_user'], ctx.obj['neo4j_password']))
+            try:
+                ids = sorted({tid for m in top for tid in (m.technique_a, m.technique_b)})
+                with driver.session() as session:
+                    name_rows = session.run(
+                        """
+                        MATCH (t:AttackPattern)
+                        WHERE t.stix_id IN $ids
+                        RETURN t.stix_id as id, t.name as name
+                        """,
+                        ids=ids,
+                    )
+                    name_map = {r['id']: r['name'] for r in name_rows}
+            finally:
+                driver.close()
+        else:
+            name_map = {}
+
+        for idx, m in enumerate(top, 1):
+            a = f"{name_map.get(m.technique_a, m.technique_a)} ({m.technique_a})"
+            b = f"{name_map.get(m.technique_b, m.technique_b)} ({m.technique_b})"
+            table.add_row(
+                str(idx), a, b,
+                str(m.count),
+                f"{m.confidence_a_to_b:.3f}",
+                f"{m.confidence_b_to_a:.3f}",
+                f"{m.lift:.2f}",
+                f"{m.npmi:.3f}",
+            )
+        console.print(table)
+
+        # Bundles
+        bundles = analyzer.extract_technique_bundles(
+            intrusion_set_id, min_support=min_support, min_size=3, max_size=5
+        )
+        if bundles:
+            btable = Table(title="Signature Bundles (top)")
+            btable.add_column("Techniques", style="green")
+            btable.add_column("Support", justify="right")
+            btable.add_column("Confidence", justify="right")
+            btable.add_column("Lift", justify="right")
+            btable.add_column("Tactics")
+            for b in bundles[:10]:
+                btable.add_row(
+                    ", ".join(b.techniques),
+                    str(b.support),
+                    f"{b.confidence:.3f}",
+                    f"{b.lift:.2f}",
+                    ", ".join(b.tactics),
+                )
+            console.print(btable)
+        else:
+            console.print("[yellow]No bundles found[/yellow]")
+
+    except Exception as e:
+        console.print(f"[red]Actor analysis failed: {e}[/red]")
+    finally:
+        analyzer.close()
+
+
+@analytics.command("bundles")
+@click.option('--min-support', default=3, show_default=True)
+@click.option('--min-size', default=3, show_default=True)
+@click.option('--max-size', default=5, show_default=True)
+@click.option('--actor', default=None, help='Optional Intrusion Set STIX ID')
+@click.pass_context
+def analytics_bundles(ctx, min_support, min_size, max_size, actor):
+    """Extract frequently co-occurring technique bundles."""
+    analyzer = CooccurrenceAnalyzer(
+        ctx.obj['neo4j_uri'], ctx.obj['neo4j_user'], ctx.obj['neo4j_password']
+    )
+    try:
+        bundles = analyzer.extract_technique_bundles(
+            actor, min_support=min_support, min_size=min_size, max_size=max_size
+        )
+        if not bundles:
+            console.print("[yellow]No bundles found[/yellow]")
+            return
+
+        table = Table(title="Technique Bundles")
+        table.add_column("#", style="cyan", width=4)
+        table.add_column("Techniques", style="green")
+        table.add_column("Support", justify="right")
+        table.add_column("Confidence", justify="right")
+        table.add_column("Lift", justify="right")
+        table.add_column("Tactics")
+        for idx, b in enumerate(sorted(bundles, key=lambda x: x.lift, reverse=True)[:25], 1):
+            table.add_row(
+                str(idx),
+                ", ".join(b.techniques),
+                str(b.support),
+                f"{b.confidence:.3f}",
+                f"{b.lift:.2f}",
+                ", ".join(b.tactics),
+            )
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Bundle extraction failed: {e}[/red]")
+    finally:
+        analyzer.close()
+
+
+@analytics.command("global")
+@click.option('--min-support', default=2, show_default=True)
+@click.option('--min-episodes-per-pair', default=2, show_default=True)
+@click.option('--limit', default=50, show_default=True)
+@click.pass_context
+def analytics_global(ctx, min_support, min_episodes_per_pair, limit):
+    """Compute global co-occurrence metrics (PMI/NPMI, Lift) across all episodes."""
+    analyzer = CooccurrenceAnalyzer(
+        ctx.obj['neo4j_uri'], ctx.obj['neo4j_user'], ctx.obj['neo4j_password']
+    )
+    try:
+        metrics = analyzer.calculate_global_cooccurrence(
+            min_support=min_support,
+            min_episodes_per_pair=min_episodes_per_pair,
+        )
+        metrics = metrics[:limit]
+        if not metrics:
+            console.print("[yellow]No co-occurrence pairs found[/yellow]")
+            return
+
+        # Resolve names in batch
+        driver = GraphDatabase.driver(ctx.obj['neo4j_uri'], auth=(ctx.obj['neo4j_user'], ctx.obj['neo4j_password']))
+        try:
+            ids = sorted({tid for m in metrics for tid in (m.technique_a, m.technique_b)})
+            with driver.session() as session:
+                name_rows = session.run(
+                    """
+                    MATCH (t:AttackPattern)
+                    WHERE t.stix_id IN $ids
+                    RETURN t.stix_id as id, t.name as name
+                    """,
+                    ids=ids,
+                )
+                name_map = {r['id']: r['name'] for r in name_rows}
+        finally:
+            driver.close()
+
+        table = Table(title="Global Co-occurrence Metrics")
+        table.add_column("#", style="cyan", width=4)
+        table.add_column("Technique A", style="green")
+        table.add_column("Technique B", style="green")
+        table.add_column("Count", justify="right")
+        table.add_column("Lift", justify="right")
+        table.add_column("PMI", justify="right")
+        table.add_column("NPMI", style="yellow", justify="right")
+        table.add_column("Jaccard", justify="right")
+
+        for idx, m in enumerate(metrics, 1):
+            a = f"{name_map.get(m.technique_a, m.technique_a)} ({m.technique_a})"
+            b = f"{name_map.get(m.technique_b, m.technique_b)} ({m.technique_b})"
+            table.add_row(
+                str(idx), a, b,
+                str(m.count),
+                f"{m.lift:.2f}",
+                f"{m.pmi:.3f}",
+                f"{m.npmi:.3f}",
+                f"{m.jaccard:.3f}",
+            )
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Global analysis failed: {e}[/red]")
+    finally:
+        analyzer.close()
 
 
 def main():

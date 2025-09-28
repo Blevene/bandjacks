@@ -1,10 +1,24 @@
-"""Tactic-based priors for technique transition modeling."""
+"""Tactic-based priors for technique transition modeling.
+
+Module Status: DEPRECATED
+This module is only used by experimental modules and is a candidate for removal.
+Consider using flow_builder.py's built-in tactic ordering instead.
+"""
 
 from typing import Dict, List, Tuple, Optional
 from dataclasses import dataclass
 import logging
+import warnings
 
 logger = logging.getLogger(__name__)
+
+# Show deprecation warning when module is imported
+warnings.warn(
+    "bandjacks.llm.tactic_priors is deprecated and will be removed in a future version. "
+    "Only used by experimental modules. Consider using flow_builder.py instead.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 
 @dataclass

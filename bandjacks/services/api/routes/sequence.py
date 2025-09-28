@@ -12,19 +12,19 @@ from bandjacks.services.api.schemas import (
     SequenceExtractionResponse, PTGBuildRequest, PTGBuildResponse,
     PTGModelResponse, SequenceStatisticsResponse
 )
-from bandjacks.llm.sequence_extractor import (
+from bandjacks.llm.experimental.sequence_extractor import (
     SequenceExtractor, extract_sequences_from_flows
 )
-from bandjacks.llm.ptg_builder import (
+from bandjacks.llm.experimental.ptg_builder import (
     PTGBuilder, PTGParameters, build_ptg_for_scope
 )
-from bandjacks.llm.judge_client import JudgeClient, JudgeConfig, JudgeVerdict
-from bandjacks.llm.judge_cache import JudgeVerdictCache
-from bandjacks.llm.evidence_pack import EvidencePackBuilder
-from bandjacks.llm.triage import PairTriage, TriageConfig
-from bandjacks.llm.judge_integration import PTGJudgeIntegrator
-from bandjacks.llm.budget import check_and_record_judge_cost, get_budget_tracker
-from bandjacks.llm.ptg_config import get_ptg_config, set_ptg_config, PTGBuildConfig
+from bandjacks.llm.experimental.judge_client import JudgeClient, JudgeConfig, JudgeVerdict
+from bandjacks.llm.experimental.judge_cache import JudgeVerdictCache
+from bandjacks.llm.experimental.evidence_pack import EvidencePackBuilder
+from bandjacks.llm.experimental.triage import PairTriage, TriageConfig
+from bandjacks.llm.experimental.judge_integration import PTGJudgeIntegrator
+from bandjacks.llm.token_utils import check_and_record_judge_cost, get_budget_tracker
+from bandjacks.llm.experimental.ptg_config import get_ptg_config, set_ptg_config, PTGBuildConfig
 from bandjacks.monitoring.ml_metrics import get_ml_metrics_tracker, record_model_prediction
 from bandjacks.llm.sequence_proposal import (
     SequenceProposalBuilder, TransitionValidator, AnalystReviewFormatter
@@ -779,7 +779,7 @@ async def judge_technique_pairs(
                 
                 # Build evidence pack - need to create a mock PairwiseStatistics object
                 # For now, create a minimal stats object that the evidence builder expects
-                from bandjacks.llm.sequence_extractor import PairwiseStatistics
+                from bandjacks.llm.experimental.sequence_extractor import PairwiseStatistics
                 
                 # Create minimal stats for this pair
                 mock_stats = PairwiseStatistics(
@@ -1077,7 +1077,7 @@ async def generate_sequence_proposals(
         verdicts_result = neo4j_session.run(verdict_query, intrusion_set_id=intrusion_set_id)
         
         # Convert to JudgeVerdict objects
-        from bandjacks.llm.judge_client import VerdictType
+        from bandjacks.llm.experimental.judge_client import VerdictType
         
         judge_verdicts = []
         for record in verdicts_result:

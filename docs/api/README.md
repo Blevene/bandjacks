@@ -43,12 +43,12 @@ Extract TTPs from documents.
 
 - [`POST /mapper/propose`](./mapper.md#post-mapperpropose) - Analyze document and propose mappings
 
-### 5. Extraction Runs (Async)
-High-performance, evidence-anchored extraction with status polling.
+### 5. Report Ingestion
+Process threat intelligence reports and extract techniques.
 
-- [`POST /extract/runs`](./extract.md#post-extractruns) - Start an async extraction run
-- [`GET /extract/runs/{run_id}/status`](./extract.md#get-extractrunsrun_idstatus) - Check run status
-- [`GET /extract/runs/{run_id}/result`](./extract.md#get-extractrunsrun_idresult) - Get final result
+- [`POST /reports/ingest`](./reports.md#post-reportsingest) - Synchronous report ingestion (<5KB)
+- [`POST /reports/ingest_async`](./reports.md#post-reportsingest_async) - Asynchronous report ingestion (>5KB)
+- [`GET /reports/jobs/{job_id}/status`](./reports.md#get-reportsjobsjob_idstatus) - Check job status
 
 ### 6. LLM Extraction
 Advanced extraction using LLMs.

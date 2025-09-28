@@ -1,4 +1,9 @@
-"""Optimized chunked document extraction with smart span detection."""
+"""Optimized chunked document extraction with smart span detection.
+
+Module Status: PRODUCTION
+Optimized version of chunked extraction with parallel processing support.
+Used by async API endpoints for large document processing.
+"""
 
 import os
 import re
@@ -12,7 +17,6 @@ from bandjacks.llm.chunked_extractor import ChunkedExtractor, DocumentChunk
 from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 from bandjacks.llm.agents_v2 import SpanFinderAgent
 from bandjacks.llm.memory import WorkingMemory
-from bandjacks.llm.entity_utils import consolidate_entities
 from bandjacks.llm.accumulator import ThreadSafeAccumulator
 from bandjacks.llm.token_utils import TokenEstimator
 

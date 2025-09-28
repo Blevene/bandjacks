@@ -1,4 +1,9 @@
-"""Sequence proposal builder for validated attack sequences from judge verdicts."""
+"""Sequence proposal builder for validated attack sequences from judge verdicts.
+
+Module Status: EXPERIMENTAL
+Used only by /sequence API endpoints for judge-validated sequence proposals.
+Part of the experimental judge system, not used in core extraction pipeline.
+"""
 
 import uuid
 from typing import List, Dict, Tuple, Optional, Set, Any
@@ -7,7 +12,7 @@ from datetime import datetime
 import logging
 from neo4j import GraphDatabase
 
-from bandjacks.llm.judge_client import JudgeVerdict, VerdictType
+from bandjacks.llm.experimental.judge_client import JudgeVerdict, VerdictType
 
 logger = logging.getLogger(__name__)
 

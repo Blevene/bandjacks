@@ -1,4 +1,9 @@
-"""Consolidated attack flow builder with LLM synthesis, STIX export, and OpenSearch integration."""
+"""Consolidated attack flow builder with LLM synthesis, STIX export, and OpenSearch integration.
+
+Module Status: PRODUCTION
+Core module for generating attack flows from extraction results.
+Integrates with Neo4j, OpenSearch, and STIX generation systems.
+"""
 
 import uuid
 import json

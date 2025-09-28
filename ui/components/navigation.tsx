@@ -5,27 +5,20 @@ import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
 import {
   Home,
-  Search,
-  Database,
   Upload,
-  Shield,
-  GitBranch,
-  CheckSquare,
   Settings,
-  Layers,
   AlertCircle,
   FileText,
-  Target,
-  Brain,
-  MessageSquare,
+  Network,
   Activity,
-  TrendingUp,
 } from "lucide-react";
 
 const navigation = [
   { name: "Dashboard", href: "/", icon: Home },
   { name: "Reports", href: "/reports", icon: FileText },
   { name: "New Report", href: "/reports/new", icon: Upload },
+  { name: "Co-occurrence", href: "/analytics/cooccurrence", icon: Network },
+  { name: "Health Status", href: "/health", icon: Activity },
 ];
 
 export function Navigation() {

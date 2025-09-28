@@ -1,3 +1,11 @@
+"""Core extraction agents for the LLM pipeline.
+
+Module Status: PRODUCTION
+Contains all primary extraction agents used in the production pipeline:
+SpanFinderAgent, BatchRetrieverAgent, DiscoveryAgent, BatchMapperAgent,
+EvidenceVerifierAgent, ConsolidatorAgent, and AssemblerAgent.
+"""
+
 import re
 import json
 import logging
@@ -14,11 +22,7 @@ from bandjacks.llm.tools import (
 from bandjacks.llm.client import execute_tool_loop
 from bandjacks.llm.stix_builder import STIXBuilder
 from bandjacks.llm.flow_builder import FlowBuilder
-from bandjacks.llm.evidence_utils import (
-    extract_sentence_evidence,
-    extract_sentence_for_line,
-    calculate_line_refs
-)
+from bandjacks.llm.consolidator_base import ConsolidatorBase
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +169,7 @@ class SpanFinderAgent:
             # Add span if score threshold met
             if score >= 0.6:
                 # Use sentence-based extraction instead of single line
-                evidence = extract_sentence_for_line(
+                evidence = ConsolidatorBase.extract_sentence_for_line(
                     full_text,
                     mem.line_index,
                     idx + 1,  # 1-indexed line number
@@ -214,7 +218,7 @@ class SpanFinderAgent:
                     char_pos += len(mem.line_index[j]) + 1
                 
                 # Extract sentence-based evidence for this window
-                evidence = extract_sentence_evidence(
+                evidence = ConsolidatorBase.extract_sentence_evidence(
                     full_text,
                     char_pos,
                     context_sentences=2  # More context for multi-stage attacks
@@ -256,7 +260,7 @@ class SpanFinderAgent:
                     char_pos += match.start()
                 
                 # Extract sentence-based context around entity mention
-                evidence = extract_sentence_evidence(
+                evidence = ConsolidatorBase.extract_sentence_evidence(
                     full_text,
                     char_pos,
                     context_sentences=2  # Include surrounding context for entity actions

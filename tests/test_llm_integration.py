@@ -9,7 +9,7 @@ from bandjacks.llm.stix_converter import (
     validate_stix_ids,
     merge_with_vector_results
 )
-from bandjacks.llm.prompts import get_messages_for_chunk
+from bandjacks.llm.experimental.prompts import get_messages_for_chunk
 
 
 def test_json_validation():

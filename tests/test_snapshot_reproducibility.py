@@ -8,8 +8,8 @@ from unittest.mock import Mock, patch, MagicMock
 import random
 
 # Import modules to test
-from bandjacks.llm.al_sampler import ALSampler
-from bandjacks.llm.active_learning import ActiveLearningManager
+# from bandjacks.llm.al_sampler import ALSampler  # Module removed in cleanup
+# from bandjacks.llm.active_learning import ActiveLearningManager  # Module removed in cleanup
 from bandjacks.monitoring.ml_metrics import MLMetricsTracker
 from bandjacks.services.cache_manager import CacheManager
 

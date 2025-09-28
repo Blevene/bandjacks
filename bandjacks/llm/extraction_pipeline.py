@@ -1,7 +1,10 @@
 """Unified extraction and flow generation pipeline.
 
+Module Status: PRODUCTION
 This module consolidates the extraction, embedding, and flow generation
 into a single coherent pipeline with review workflow integration.
+
+Primary entry point for all report extraction and attack flow generation.
 """
 
 import logging
@@ -28,7 +31,6 @@ from bandjacks.llm.entity_consolidator import EntityConsolidatorAgent
 from bandjacks.llm.tracker import ExtractionTracker
 from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.loaders.embedder import encode
-from bandjacks.llm.entity_utils import consolidate_entities
 
 logger = logging.getLogger(__name__)
 
@@ -229,7 +231,7 @@ class ExtractionPipeline:
         
         # Apply entity consolidation to merge aliases (e.g., APT29 and Cozy Bear)
         if entities_struct and isinstance(entities_struct, dict):
-            entities_struct = consolidate_entities(entities_struct)
+            entities_struct = EntityConsolidatorAgent.consolidate_entities(entities_struct)
             logger.info(f"Entity consolidation applied: {len(entities_struct.get('entities', []))} unique entities")
         
         return {

@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import PyPDF2
-from bandjacks.llm.agentic_v2 import run_agentic_v2
+from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 
 
 def test_darkcloud_quick():

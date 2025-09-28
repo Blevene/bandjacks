@@ -10,7 +10,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from bandjacks.llm.bundle_validator import validate_bundle_for_upsert
-from bandjacks.llm.active_learning import ActiveLearningManager
+# from bandjacks.llm.active_learning import ActiveLearningManager  # Module removed in cleanup
 from bandjacks.monitoring.compliance_metrics import ComplianceMetrics, get_compliance_report
 
 
@@ -105,7 +105,7 @@ def test_uncertainty_queue():
     print("  - Marking items for retrain")
     
     # Test the logic without database
-    from bandjacks.llm.active_learning import ActiveLearningManager
+    # from bandjacks.llm.active_learning import ActiveLearningManager  # Module removed in cleanup
     
     # Test priority calculation
     manager = ActiveLearningManager("bolt://localhost:7687", "neo4j", "password")

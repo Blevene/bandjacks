@@ -4,7 +4,7 @@
 echo "Fetching OpenAPI spec from backend..."
 
 # Try to fetch from running backend
-if curl -s http://localhost:8001/openapi.json -o openapi.json; then
+if curl -s http://localhost:8000/openapi.json -o openapi.json; then
   echo "✓ OpenAPI spec fetched successfully"
 else
   echo "✗ Backend not running. Please start the backend and run this script again."

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import httpx
 from bandjacks.loaders.parse_text import extract_text
-from bandjacks.llm.agentic_v2 import run_agentic_v2
+from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 
 
 def test_agentic_v2_direct():
@@ -86,7 +86,7 @@ def test_agentic_v2_direct():
     
     try:
         start_time = time.time()
-        result = run_agentic_v2(sample_text, config)
+        result = run_extraction_pipeline(sample_text, config)
         elapsed = time.time() - start_time
         
         print(f"   ✅ Extraction completed in {elapsed:.1f} seconds")

@@ -38,7 +38,7 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.handlers = void 0;
 var msw_1 = require("msw");
-var API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8001';
+var API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 exports.handlers = [
     // Simulation endpoints
     msw_1.http.post("".concat(API_URL, "/v1/simulation/paths"), function (_a) { return __awaiter(void 0, [_a], void 0, function (_b) {

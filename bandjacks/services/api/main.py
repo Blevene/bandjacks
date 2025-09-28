@@ -70,7 +70,7 @@ LOGGING_CONFIG = {
 }
 
 logging.config.dictConfig(LOGGING_CONFIG)
-from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, extract, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, extract_runs, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, sequence, simulate, analyze, entity_review, unified_review
+from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, sequence, simulate, analyze, entity_review, unified_review, actors, health
 from bandjacks.services.api.middleware import TracingMiddleware
 from bandjacks.services.api.middleware.error_handler import ErrorHandlerMiddleware
 from bandjacks.services.api.middleware.auth import JWTAuthMiddleware
@@ -82,6 +82,7 @@ from bandjacks.loaders.edge_embeddings import ensure_attack_edges_index
 from bandjacks.llm.cache import get_cache_stats, clear_cache
 from bandjacks.monitoring.compliance_metrics import get_compliance_report, get_compliance_metrics
 from bandjacks.services.technique_cache import technique_cache
+from bandjacks.services.actor_cache import actor_cache
 
 logger = logging.getLogger(__name__)
 logger.info(f"Logging configured: level={LOG_LEVEL}, file={LOG_FILE}")
@@ -129,15 +130,6 @@ app = FastAPI(
     ]
 )
 
-# Add CORS middleware for frontend development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],  # Frontend dev servers
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Add middleware (order matters - error handler should be first to catch all errors)
 app.add_middleware(ErrorHandlerMiddleware)
 
@@ -153,6 +145,22 @@ if settings.enable_auth:
 
 # Add tracing (should be after auth to capture user info)
 app.add_middleware(TracingMiddleware)
+
+# Add CORS middleware for frontend development (outermost to ensure headers on all responses/preflights)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:3002",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.on_event("startup")
 async def startup():
@@ -173,6 +181,16 @@ async def startup():
     except Exception as e:
         logger.error(f"Failed to load technique cache: {e}")
         # Continue startup even if cache fails - will fall back to direct queries
+    # Load actor cache for lookups/search
+    try:
+        actors_loaded = actor_cache.load_from_neo4j(
+            settings.neo4j_uri,
+            settings.neo4j_user,
+            settings.neo4j_password,
+        )
+        logger.info(f"ActorCache initialized with {actors_loaded} actors")
+    except Exception as e:
+        logger.error(f"Failed to load actor cache: {e}")
     
     try:
         ensure_attack_nodes_index(settings.opensearch_url, settings.os_index_nodes)
@@ -312,12 +330,15 @@ tags_metadata = [
 
 app.openapi_tags = tags_metadata
 
+# Health endpoints (no prefix so they're available at /health)
+app.include_router(health.router)
+
+# API routes with version prefix
 app.include_router(catalog.router, prefix=settings.api_prefix)
 app.include_router(stix_loader.router, prefix=settings.api_prefix)
 app.include_router(search.router, prefix=settings.api_prefix)
 app.include_router(mapper.router, prefix=settings.api_prefix)
 app.include_router(review.router, prefix=settings.api_prefix)
-app.include_router(extract.router, prefix=settings.api_prefix)
 app.include_router(query.router, prefix=settings.api_prefix)
 app.include_router(graph.router, prefix=settings.api_prefix)
 app.include_router(feedback.router, prefix=settings.api_prefix)
@@ -331,7 +352,6 @@ app.include_router(analyze.router, prefix=settings.api_prefix)
 app.include_router(analytics.router, prefix=settings.api_prefix)
 app.include_router(provenance.router, prefix=settings.api_prefix)
 app.include_router(drift.router, prefix=settings.api_prefix)
-app.include_router(extract_runs.router, prefix=settings.api_prefix)
 app.include_router(attackflow.router, prefix=settings.api_prefix)
 app.include_router(detections.router, prefix=settings.api_prefix)
 app.include_router(coverage.router, prefix=settings.api_prefix)
@@ -343,6 +363,7 @@ app.include_router(reports.router, prefix=settings.api_prefix)
 app.include_router(entity_review.router, prefix=settings.api_prefix)
 app.include_router(unified_review.router, prefix=settings.api_prefix)
 app.include_router(sequence.router, prefix=settings.api_prefix)
+app.include_router(actors.router, prefix=settings.api_prefix)
 
 # Cache management endpoints
 @app.get("/v1/cache/stats", tags=["monitoring"])
