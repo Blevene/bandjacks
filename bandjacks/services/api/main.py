@@ -70,7 +70,7 @@ LOGGING_CONFIG = {
 }
 
 logging.config.dictConfig(LOGGING_CONFIG)
-from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, sequence, simulate, analyze, entity_review, unified_review, actors
+from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, sequence, simulate, analyze, entity_review, unified_review, actors, health
 from bandjacks.services.api.middleware import TracingMiddleware
 from bandjacks.services.api.middleware.error_handler import ErrorHandlerMiddleware
 from bandjacks.services.api.middleware.auth import JWTAuthMiddleware
@@ -330,6 +330,10 @@ tags_metadata = [
 
 app.openapi_tags = tags_metadata
 
+# Health endpoints (no prefix so they're available at /health)
+app.include_router(health.router)
+
+# API routes with version prefix
 app.include_router(catalog.router, prefix=settings.api_prefix)
 app.include_router(stix_loader.router, prefix=settings.api_prefix)
 app.include_router(search.router, prefix=settings.api_prefix)

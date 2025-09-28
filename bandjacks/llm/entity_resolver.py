@@ -1,4 +1,9 @@
-"""Resolve extracted entities to existing STIX IDs in the knowledge base."""
+"""Resolve extracted entities to existing STIX IDs in the knowledge base.
+
+Module Status: EXPERIMENTAL
+Entity resolution to knowledge base, not fully integrated into production pipeline.
+May be used in future for entity deduplication across reports.
+"""
 
 import re
 import uuid

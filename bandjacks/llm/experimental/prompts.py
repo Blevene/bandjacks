@@ -1,4 +1,10 @@
-"""System prompts and templates for LLM extraction."""
+"""System prompts and templates for LLM extraction.
+
+Module Status: EXPERIMENTAL
+Legacy prompt templates, not used in production extraction pipeline.
+Production agents define their prompts inline. Only used by tests.
+Consider for removal or refactoring into test utilities.
+"""
 
 SYSTEM_PROMPT = """You are an expert Cyber Threat Intelligence (CTI) analyst specializing in semantic information extraction for the Bandjacks threat intelligence system.
 

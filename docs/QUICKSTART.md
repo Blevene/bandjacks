@@ -106,20 +106,26 @@ Expected output:
 
 ### 3. Extract TTPs from Text
 
-Analyze a threat report (async extraction runs recommended):
+Analyze a threat report:
 
 ```bash
-# Start async run
-curl -s -X POST http://localhost:8000/v1/extract/runs \
+# For small reports (synchronous)
+curl -s -X POST http://localhost:8000/v1/reports/ingest \
   -H "Content-Type: application/json" \
   -d '{
-    "method": "agentic_v2",
     "content": "APT29 uses spearphishing emails with malicious PDF attachments. They establish persistence using scheduled tasks and registry keys.",
     "title": "Sample Report",
-    "config": {"top_k": 5, "min_quotes": 2}
+    "config": {"top_k": 5, "span_score_threshold": 0.7}
   }'
 
-# Then poll status and fetch result with the returned run_id
+# For large reports (asynchronous) - returns job_id to poll
+curl -s -X POST http://localhost:8000/v1/reports/ingest_async \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "[large report text here]",
+    "title": "Large Report",
+    "config": {"use_optimized_extractor": true}
+  }'
 ```
 
 Returns mapped techniques:
@@ -168,7 +174,12 @@ This creates **co-occurrence models** (not sequential) because intrusion sets do
 ### Analyze a PDF Report
 
 ```bash
-# Extract text locally, then start async extraction
+# Option 1: Upload PDF directly (recommended)
+curl -X POST http://localhost:8000/v1/reports/ingest/upload \
+  -F "file=@samples/reports/new-darkcloud-stealer-infection-chain.pdf" \
+  -F 'config={"use_optimized_extractor": true, "top_k": 5}'
+
+# Option 2: Extract text locally first
 python - <<'PY'
 from pathlib import Path
 import pdfplumber, requests
@@ -179,13 +190,21 @@ with pdfplumber.open(pdf) as doc:
         t = p.extract_text() or ""
         if t: parts.append(t)
 text = "\n\n".join(parts)
-resp = requests.post("http://localhost:8000/v1/extract/runs", json={
-  "method": "agentic_v2",
-  "content": text,
-  "title": "Darkcloud Stealer",
-  "config": {"top_k": 5, "disable_discovery": true, "min_quotes": 2}
-})
-print(resp.json())
+# Use async for large PDFs
+if len(text) > 5000:
+    resp = requests.post("http://localhost:8000/v1/reports/ingest_async", json={
+      "content": text,
+      "title": "Darkcloud Stealer",
+      "config": {"use_optimized_extractor": true, "top_k": 5}
+    })
+    print(f"Job ID: {resp.json()['job_id']}")
+else:
+    resp = requests.post("http://localhost:8000/v1/reports/ingest", json={
+      "content": text,
+      "title": "Darkcloud Stealer",
+      "config": {"top_k": 5}
+    })
+    print(resp.json())
 PY
 ```
 
@@ -204,52 +223,49 @@ curl -X POST http://localhost:8000/v1/review/mapping \
   }'
 ```
 
-### Use LLM Extraction
+### Process Reports with the Pipeline
 
 ```bash
-# Extract with GPT-5
-curl -X POST http://localhost:8000/v1/llm/extract \
+# Process a report and get STIX bundle
+curl -X POST http://localhost:8000/v1/reports/ingest \
   -H "Content-Type: application/json" \
   -d '{
-    "text": "Lazarus group deploys ransomware after lateral movement using RDP"
-  }'
-```
-
-### Generate STIX Bundle
-
-```bash
-# Convert extraction to STIX
-curl -X POST http://localhost:8000/v1/llm/to-stix \
-  -H "Content-Type: application/json" \
-  -d '{
-    "llm_output": {
-      "claims": [...]
-    },
-    "source_metadata": {
-      "source_id": "report-123"
+    "content": "Lazarus group deploys ransomware after lateral movement using RDP",
+    "title": "Lazarus Ransomware",
+    "config": {
+      "use_optimized_extractor": true,
+      "generate_stix": true
     }
   }'
 ```
+
+The extraction pipeline automatically:
+- Detects behavioral spans
+- Maps to ATT&CK techniques
+- Generates STIX bundles
+- Extracts entities (threat actors, malware, etc.)
 
 ## API Documentation
 
 - **API Explorer**: http://localhost:8000/docs
 - **Full Documentation**: [API Reference](./api/README.md)
 
-## Extraction Engines
+## Extraction Pipeline
 
-Bandjacks offers three extraction engines:
+Bandjacks uses an optimized multi-agent extraction pipeline:
 
-| Engine | Speed | Accuracy | Best For |
-|--------|-------|----------|----------|
-| **vector** | Fast (~200ms) | Good | High-volume processing |
-| **llm** | Slower (~2s) | Excellent | Detailed analysis |
-| **hybrid** | Medium (~1.5s) | Best | Critical documents |
+| Component | Purpose | Performance |
+|-----------|---------|-------------|
+| **SpanFinder** | Detects behavioral text spans | ~100ms per chunk |
+| **BatchMapper** | Maps spans to ATT&CK techniques | ~500ms batch processing |
+| **Consolidator** | Deduplicates and merges evidence | ~200ms |
+| **OptimizedChunkedExtractor** | Handles large documents | Processes 15KB PDFs in 30-60s |
 
-Choose based on your needs:
-- Use `vector` for real-time processing
-- Use `llm` for comprehensive extraction with rationales
-- Use `hybrid` for highest accuracy
+Configuration options:
+- `use_optimized_extractor`: Enable for large documents (default: true)
+- `chunk_size`: Text chunk size (default: 2000)
+- `max_chunks`: Maximum chunks to process (default: 100)
+- `span_score_threshold`: Minimum span confidence (default: 0.7)
 
 ## Monitoring
 

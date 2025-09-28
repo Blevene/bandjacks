@@ -1,3 +1,11 @@
+"""Core extraction agents for the LLM pipeline.
+
+Module Status: PRODUCTION
+Contains all primary extraction agents used in the production pipeline:
+SpanFinderAgent, BatchRetrieverAgent, DiscoveryAgent, BatchMapperAgent,
+EvidenceVerifierAgent, ConsolidatorAgent, and AssemblerAgent.
+"""
+
 import re
 import json
 import logging

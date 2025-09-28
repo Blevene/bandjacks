@@ -1,4 +1,9 @@
-"""Rate limiting for LLM API calls."""
+"""Rate limiting for LLM API calls.
+
+Module Status: DEPRECATED
+This module is deprecated. Use bandjacks.services.api.middleware.rate_limit instead.
+This module will be removed in a future version.
+"""
 
 import asyncio
 import time
@@ -6,8 +11,17 @@ import os
 from typing import Dict, Optional
 from threading import Lock
 import logging
+import warnings
 
 logger = logging.getLogger(__name__)
+
+# Show deprecation warning when module is imported
+warnings.warn(
+    "bandjacks.llm.rate_limiter is deprecated. "
+    "Use bandjacks.services.api.middleware.rate_limit instead.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 
 class RateLimiter:

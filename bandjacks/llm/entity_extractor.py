@@ -33,7 +33,7 @@ CRITICAL: Distinguish between malware and tool:
 - TOOL: Legitimate software misused by attackers (system utilities, admin tools, etc.)
 
 Key extraction rules:
-1. Extract EVERY unique named entity you find
+1. Extract only CONTEXTUALLY relevant entities
 2. Correctly classify software as "malware" or "tool" based on its intended purpose
 3. Include all aliases and alternate names as separate entities
 4. Look everywhere: title, summary, body text, conclusions
@@ -97,7 +97,7 @@ IMPORTANT: Distinguish between malware and tools:
 TEXT TO ANALYZE:
 {document_text}
 
-Extract EVERY named entity with evidence. For each entity, include:
+Extract only CONTEXTUALLY relevant entities. For each entity, include:
 1. The exact quote/sentence where it appears
 2. Your confidence score (0-100)
 3. The context (primary_mention, alias, or coreference)

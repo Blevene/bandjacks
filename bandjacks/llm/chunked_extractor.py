@@ -1,4 +1,9 @@
-"""Chunked document extraction for handling large PDFs efficiently."""
+"""Chunked document extraction for handling large PDFs efficiently.
+
+Module Status: PRODUCTION
+Base chunked extraction implementation for processing large documents.
+Handles documents by splitting into manageable chunks for LLM processing.
+"""
 
 import re
 import logging

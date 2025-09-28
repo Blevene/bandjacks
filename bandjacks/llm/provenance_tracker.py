@@ -1,4 +1,9 @@
-"""Track and manage provenance metadata for extracted CTI data."""
+"""Track and manage provenance metadata for extracted CTI data.
+
+Module Status: EXPERIMENTAL
+Provenance tracking system for extraction lineage, not currently integrated.
+Planned for future use in tracking extraction sources and modifications.
+"""
 
 import hashlib
 import json
