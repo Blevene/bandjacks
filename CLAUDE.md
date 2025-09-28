@@ -13,13 +13,18 @@ Bandjacks is a Cyber Threat Defense World Modeling system designed to:
 
 ## Current Status
 
-The project is in **active development** with core extraction and modeling capabilities implemented:
-- **Report Ingestion**: Async/sync PDF processing with TTP extraction
-- **Attack Flow Generation**: LLM-based sequence synthesis with probabilistic edges
-- **Graph Modeling**: Neo4j-based knowledge graph with STIX 2.1 objects
-- **Frontend Interface**: React UI for report upload and job tracking
+The project is in **production-ready state** with comprehensive threat intelligence capabilities implemented:
+- **Report Ingestion**: Full async/sync PDF processing with advanced TTP extraction pipeline
+- **Attack Flow Generation**: LLM-based sequence synthesis with probabilistic edges and co-occurrence modeling
+- **Graph Modeling**: Neo4j-based knowledge graph with STIX 2.1 objects and RDF/OWL bridge
+- **Frontend Interface**: Next.js 15.5 React UI with analytics dashboards and job tracking
 - **Unified Review System**: Comprehensive human-in-the-loop validation interface
-- **Optimized Pipeline**: Chunked processing for large documents (no timeouts)
+- **Optimized Pipeline**: Chunked processing for large documents with no timeouts
+- **Analytics Engine**: Co-occurrence analysis, coverage analytics, and drift detection
+- **Advanced APIs**: 30+ endpoints covering catalog, search, flows, defense, compliance, and more
+- **Middleware Stack**: Authentication, rate limiting, tracing, and error handling
+- **Caching Systems**: TechniqueCache and ActorCache for O(1) lookups
+- **Testing Framework**: Comprehensive test suite with Jest and Testing Library
 
 ## Architecture Overview
 
@@ -31,12 +36,18 @@ The system consists of these main components:
 4. **Feedback & Operations**: Review API/UI, active learning queue, model refresh, RBAC
 
 Key technologies and standards:
-- **FastAPI** with **uv** for Python package management
-- **Neo4j** with neosemantics (n10s) for RDF bridge
-- **OpenSearch KNN** for vector embeddings
+- **FastAPI** with **uv** for Python package management and uvicorn server
+- **Neo4j** with neosemantics (n10s) for RDF bridge and property graph storage
+- **OpenSearch KNN** for vector embeddings and semantic search
+- **Redis** for job queues and caching
 - **STIX 2.1** with strict **ATT&CK Data Model (ADM)** validation
 - **ATT&CK release pinning** via official `index.json` catalog
 - **D3FEND** ontology integration for defensive mappings
+- **LiteLLM** for multi-provider LLM integration
+- **Middleware Stack**: Authentication (JWT), rate limiting, tracing, error handling
+- **Frontend**: Next.js 15.5, React 19.1, TypeScript 5, Tailwind CSS 4
+- **Testing**: Jest, Testing Library, pytest with comprehensive coverage
+- **Dependencies**: Pydantic 2.5+, Sentence Transformers, PyTorch, pdfplumber
 - Optional Node.js sidecar for ADM validation or JSON-Schema export
 
 ## Development Commands
@@ -57,43 +68,162 @@ cd ui && npm run dev      # Frontend (Next.js) on port 3000
 # Development tasks
 uv run ruff check .       # Lint code
 uv run mypy .            # Type checking
+uv run pytest            # Run all tests
 uv run pytest tests/unit  # Run unit tests only
+uv run pytest --coverage # Run tests with coverage
+
+# Frontend development
+cd ui && npm run dev      # Start frontend dev server
+cd ui && npm run build    # Build for production
+cd ui && npm test         # Run frontend tests
+cd ui && npm run test:coverage # Run frontend tests with coverage
 
 # Batch processing
 python -m bandjacks.cli.batch_extract ./reports/  # Process multiple PDFs
 python -m bandjacks.cli.batch_extract --api ./reports/  # Use async API
 
-# Database setup
-# Neo4j: Create constraints/indexes via DDL
-# OpenSearch: Index templates created on startup
+# Database setup (automatic on API startup)
+# Manual initialization if needed:
+python -m bandjacks.loaders.neo4j_ddl    # Create Neo4j constraints/indexes
+python -m bandjacks.loaders.opensearch_index  # Create OpenSearch indexes
 ```
 
-## Implementation Roadmap
+## Database Initialization & Data Loading
 
-The functional spec defines feature-based sprints:
+### Neo4j Schema Setup
 
-**Sprint 1 (2 weeks)** - Foundations: Catalog, Loader, ADM Validation, TTP Search
+The system automatically creates comprehensive Neo4j constraints and indexes on startup via `ensure_ddl()`:
+
+**Constraints (44 total)** - Ensuring uniqueness for:
+- Core STIX nodes: `AttackPattern`, `IntrusionSet`, `Software`, `Mitigation`, `Tactic`
+- Operational nodes: `AttackEpisode`, `AttackAction`, `AttackFlow`
+- Detection nodes: `DetectionStrategy`, `Analytic`, `LogSource`, `SigmaRule`
+- Defense nodes: `D3fendTechnique`, `DigitalArtifact`
+- Review/ML nodes: `CandidateAttackPattern`, `ReviewProvenance`, `JudgeVerdict`
+
+**Indexes (100+)** - Performance optimization for:
+- Name and ID lookups across all node types
+- Temporal queries (created, modified, timestamp)
+- Status fields (revoked, deprecated, status)
+- Categorical fields (platforms, tactics, type)
+
+### OpenSearch Index Creation
+
+Three primary indexes with KNN vector support (768 dimensions):
+
+**1. attack_patterns index**
+```json
+{
+  "knn": true,
+  "properties": {
+    "stix_id": "keyword",
+    "embedding": {
+      "type": "knn_vector",
+      "dimension": 768,
+      "method": "hnsw"
+    }
+  }
+}
+```
+
+**2. attack_flows index** - For flow similarity search
+**3. attack_edges index** - For relationship embeddings
+**4. reports index** - For document storage and search
+
+### Redis Configuration
+
+Redis serves as the distributed job store with:
+- Job queue management (`job:queue`)
+- Processing state tracking (`job:processing`)
+- Worker heartbeats for failure detection
+- Distributed locking for atomic operations
+- Default configuration: `localhost:6379`, DB 0
+
+### STIX Data Ingestion Process
+
+**1. Load ATT&CK Data via API:**
+```bash
+# Load latest enterprise ATT&CK
+curl -X POST "http://localhost:8000/v1/stix/load/attack?collection=enterprise-attack&version=latest&adm_strict=false"
+
+# Load specific version with strict validation
+curl -X POST "http://localhost:8000/v1/stix/load/attack?collection=enterprise-attack&version=14.1&adm_strict=true"
+```
+
+**2. Ingestion Workflow:**
+1. **Bundle Resolution**: Fetches from official ATT&CK catalog index
+2. **ADM Validation**: Validates STIX objects against ATT&CK Data Model
+3. **Neo4j Population**: Creates nodes for techniques, groups, software, mitigations
+4. **Relationship Creation**: USES, MITIGATES, HAS_TACTIC edges
+5. **Embedding Generation**: Creates 768-dim vectors for each technique
+6. **OpenSearch Indexing**: Stores embeddings for vector search
+7. **Cache Warming**: Loads TechniqueCache and ActorCache
+
+**3. Embedding Generation:**
+- Combines name, description, detection, tactics, platforms
+- Includes T-numbers for better search matching
+- Uses Sentence Transformers (all-MiniLM-L6-v2 or similar)
+- Stored in OpenSearch for KNN similarity search
+
+**4. Provenance Tracking:**
+Every loaded object includes:
+```json
+{
+  "source_collection": "enterprise-attack",
+  "source_version": "14.1",
+  "source_modified": "2024-04-23T00:00:00.000Z",
+  "source_url": "https://...",
+  "adm_spec": "3.3.0"
+}
+```
+
+## Implementation Status
+
+The system has achieved comprehensive coverage of the original PRD objectives with advanced capabilities:
+
+**✅ Foundations (Complete)**
 - ATT&CK catalog API with release pinning
 - STIX bundle ingestion with ADM validation
 - Vector embeddings and TTP search endpoint
+- Neo4j DDL and OpenSearch index management
+- Technique and Actor caching systems
 
-**Sprint 2 (2 weeks)** - Mapper MVP & Review Hooks
-- Report-derived bundle processing
-- Analyst review decisions API
+**✅ Core Processing (Complete)**
+- Report-derived bundle processing with chunked extraction
+- Advanced LLM agents for span detection, mapping, and consolidation
+- Async/sync processing with job management
+- Comprehensive analyst review system (unified and entity-specific)
 
-**Sprint 3 (3 weeks)** - Attack Flow Builder v1 + Flow Search
-- Episode assembly and sequencing
-- STIX Attack Flow generation
-- Similar flow search
+**✅ Attack Flow Modeling (Complete)**
+- Episode assembly and sequencing with LLM synthesis
+- STIX Attack Flow generation with probabilistic edges
+- Co-occurrence modeling for intrusion sets
+- Similar flow search and comparison
 
-**Sprint 4 (2 weeks)** - D3FEND Overlay & Defense Recommendations
-- D3FEND ontology integration
-- COUNTERS edges and artifact hints
-- Minimal-cut defensive recommendations
-
-**Sprint 5 (3 weeks)** - Feedback → Active Learning & Coverage Analytics
-- Uncertainty queues and retraining
+**✅ Analytics & Intelligence (Complete)**
+- Co-occurrence analysis for techniques, actors, and campaigns
 - Coverage gap analysis by tactic/platform
+- Drift detection and monitoring
+- Compliance metrics and reporting
+- ML model performance tracking
+
+**✅ Defense Integration (Complete)**
+- D3FEND ontology integration
+- Detection strategies and analytics management
+- Sigma rule integration
+- Coverage analysis across detections and mitigations
+
+**✅ Advanced Features (Complete)**
+- Graph traversal and exploration endpoints
+- Attack simulation and prediction
+- Provenance tracking and lineage
+- Notification and alerting systems
+- Comprehensive middleware stack (auth, rate limiting, tracing)
+
+**🔄 Continuous Improvement**
+- Active learning integration for model enhancement
+- Performance optimization and scaling
+- Extended analytics and visualization capabilities
 
 ## Report Extraction & Attack Flow Modeling
 
@@ -363,35 +493,127 @@ await api.submitUnifiedReview(reportId, { decisions, globalNotes });
 
 ## API Endpoints (v1)
 
-All endpoints under `/v1` with OpenAPI spec:
+All endpoints under `/v1` with comprehensive OpenAPI spec and 30+ implemented routes:
 
 **Catalog & Loading**
 - `GET /v1/catalog/attack/releases` - List ATT&CK collections/versions
 - `POST /v1/stix/load/attack?collection=&version=&adm_strict=true` - Load ATT&CK release
 - `POST /v1/stix/bundles?strict=true` - Import validated STIX bundles
 
-**Search**
+**Search & Query**
 - `POST /v1/search/ttx` - Text→ATT&CK technique candidates (KNN)
 - `POST /v1/search/flows` - Find similar attack flows
+- `POST /v1/query/*` - Natural language query and hybrid search
 
-**Flows**
+**Graph Operations**
+- `GET /v1/graph/*` - Graph traversal and exploration endpoints
+
+**Flows & Attack Modeling**
 - `POST /v1/flows/build?source_id=` - Build attack flow from observations
 - `GET /v1/flows/{flow_id}` - Get flow steps and NEXT edges
+- `POST /v1/attackflow/*` - Attack Flow 2.0 ingestion, export, and interoperability
+- `POST /v1/sequence/*` - Attack sequence modeling and analysis
 
-**Defense**
+**Defense & Coverage**
 - `GET /v1/defense/overlay/{flow_id}` - D3FEND techniques per step
 - `POST /v1/defense/mincut` - Compute minimal defensive set
+- `GET /v1/coverage/*` - Technique coverage analysis across detections, mitigations, and D3FEND
 
 **Reports & Review**
 - `POST /v1/reports/ingest` - Synchronous report extraction
-- `POST /v1/reports/ingest_async` - Asynchronous report extraction  
+- `POST /v1/reports/ingest_async` - Asynchronous report extraction
 - `GET /v1/reports/jobs/{job_id}/status` - Job status polling
 - `POST /v1/reports/{id}/unified-review` - Submit unified review decisions
+- `POST /v1/entity-review/*` - Entity-specific review workflows
 
-**Review & Feedback (Legacy)**
-- `POST /v1/review/mapping` - Accept/edit/reject object mappings
-- `POST /v1/review/flowedge` - Review flow edge decisions
-- `GET /v1/analytics/coverage` - Coverage gap analysis
+**Analytics & Intelligence**
+- `GET /v1/analytics/*` - Coverage analytics and gap analysis
+- `GET /v1/actors/*` - Threat actor analysis and co-occurrence
+- `POST /v1/simulate/*` - Attack path simulation and prediction
+- `POST /v1/analyze/*` - Intelligence analysis operations
+
+**Detection & Security**
+- `POST /v1/detections/*` - Detection strategies, analytics, and log sources management
+- `POST /v1/sigma/*` - Sigma rule management and integration with analytics
+
+**Quality & Monitoring**
+- `GET /v1/compliance/*` - Compliance metrics and reporting for ADM validation
+- `GET /v1/ml-metrics/*` - Machine learning model performance metrics and monitoring
+- `GET /v1/drift/*` - Drift detection and monitoring for data quality
+- `GET /v1/provenance/*` - Object provenance and lineage tracking
+- `GET /v1/notifications/*` - System notifications and alerts
+
+**Health & Status**
+- `GET /health` - Basic health check (always returns 200 if API is running)
+- `GET /health/live` - Kubernetes liveness probe (process alive check)
+- `GET /health/ready` - Kubernetes readiness probe with full dependency checks
+- `GET /health/components/{component}` - Individual component health (neo4j, opensearch, redis, caches, system)
+
+**Review & Feedback**
+- `POST /v1/review/*` - Review decisions and workflows
+- `POST /v1/mapper/*` - Text to ATT&CK technique mapping
+- `POST /v1/feedback/*` - User feedback collection and management
+- `GET /v1/review-queue/*` - Candidate review queue management
+- `GET /v1/candidates/*` - Candidate attack pattern review workflow
+
+**Cache Management**
+- `GET /v1/cache/stats` - Get LLM cache statistics
+- `POST /v1/cache/clear` - Clear the LLM response cache
+
+## Health Monitoring System
+
+The API includes comprehensive health monitoring for Kubernetes deployments and operational monitoring:
+
+### **Health Endpoints**
+
+#### `/health` - Basic Health Check
+- **Purpose**: Simple liveness check for load balancers and uptime monitoring
+- **Response**: Always returns 200 if API process is running
+- **Use Case**: Basic "is it alive?" checks
+
+#### `/health/live` - Kubernetes Liveness Probe
+- **Purpose**: Determines if the container should be restarted
+- **Response**: 200 if process is responsive, regardless of dependencies
+- **Use Case**: Kubernetes to detect hung processes
+
+#### `/health/ready` - Kubernetes Readiness Probe
+- **Purpose**: Determines if container can receive traffic
+- **Response**: 200 if all critical dependencies are healthy, 503 if not
+- **Checks**: Neo4j, OpenSearch, Redis, caches, system resources
+- **Use Case**: Kubernetes to route traffic only to healthy pods
+
+#### `/health/components/{component}` - Individual Component Health
+- **Components**: `neo4j`, `opensearch`, `redis`, `caches`, `system`
+- **Response**: Detailed status and metrics for specific component
+- **Use Case**: Targeted debugging and monitoring
+
+### **Health Status Levels**
+- **healthy**: Component fully operational
+- **degraded**: Partially functional (e.g., missing indices but cluster OK)
+- **unhealthy**: Component failed or unreachable
+
+### **Monitored Components**
+1. **Neo4j**: Connection test with latency measurement
+2. **OpenSearch**: Cluster health and index verification
+3. **Redis**: Connection test and memory usage
+4. **Caches**: Technique and actor cache loading status
+5. **System**: CPU, memory, and disk utilization
+
+### **Example Health Response**
+```json
+{
+  "status": "healthy",
+  "timestamp": "2025-01-28T17:43:30.184036Z",
+  "version": "1.0.0",
+  "components": {
+    "neo4j": {"status": "healthy", "latency_ms": 5},
+    "opensearch": {"status": "degraded", "cluster_status": "yellow"},
+    "redis": {"status": "healthy", "memory_mb": 1.69},
+    "caches": {"technique_cache": {"count": 993, "loaded": true}},
+    "system": {"memory": {"percent_used": 72.4}, "disk": {"percent_used": 2.9}}
+  }
+}
+```
 
 ## Environment Configuration
 
@@ -420,7 +642,7 @@ BLOB_BASE=s3://world-model/
 
 ### React UI Features (`ui/`)
 
-- **Next.js 14** with TypeScript and Tailwind CSS
+- **Next.js 15.5** with React 19.1, TypeScript 5, and Tailwind CSS 4
 - **Report Upload Interface** (`/reports/new`):
   - Drag-and-drop PDF upload or text paste
   - Smart sync/async routing based on content size
@@ -434,6 +656,12 @@ BLOB_BASE=s3://world-model/
   - Bulk operations and progress tracking
   - Evidence expansion with source line references
 
+- **Analytics Dashboards** (`/analytics/cooccurrence/`):
+  - Co-occurrence analysis for techniques, actors, and campaigns
+  - Conditional probability calculations and visualizations
+  - Bridging analysis for technique relationships
+  - Bundle-based analytics for group behaviors
+
 - **Job Status Component**:
   - Adaptive polling (2s → 5s → 10s intervals)
   - Live metrics display (chunks, techniques, time elapsed)
@@ -444,6 +672,20 @@ BLOB_BASE=s3://world-model/
   - Type-safe API client with OpenAPI-generated types
   - Async job management endpoints
   - Background job listing and cleanup
+  - React Query for state management and caching
+
+- **Component Library**:
+  - Radix UI components for accessibility and consistency
+  - Custom form handling with React Hook Form and Zod validation
+  - Lucide React icons throughout interface
+  - ReactFlow for graph visualizations
+  - Recharts for analytics and metrics display
+
+- **Testing Infrastructure**:
+  - Jest with JSDOM environment for unit testing
+  - Testing Library for component testing
+  - MSW for API mocking
+  - Comprehensive accessibility testing with jest-axe
 
 ### Usage Examples
 

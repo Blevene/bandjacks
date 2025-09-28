@@ -206,10 +206,18 @@ These modules are actively used in the extraction pipeline and must be preserved
 - **Result**: All documentation now references only current modules and endpoints
 - **Commit**: "Remove outdated extraction guide documentation"
 
-#### Task 4.2: Add Deprecation Notices
-- [ ] Add deprecation warnings to any modules scheduled for future removal
-- [ ] Update docstrings to indicate module status (production/experimental/deprecated)
-- **Commit**: "Add module status indicators"
+#### Task 4.2: Add Deprecation Notices ✅ COMPLETED (2025-01-24)
+- [x] Add deprecation warnings to any modules scheduled for future removal
+  - Added runtime deprecation warnings to rate_limiter.py and tactic_priors.py
+- [x] Update docstrings to indicate module status (production/experimental/deprecated)
+  - Added MODULE STATUS to all key modules (agents_v2.py, flow_builder.py, etc.)
+  - Marked experimental modules (sequence_proposal.py, entity_resolver.py, provenance_tracker.py)
+  - Marked deprecated modules with clear alternatives
+- [x] Updated outdated README.md to reflect current module structure
+- [x] Moved prompts.py to experimental/ (not used in production, only in tests)
+  - Updated test_llm_integration.py import path
+  - Added EXPERIMENTAL status to prompts.py
+- **Commit**: "Add module status indicators and deprecation notices"
 
 #### Task 4.3: Update Import Organization
 - [ ] Update `__init__.py` to expose only production modules

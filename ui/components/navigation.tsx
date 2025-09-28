@@ -10,6 +10,7 @@ import {
   AlertCircle,
   FileText,
   Network,
+  Activity,
 } from "lucide-react";
 
 const navigation = [
@@ -17,6 +18,7 @@ const navigation = [
   { name: "Reports", href: "/reports", icon: FileText },
   { name: "New Report", href: "/reports/new", icon: Upload },
   { name: "Co-occurrence", href: "/analytics/cooccurrence", icon: Network },
+  { name: "Health Status", href: "/health", icon: Activity },
 ];
 
 export function Navigation() {

@@ -1321,11 +1321,11 @@ async def search_attribution_candidates(
     results = []
     
     # Get intrusion sets
-    for record in neo4j_session.run(intrusion_query, query=query):
+    for record in neo4j_session.run(intrusion_query, parameters={"query": query}):
         results.append(dict(record))
     
     # Get malware/tools
-    for record in neo4j_session.run(malware_query, query=query):
+    for record in neo4j_session.run(malware_query, parameters={"query": query}):
         results.append(dict(record))
     
     return {

@@ -1,4 +1,9 @@
-"""Optimized chunked document extraction with smart span detection."""
+"""Optimized chunked document extraction with smart span detection.
+
+Module Status: PRODUCTION
+Optimized version of chunked extraction with parallel processing support.
+Used by async API endpoints for large document processing.
+"""
 
 import os
 import re

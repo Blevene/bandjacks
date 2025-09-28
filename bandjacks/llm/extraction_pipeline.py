@@ -1,7 +1,10 @@
 """Unified extraction and flow generation pipeline.
 
+Module Status: PRODUCTION
 This module consolidates the extraction, embedding, and flow generation
 into a single coherent pipeline with review workflow integration.
+
+Primary entry point for all report extraction and attack flow generation.
 """
 
 import logging

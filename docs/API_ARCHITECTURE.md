@@ -195,22 +195,31 @@ POST /query/graph
 
 ### **Processing & Analysis Routes**
 
-#### **Extract Routes (`/v1/extract/`)**
+#### **Report Ingestion Routes (`/v1/reports/`)**
 ```python
-POST /extract/pdf
-# Extract techniques from PDF document
+POST /reports/ingest
+# Synchronous ingestion for small reports (<5KB)
+# Request: { "text": "...", "title": "Report Title" }
+# Response: Extraction results with techniques and entities
+
+POST /reports/ingest/upload
+# Synchronous file upload (PDF, TXT, MD, HTML)
 # Request: Multipart file upload
 # Response: Extraction results with techniques and confidence
 
-POST /extract/text  
-# Extract techniques from text
-# Request: { "text": "...", "config": { "confidence_threshold": 50 } }
-# Response: Extraction results
+POST /reports/ingest_async
+# Asynchronous ingestion for large reports (>5KB)
+# Request: { "text": "...", "title": "Report Title" }
+# Response: Job ID for status tracking
 
-POST /extract/url
-# Extract techniques from URL content  
-# Request: { "url": "https://...", "config": {} }
-# Response: Extraction job ID for async processing
+POST /reports/ingest_file_async
+# Asynchronous file upload for large documents
+# Request: Multipart file upload
+# Response: Job ID for status tracking
+
+GET /reports/jobs/{job_id}/status
+# Check async job status
+# Response: Job progress and results
 ```
 
 #### **Flow Routes (`/v1/flows/`)**
@@ -278,6 +287,36 @@ POST /review/flowedge
 ```
 
 ### **Analytics & Monitoring Routes**
+
+#### **Health Monitoring Routes (`/health`)**
+```python
+GET  /health
+# Basic health check endpoint (always returns 200 if API is running)
+# Response: {"status": "ok", "timestamp": "...", "version": "1.0.0"}
+
+GET  /health/live
+# Kubernetes liveness probe - checks if process is alive
+# Response: {"status": "alive", "timestamp": "..."}
+
+GET  /health/ready
+# Kubernetes readiness probe - full dependency checks
+# Returns 503 if critical dependencies are unhealthy
+# Response: {
+#   "status": "healthy|degraded|unhealthy",
+#   "components": {
+#     "neo4j": {"status": "healthy", "latency_ms": 5},
+#     "opensearch": {"status": "degraded", "cluster_status": "yellow"},
+#     "redis": {"status": "healthy", "memory_mb": 1.69},
+#     "caches": {"technique_cache": {"count": 993, "loaded": true}},
+#     "system": {"memory": {"percent_used": 72.4}}
+#   }
+# }
+
+GET  /health/components/{component}
+# Individual component health check
+# Components: neo4j, opensearch, redis, caches, system
+# Response: Detailed component status and metrics
+```
 
 #### **Analytics Routes (`/v1/analytics/`)**
 ```python
@@ -422,57 +461,58 @@ from pydantic import BaseModel, Field, validator
 from typing import List, Optional
 from datetime import datetime
 
-class TechniqueExtractionRequest(BaseModel):
-    """Request model for technique extraction."""
-    
+class ReportIngestionRequest(BaseModel):
+    """Request model for report ingestion."""
+
     text: str = Field(..., min_length=10, max_length=100000)
-    confidence_threshold: float = Field(50.0, ge=0, le=100)
-    max_techniques: int = Field(20, ge=1, le=100)
-    include_evidence: bool = Field(True)
+    title: Optional[str] = Field(None, max_length=500)
+    use_batch_mapper: bool = Field(True)
+    skip_verification: bool = Field(False)
     config: Optional[dict] = Field(default_factory=dict)
-    
+
     @validator('text')
     def validate_text_content(cls, v):
         if not v.strip():
             raise ValueError('Text cannot be empty')
         return v.strip()
-    
+
     @validator('config')
     def validate_config(cls, v):
-        allowed_keys = {'chunk_size', 'max_chunks', 'use_batch_mapper'}
+        allowed_keys = {'chunk_size', 'max_chunks', 'use_optimized_extractor', 'confidence_threshold'}
         if not set(v.keys()).issubset(allowed_keys):
             raise ValueError(f'Config keys must be subset of {allowed_keys}')
         return v
 
-class TechniqueExtractionResponse(BaseModel):
-    """Response model for technique extraction."""
-    
-    success: bool
-    techniques_count: int
-    claims: List[TechniqueClaim]
-    confidence_avg: float
-    extraction_time_ms: int
-    metadata: dict
-    
+class ReportIngestionResponse(BaseModel):
+    """Response model for report ingestion."""
+
+    report_id: str
+    status: str
+    extraction: Optional[ExtractionResult]
+    job_id: Optional[str]  # For async processing
+
     class Config:
         schema_extra = {
             "example": {
-                "success": True,
-                "techniques_count": 5,
-                "claims": [
-                    {
-                        "external_id": "T1566.001",
-                        "name": "Spearphishing Attachment",
-                        "confidence": 92.0,
-                        "quotes": ["malicious email attachments"],
-                        "line_refs": [45, 46]
-                    }
-                ],
-                "confidence_avg": 87.5,
-                "extraction_time_ms": 2340,
-                "metadata": {
-                    "chunks_processed": 3,
-                    "llm_calls": 1
+                "report_id": "report--abc123",
+                "status": "pending_review",
+                "extraction": {
+                    "techniques_count": 5,
+                    "claims": [
+                        {
+                            "external_id": "T1566.001",
+                            "name": "Spearphishing Attachment",
+                            "confidence": 92.0,
+                            "quotes": ["malicious email attachments"],
+                            "line_refs": [45, 46]
+                        }
+                    ],
+                    "entities": {
+                        "entities": [
+                            {"name": "APT29", "type": "group", "confidence": 90}
+                        ]
+                    },
+                    "confidence_avg": 87.5
                 }
             }
         }
@@ -769,115 +809,90 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 ### **Rate Limiting Implementation**
 ```python
-from aiolimiter import AsyncLimiter
-from fastapi import HTTPException
-import hashlib
+from fastapi import HTTPException, Request
+from fastapi.responses import JSONResponse
+from bandjacks.services.api.middleware.rate_limit import RateLimitMiddleware
+import time
 
-class RateLimiter:
-    """Flexible rate limiting implementation."""
-    
-    def __init__(self):
-        self.limiters = {}
-        self.default_limiter = AsyncLimiter(100, 60)  # 100 requests per minute
-    
-    def get_client_id(self, request: Request) -> str:
-        """Extract client identifier from request."""
-        
-        # Try API key first
-        api_key = request.headers.get('x-api-key')
-        if api_key:
-            return f"api_key:{hashlib.sha256(api_key.encode()).hexdigest()[:8]}"
-        
-        # Try JWT token
-        auth_header = request.headers.get('authorization')
-        if auth_header and auth_header.startswith('Bearer '):
-            token = auth_header.split(' ')[1]
-            try:
-                payload = jwt.decode(token, options={"verify_signature": False})
-                return f"user:{payload.get('sub', 'unknown')}"
-            except:
-                pass
-        
-        # Fall back to IP address
-        forwarded_for = request.headers.get('x-forwarded-for')
-        if forwarded_for:
-            client_ip = forwarded_for.split(',')[0].strip()
-        else:
-            client_ip = request.client.host
-        
-        return f"ip:{client_ip}"
-    
-    def get_limiter(self, client_id: str, endpoint: str) -> AsyncLimiter:
-        """Get rate limiter for specific client and endpoint."""
-        
-        # Different limits for different endpoints
-        limits = {
-            'extract': (10, 60),    # 10 extractions per minute
-            'search': (50, 60),     # 50 searches per minute  
-            'upload': (5, 60),      # 5 uploads per minute
-            'default': (100, 60)    # 100 requests per minute
-        }
-        
-        endpoint_type = 'default'
-        if '/extract/' in endpoint:
-            endpoint_type = 'extract'
-        elif '/search/' in endpoint:
-            endpoint_type = 'search'
-        elif '/upload' in endpoint:
-            endpoint_type = 'upload'
-        
-        limiter_key = f"{client_id}:{endpoint_type}"
-        
-        if limiter_key not in self.limiters:
-            rate, period = limits[endpoint_type]
-            self.limiters[limiter_key] = AsyncLimiter(rate, period)
-        
-        return self.limiters[limiter_key]
-
-rate_limiter = RateLimiter()
+# Configure rate limiting middleware
+rate_limiter = RateLimitMiddleware(
+    requests_per_minute=100,  # Default rate limit
+    endpoint_limits={
+        '/reports/ingest': 10,    # 10 ingestions per minute
+        '/search': 50,            # 50 searches per minute
+        '/upload': 5,             # 5 uploads per minute
+    }
+)
 
 @app.middleware("http")
 async def rate_limiting_middleware(request: Request, call_next):
-    """Apply rate limiting to all requests."""
-    
+    """Apply rate limiting to all requests using middleware."""
+
     if not settings.rate_limit_enabled:
         return await call_next(request)
-    
-    client_id = rate_limiter.get_client_id(request)
-    endpoint = str(request.url.path)
-    limiter = rate_limiter.get_limiter(client_id, endpoint)
-    
-    try:
-        await limiter.acquire()
-        response = await call_next(request)
-        
-        # Add rate limit headers
-        response.headers['X-RateLimit-Limit'] = str(limiter.max_rate)
-        response.headers['X-RateLimit-Remaining'] = str(limiter.max_rate - limiter.current_level)
-        response.headers['X-RateLimit-Reset'] = str(int(limiter.next_reset_time))
-        
-        return response
-        
-    except Exception as e:
+
+    # Extract client identifier (IP, API key, or user)
+    client_id = get_client_identifier(request)
+
+    # Check rate limit
+    allowed, retry_after = rate_limiter.check_limit(client_id, request.url.path)
+
+    if not allowed:
         # Rate limit exceeded
         error_response = {
             "success": False,
             "error": {
                 "code": "RATE_LIMIT_EXCEEDED",
-                "message": "Rate limit exceeded",
-                "retry_after": 60
+                "message": "Too many requests. Please try again later.",
+                "retry_after": retry_after
             }
         }
-        
+
         return JSONResponse(
             status_code=429,
             content=error_response,
             headers={
-                "Retry-After": "60",
-                "X-RateLimit-Limit": str(limiter.max_rate),
-                "X-RateLimit-Remaining": "0"
+                "Retry-After": str(retry_after),
+                "X-RateLimit-Limit": str(rate_limiter.get_limit(request.url.path)),
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(int(time.time() + retry_after))
             }
         )
+
+    # Process request
+    response = await call_next(request)
+
+    # Add rate limit headers
+    limit_info = rate_limiter.get_limit_info(client_id, request.url.path)
+    response.headers['X-RateLimit-Limit'] = str(limit_info['limit'])
+    response.headers['X-RateLimit-Remaining'] = str(limit_info['remaining'])
+    response.headers['X-RateLimit-Reset'] = str(limit_info['reset'])
+
+    return response
+
+def get_client_identifier(request: Request) -> str:
+    """Extract client identifier from request."""
+
+    # Try API key first
+    api_key = request.headers.get('x-api-key')
+    if api_key:
+        return f"api:{api_key[:8]}"  # Use first 8 chars of API key
+
+    # Try JWT token user ID
+    auth_header = request.headers.get('authorization')
+    if auth_header and auth_header.startswith('Bearer '):
+        # In production, decode JWT to get user ID
+        # For now, use a placeholder
+        return f"user:authenticated"
+
+    # Fall back to IP address
+    forwarded_for = request.headers.get('x-forwarded-for')
+    if forwarded_for:
+        client_ip = forwarded_for.split(',')[0].strip()
+    else:
+        client_ip = request.client.host if request.client else "unknown"
+
+    return f"ip:{client_ip}"
 ```
 
 ## API Versioning
@@ -962,31 +977,34 @@ class ReportResponseV2(ReportResponseV1):
 #### **Enhanced Endpoint Documentation**
 ```python
 @router.post(
-    "/extract/techniques",
-    response_model=TechniqueExtractionResponse,
-    summary="Extract MITRE ATT&CK Techniques",
+    "/reports/ingest",
+    response_model=ReportIngestionResponse,
+    summary="Ingest Threat Intelligence Report",
     description="""
-    Extract MITRE ATT&CK techniques from text using advanced NLP and LLM processing.
-    
+    Ingest and extract techniques from threat intelligence reports using advanced NLP and LLM processing.
+
     The extraction process involves:
-    1. Text preprocessing and chunking
-    2. Pattern-based technique detection
+    1. Text preprocessing and smart chunking
+    2. Pattern-based technique detection (SpanFinder)
     3. Vector similarity search for candidates
-    4. LLM verification and confidence scoring
-    5. Evidence consolidation and deduplication
-    
-    **Processing Time**: Typically 2-5 seconds for documents under 10KB.
-    
+    4. Batch LLM verification with confidence scoring
+    5. Entity extraction and consolidation
+    6. Evidence consolidation and deduplication
+
+    **Processing Time**:
+    - Synchronous (<5KB): 5-10 seconds
+    - Asynchronous (>5KB): Use /reports/ingest_async endpoint
+
     **Confidence Scoring**: All techniques include confidence scores (0-100).
     Recommended threshold is 50 for production use.
-    
-    **Evidence Tracking**: Each technique includes quotes from source text
+
+    **Evidence Tracking**: Each technique and entity includes quotes from source text
     with line number references for validation.
     """,
     responses={
         200: {
             "description": "Successful extraction",
-            "model": TechniqueExtractionResponse
+            "model": ReportIngestionResponse
         },
         400: {
             "description": "Invalid input",
@@ -1012,10 +1030,10 @@ class ReportResponseV2(ReportResponseV1):
             }
         }
     },
-    tags=["extraction"],
-    operation_id="extractTechniques"
+    tags=["reports", "extraction"],
+    operation_id="ingestReport"
 )
-async def extract_techniques(request: TechniqueExtractionRequest):
+async def ingest_report(request: ReportIngestionRequest):
     """Implementation..."""
     pass
 ```
@@ -1034,91 +1052,93 @@ def test_client():
     return TestClient(app)
 
 @pytest.fixture
-def sample_extraction_request():
-    """Sample extraction request."""
+def sample_ingestion_request():
+    """Sample report ingestion request."""
     return {
         "text": "APT29 uses spearphishing emails with malicious attachments to gain initial access to target networks.",
-        "confidence_threshold": 50.0,
-        "max_techniques": 10,
-        "include_evidence": True
+        "title": "APT29 Campaign Analysis",
+        "use_batch_mapper": True,
+        "skip_verification": False
     }
 
-def test_extract_techniques_success(test_client, sample_extraction_request):
-    """Test successful technique extraction."""
-    
-    with patch('bandjacks.llm.extraction_pipeline.extract_techniques') as mock_extract:
-        mock_extract.return_value = ExtractionResult(
-            claims=[
-                TechniqueClaim(
-                    external_id="T1566.001",
-                    name="Spearphishing Attachment",
-                    confidence=92.0,
-                    quotes=["malicious attachments"],
-                    line_refs=[1]
-                )
-            ],
-            metrics={"extraction_time_ms": 2340}
-        )
-        
+def test_ingest_report_success(test_client, sample_ingestion_request):
+    """Test successful report ingestion."""
+
+    with patch('bandjacks.llm.extraction_pipeline.run_extraction_pipeline') as mock_extract:
+        mock_extract.return_value = {
+            "techniques": {
+                "T1566.001": {
+                    "name": "Spearphishing Attachment",
+                    "confidence": 92.0,
+                    "evidence": ["malicious attachments"],
+                    "line_refs": [1]
+                }
+            },
+            "entities": {
+                "entities": [
+                    {"name": "APT29", "type": "group", "confidence": 85}
+                ]
+            },
+            "metrics": {"extraction_time_ms": 2340}
+        }
+
         response = test_client.post(
-            "/v1/extract/techniques",
-            json=sample_extraction_request
+            "/v1/reports/ingest",
+            json=sample_ingestion_request
         )
-        
+
         assert response.status_code == 200
         data = response.json()
-        assert data["success"] == True
-        assert data["techniques_count"] == 1
-        assert len(data["claims"]) == 1
-        assert data["claims"][0]["external_id"] == "T1566.001"
+        assert "report_id" in data
+        assert "extraction" in data
+        assert data["extraction"]["techniques_count"] == 1
+        assert len(data["extraction"]["entities"]["entities"]) == 1
 
-def test_extract_techniques_validation_error(test_client):
+def test_ingest_report_validation_error(test_client):
     """Test validation error handling."""
-    
+
     response = test_client.post(
-        "/v1/extract/techniques",
+        "/v1/reports/ingest",
         json={"text": ""}  # Empty text should fail validation
     )
-    
+
     assert response.status_code == 422
     data = response.json()
-    assert data["success"] == False
-    assert data["error"]["code"] == "VALIDATION_ERROR"
-    assert "text" in str(data["error"]["details"])
+    assert "error" in data or "detail" in data
+    assert "text" in str(data)
 
-def test_extract_techniques_processing_error(test_client, sample_extraction_request):
-    """Test processing error handling."""
-    
-    with patch('bandjacks.llm.extraction_pipeline.extract_techniques') as mock_extract:
-        mock_extract.side_effect = ProcessingException("LLM service unavailable")
-        
-        response = test_client.post(
-            "/v1/extract/techniques", 
-            json=sample_extraction_request
-        )
-        
-        assert response.status_code == 400
-        data = response.json()
-        assert data["success"] == False
-        assert data["error"]["code"] == "PROCESSING_EXCEPTION"
+def test_ingest_async_large_document(test_client):
+    """Test async ingestion for large documents."""
+
+    large_text = "A" * 10000  # Large document > 5KB
+
+    response = test_client.post(
+        "/v1/reports/ingest_async",
+        json={"text": large_text, "title": "Large Report"}
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "job_id" in data
+    assert data["status"] == "processing" or data["status"] == "queued"
 
 @pytest.mark.asyncio
 async def test_rate_limiting(test_client):
     """Test rate limiting functionality."""
-    
+
     # Make requests rapidly to trigger rate limit
     responses = []
-    for i in range(15):  # Exceed the limit of 10/minute for extract endpoints
+    for i in range(15):  # Exceed the limit of 10/minute for ingest endpoints
         response = test_client.post(
-            "/v1/extract/techniques",
-            json={"text": f"Test text {i}"}
+            "/v1/reports/ingest",
+            json={"text": f"Test report text {i}", "title": f"Report {i}"}
         )
         responses.append(response)
-    
+
     # Should have some 429 responses
     rate_limited = [r for r in responses if r.status_code == 429]
     assert len(rate_limited) > 0
-    
+
     # Check rate limit headers
     for response in responses[:5]:  # Check first few successful responses
         if response.status_code == 200:

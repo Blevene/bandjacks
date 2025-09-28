@@ -104,31 +104,43 @@ Extract MITRE ATT&CK techniques from threat intelligence reports:
 import httpx
 import time
 
-# Using the async extraction API (recommended)
+# For small reports (<5KB) - synchronous processing
 response = httpx.post(
-    "http://localhost:8000/v1/extract/runs",
+    "http://localhost:8000/v1/reports/ingest",
     json={
-        "method": "agentic_v2",
         "content": "APT29 used spearphishing emails with malicious attachments...",
         "title": "APT29 Campaign Analysis",
         "config": {
-            "cache_llm_responses": True,  # Enable caching for speed
-            "single_pass_threshold": 500  # Use single-pass for small docs
+            "use_optimized_extractor": True,
+            "span_score_threshold": 0.7,
+            "top_k": 5
         }
     }
 )
 
-run_id = response.json()["run_id"]
+result = response.json()
+print(f"Extracted {len(result['extraction']['techniques'])} techniques")
 
-# Check status
-status = httpx.get(f"http://localhost:8000/v1/extract/runs/{run_id}/status")
-while status.json()["state"] == "running":
-    time.sleep(1)
-    status = httpx.get(f"http://localhost:8000/v1/extract/runs/{run_id}/status")
+# For large reports (>5KB) - asynchronous processing
+response = httpx.post(
+    "http://localhost:8000/v1/reports/ingest_async",
+    json={
+        "content": large_report_text,
+        "title": "Large Report Analysis"
+    }
+)
 
-# Get results
-result = httpx.get(f"http://localhost:8000/v1/extract/runs/{run_id}/result").json()
-print(f"Extracted {len(result['techniques'])} techniques in {result['metrics']['dur_sec']} seconds")
+job_id = response.json()["job_id"]
+
+# Check job status
+status = httpx.get(f"http://localhost:8000/v1/reports/jobs/{job_id}/status")
+while status.json()["status"] == "processing":
+    time.sleep(2)
+    status = httpx.get(f"http://localhost:8000/v1/reports/jobs/{job_id}/status")
+
+# Get results from completed job
+result = status.json()["result"]
+print(f"Extracted {result['techniques_count']} techniques in {result['elapsed_time']} seconds")
 ```
 
 ### 3. Direct Python Usage
@@ -136,30 +148,154 @@ print(f"Extracted {len(result['techniques'])} techniques in {result['metrics']['
 For programmatic access without the API:
 
 ```python
-from bandjacks.llm.agentic_v2_async import run_agentic_v2_async
-import asyncio
+from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 
 # Configure extraction
 config = {
-    "cache_llm_responses": True,  # Enable caching
-    "single_pass_threshold": 500,  # Single-pass for small docs
-    "early_termination_confidence": 90,  # Skip verification for high confidence
+    "use_optimized_extractor": True,  # Use optimized pipeline
+    "span_score_threshold": 0.7,      # Minimum span confidence
     "max_spans": 20,
-    "top_k": 5
+    "top_k": 5,
+    "chunk_size": 2000,               # For large documents
+    "max_chunks": 100
 }
 
-# Run async extraction
-result = asyncio.run(run_agentic_v2_async(report_text, config))
+# Run extraction pipeline
+result = run_extraction_pipeline(
+    report_text,
+    config,
+    source_id="report_123",
+    neo4j_config=neo4j_config
+)
 
 # Access results
 techniques = result["techniques"]  # Dict of technique_id -> details
-bundle = result["bundle"]          # STIX 2.1 bundle
+bundle = result.get("bundle")      # STIX 2.1 bundle if configured
+entities = result.get("entities")  # Extracted entities
 
 # Example: Print extracted techniques
 for tech_id, info in techniques.items():
     print(f"{tech_id}: {info['name']}")
     print(f"  Confidence: {info['confidence']}%")
     print(f"  Evidence: {info['evidence']}")
+```
+
+## Extraction Pipeline Architecture
+
+The Bandjacks extraction pipeline uses a multi-agent architecture to extract structured threat intelligence:
+
+### Pipeline Components
+
+#### 1. **SpanFinderAgent** - Behavioral Text Detection
+- Detects text spans containing threat behaviors using pattern matching
+- Identifies explicit technique IDs (T1566.001) and behavioral patterns
+- Scores spans by confidence and deduplicates overlapping detections
+- Processes documents in chunks for scalability
+
+#### 2. **BatchMapperAgent** - Technique Mapping
+- Uses vector search (OpenSearch KNN) to find candidate techniques
+- Batch processes all spans in a single LLM call for efficiency
+- Extracts ALL relevant techniques per span (not just best match)
+- Provides confidence scores and evidence for each mapping
+
+#### 3. **ConsolidatorAgent** - Evidence Consolidation
+- Merges duplicate techniques found across multiple spans
+- Aggregates evidence from different text locations
+- Tracks line references for provenance
+- Produces final technique list with consolidated confidence scores
+
+#### 4. **EntityExtractor** - Entity Recognition
+- Extracts threat actors, malware, tools, and campaigns
+- Uses few-shot prompting with examples for consistency
+- Tracks entity mentions with line references
+- Identifies aliases and coreferences
+
+#### 5. **AttackFlowSynthesizer** - Sequence Generation
+- Analyzes temporal markers ("first", "then", "after")
+- Infers causal relationships from narrative
+- Creates STIX Attack Flow objects with probabilistic edges
+- Falls back to co-occurrence modeling when sequence unclear
+
+### Performance Optimizations
+
+- **Smart Chunking**: Documents split into 2KB chunks with overlap
+- **Batch Processing**: Multiple operations combined in single LLM calls
+- **Parallel Processing**: Chunks processed concurrently
+- **Response Caching**: LLM responses cached for 15 minutes
+- **Early Termination**: High-confidence extractions skip verification
+- **TechniqueCache**: All ATT&CK techniques loaded at startup for O(1) lookups
+
+### Processing Times
+
+| Document Size | Processing Time | Techniques Extracted |
+|--------------|-----------------|---------------------|
+| Small (<5KB) | 10-20 seconds | 5-10 techniques |
+| Medium (5-15KB) | 20-40 seconds | 10-15 techniques |
+| Large (>15KB) | 30-60 seconds | 15-25 techniques |
+
+## Human-in-the-Loop Review System
+
+Bandjacks includes a comprehensive review system for validating extracted intelligence:
+
+### Unified Review Interface
+
+The review system presents all extracted items in a single interface:
+
+```typescript
+// Review workflow
+1. Upload/ingest report → Extraction pipeline runs
+2. Navigate to /reports/{id}/review
+3. Review extracted items across three tabs:
+   - Entities (threat actors, malware, tools)
+   - Techniques (ATT&CK mappings with evidence)
+   - Attack Flow (sequenced steps)
+4. Take actions on each item:
+   - Approve: Accept as correct
+   - Reject: Mark as incorrect
+   - Edit: Modify details (name, confidence, etc.)
+5. Submit all decisions atomically
+```
+
+### Review Features
+
+- **Evidence Links**: Direct links to source text with line numbers
+- **Confidence Adjustment**: Modify confidence scores based on analyst knowledge
+- **Bulk Operations**: Select multiple items for batch approve/reject
+- **Keyboard Shortcuts**: A (approve), R (reject), E (edit), Space (next)
+- **Progress Tracking**: Visual indicators of review completion
+- **Filtering**: Filter by type, confidence level, or status
+
+### API Integration
+
+```python
+# Submit review decisions
+response = httpx.post(
+    f"http://localhost:8000/v1/reports/{report_id}/unified-review",
+    json={
+        "decisions": [
+            {
+                "item_id": "technique-0",
+                "action": "approve",
+                "confidence_adjustment": 5,
+                "notes": "Confirmed via external CTI"
+            },
+            {
+                "item_id": "entity-malware-1",
+                "action": "edit",
+                "edited_value": {
+                    "name": "Corrected Malware Name",
+                    "confidence": 95
+                }
+            }
+        ],
+        "global_notes": "Review completed by analyst-1"
+    }
+)
+
+# Review creates:
+# - Approved entities as Neo4j nodes
+# - Technique-to-report relationships
+# - Audit trail of decisions
 ```
 
 ### 4. Searching for Techniques
@@ -279,18 +415,17 @@ markdown_report = """
 | Cobalt Strike | C2 communications |
 """
 
-result = asyncio.run(run_agentic_v2_async(markdown_report, {
-    "cache_llm_responses": True,
-    "single_pass_threshold": 500
-}))
+result = run_extraction_pipeline(markdown_report, {
+    "use_optimized_extractor": True,
+    "span_score_threshold": 0.7
+}, source_id="markdown_report")
 ```
 
 ### Extract from PDF
 
 ```python
 import pdfplumber
-from bandjacks.llm.agentic_v2_async import run_agentic_v2_async
-import asyncio
+from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 
 # Read PDF with pdfplumber (recommended)
 with pdfplumber.open("threat_report.pdf") as pdf:
@@ -300,12 +435,12 @@ with pdfplumber.open("threat_report.pdf") as pdf:
         if page_text:
             text += page_text + "\n"
 
-# Extract techniques using async pipeline
-result = asyncio.run(run_agentic_v2_async(text, {
-    "cache_llm_responses": True,
-    "single_pass_threshold": 500,
-    "title": "Threat Report"
-}))
+# Extract techniques using extraction pipeline
+result = run_extraction_pipeline(text, {
+    "use_optimized_extractor": True,
+    "span_score_threshold": 0.7,
+    "chunk_size": 2000
+}, source_id="threat_report")
 
 print(f"Found {len(result['techniques'])} techniques")
 ```
@@ -373,9 +508,11 @@ python tests/test_bundle_validation.py
 ### Core Endpoints
 
 - `POST /v1/stix/load/attack` - Load MITRE ATT&CK data
-- `POST /v1/extract/runs` - Start async extraction (recommended)
-- `GET /v1/extract/runs/{id}/status` - Check extraction progress
-- `GET /v1/extract/runs/{id}/result` - Get extraction results
+- `POST /v1/reports/ingest` - Synchronous report ingestion (<5KB)
+- `POST /v1/reports/ingest_async` - Asynchronous report ingestion (>5KB)
+- `POST /v1/reports/ingest/upload` - Upload PDF/TXT files
+- `GET /v1/reports/jobs/{id}/status` - Check job status
+- `POST /v1/reports/{id}/unified-review` - Submit review decisions
 - `POST /v1/search/ttx` - Search for techniques
 - `GET /v1/graph/technique/{id}` - Get technique details
 - `POST /v1/flows/build` - Generate AttackFlow co-occurrence models
@@ -397,8 +534,12 @@ Access the full API documentation at:
 ### Components
 
 1. **Extraction Pipeline** (`bandjacks/llm/`)
-   - `agentic_v2_async.py` - High-performance async orchestrator
-   - `agents_v2.py` - Specialized extraction agents
+   - `extraction_pipeline.py` - Main extraction orchestrator
+   - `chunked_extractor.py` - Standard chunked processing
+   - `optimized_chunked_extractor.py` - Advanced optimized processing
+   - `agents_v2.py` - Core extraction agents (SpanFinder, Mapper, Consolidator)
+   - `entity_extractor.py` - Entity recognition agent
+   - `flow_builder.py` - Attack flow generation
    - `memory.py` - Shared working memory
    - `cache.py` - LLM response caching
 
@@ -461,6 +602,110 @@ Control extraction quality:
 ```
 
 ## Performance Optimization
+
+## Health Monitoring
+
+The API provides comprehensive health monitoring endpoints for operational oversight and Kubernetes deployments:
+
+### Health Endpoints
+
+```bash
+# Basic health check (always returns 200 if API is running)
+curl http://localhost:8000/health
+
+# Kubernetes liveness probe (process alive check)
+curl http://localhost:8000/health/live
+
+# Kubernetes readiness probe (full dependency checks)
+curl http://localhost:8000/health/ready
+
+# Individual component health
+curl http://localhost:8000/health/components/neo4j
+curl http://localhost:8000/health/components/opensearch
+curl http://localhost:8000/health/components/redis
+curl http://localhost:8000/health/components/caches
+curl http://localhost:8000/health/components/system
+```
+
+### Health Response Example
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2025-01-28T17:43:30.184036Z",
+  "version": "1.0.0",
+  "components": {
+    "neo4j": {
+      "status": "healthy",
+      "latency_ms": 5
+    },
+    "opensearch": {
+      "status": "degraded",
+      "cluster_status": "yellow",
+      "indices": {
+        "attack_nodes": false,
+        "bandjacks_reports": true
+      }
+    },
+    "redis": {
+      "status": "healthy",
+      "latency_ms": 2,
+      "memory_mb": 1.69
+    },
+    "caches": {
+      "status": "healthy",
+      "technique_cache": {
+        "count": 993,
+        "loaded": true
+      },
+      "actor_cache": {
+        "count": 145,
+        "loaded": true
+      }
+    },
+    "system": {
+      "status": "healthy",
+      "memory": {
+        "available_gb": 8.84,
+        "percent_used": 72.4
+      },
+      "disk": {
+        "available_gb": 353.11,
+        "percent_used": 2.9
+      },
+      "cpu": {
+        "percent_used": 7.7
+      }
+    }
+  }
+}
+```
+
+### Status Levels
+
+- **healthy**: Component fully operational
+- **degraded**: Partially functional (e.g., missing some indices but operational)
+- **unhealthy**: Component failed or unreachable
+
+### Kubernetes Integration
+
+For Kubernetes deployments, configure probes as follows:
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /health/live
+    port: 8000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /health/ready
+    port: 8000
+  initialDelaySeconds: 45
+  periodSeconds: 5
+```
 
 ### Caching
 
