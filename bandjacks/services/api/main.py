@@ -70,7 +70,7 @@ LOGGING_CONFIG = {
 }
 
 logging.config.dictConfig(LOGGING_CONFIG)
-from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, sequence, simulate, analyze, entity_review, unified_review
+from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, sequence, simulate, analyze, entity_review, unified_review, actors
 from bandjacks.services.api.middleware import TracingMiddleware
 from bandjacks.services.api.middleware.error_handler import ErrorHandlerMiddleware
 from bandjacks.services.api.middleware.auth import JWTAuthMiddleware
@@ -82,6 +82,7 @@ from bandjacks.loaders.edge_embeddings import ensure_attack_edges_index
 from bandjacks.llm.cache import get_cache_stats, clear_cache
 from bandjacks.monitoring.compliance_metrics import get_compliance_report, get_compliance_metrics
 from bandjacks.services.technique_cache import technique_cache
+from bandjacks.services.actor_cache import actor_cache
 
 logger = logging.getLogger(__name__)
 logger.info(f"Logging configured: level={LOG_LEVEL}, file={LOG_FILE}")
@@ -180,6 +181,16 @@ async def startup():
     except Exception as e:
         logger.error(f"Failed to load technique cache: {e}")
         # Continue startup even if cache fails - will fall back to direct queries
+    # Load actor cache for lookups/search
+    try:
+        actors_loaded = actor_cache.load_from_neo4j(
+            settings.neo4j_uri,
+            settings.neo4j_user,
+            settings.neo4j_password,
+        )
+        logger.info(f"ActorCache initialized with {actors_loaded} actors")
+    except Exception as e:
+        logger.error(f"Failed to load actor cache: {e}")
     
     try:
         ensure_attack_nodes_index(settings.opensearch_url, settings.os_index_nodes)
@@ -348,6 +359,7 @@ app.include_router(reports.router, prefix=settings.api_prefix)
 app.include_router(entity_review.router, prefix=settings.api_prefix)
 app.include_router(unified_review.router, prefix=settings.api_prefix)
 app.include_router(sequence.router, prefix=settings.api_prefix)
+app.include_router(actors.router, prefix=settings.api_prefix)
 
 # Cache management endpoints
 @app.get("/v1/cache/stats", tags=["monitoring"])

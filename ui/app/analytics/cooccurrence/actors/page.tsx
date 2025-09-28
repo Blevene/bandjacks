@@ -50,6 +50,14 @@ export default function ActorCooccurrencePage() {
     setLoading(true);
     setError(null);
     try {
+      // Resolve actor name if not provided
+      if (!actorQuery) {
+        try {
+          const info = await api.reports.getActorById(actorId);
+          const name = info.data?.name || '';
+          if (name) setActorQuery(name);
+        } catch {}
+      }
       const res = await api.cooccurrence.postActor({ intrusion_set_id: actorId, min_support: minSupport, metric_filter: metric });
       setData(res.data);
     } catch (e: any) {
@@ -73,9 +81,22 @@ export default function ActorCooccurrencePage() {
     setSuggesting(true);
     const t = setTimeout(async () => {
       try {
+        // Use reports attribution search for now to ensure compatibility
         const res = await api.reports.searchAttributionCandidates(q);
-        setActorSuggestions(res.data?.results || []);
+        const results = res.data?.results || [];
+        setActorSuggestions(results);
         setShowSuggestions(true);
+
+        // Auto-resolve STIX id when there is an exact name/alias match
+        const lower = q.toLowerCase();
+        const exact = results.find((s: any) => {
+          const name = (s?.name || '').toLowerCase();
+          const aliases: string[] = Array.isArray(s?.aliases) ? s.aliases : [];
+          return name === lower || aliases.some(a => (a || '').toLowerCase() === lower);
+        });
+        if (exact && !actorId) {
+          setActorId(exact.id || exact.stix_id || '');
+        }
       } catch {
         setActorSuggestions([]);
       } finally {
@@ -84,6 +105,24 @@ export default function ActorCooccurrencePage() {
     }, 300);
     return () => clearTimeout(t);
   }, [actorQuery]);
+
+  // Debounced STIX ID resolve to name (search-ahead)
+  useEffect(() => {
+    const id = actorId.trim();
+    if (!id) return;
+    const t = setTimeout(async () => {
+      try {
+        const res = await api.actors.getById(id);
+        const name = res.data?.name || '';
+        if (name && !actorQuery) {
+          setActorQuery(name);
+        }
+      } catch {
+        // ignore 404 or network errors for ahead lookup
+      }
+    }, 350);
+    return () => clearTimeout(t);
+  }, [actorId]);
 
   return (
     <div className="mx-auto max-w-6xl p-6 space-y-6">
@@ -151,7 +190,7 @@ export default function ActorCooccurrencePage() {
         <div className="space-y-6">
           <div className="rounded-lg border p-4">
             <div className="text-sm text-gray-500">Actor</div>
-            <div className="text-lg font-medium">{data.intrusion_set_name || data.intrusion_set_id}</div>
+            <div className="text-lg font-medium">{actorQuery || data.intrusion_set_name || data.intrusion_set_id}</div>
             <div className="text-xs text-gray-400 mt-1">episodes: {data.total_episodes} · techniques: {data.total_techniques}</div>
           </div>
 
@@ -186,7 +225,7 @@ export default function ActorCooccurrencePage() {
                         <div className="text-[11px] text-gray-500">{p.technique_b}</div>
                       </td>
                       <td className="px-3 py-2 text-right">{p.count}</td>
-                      <td className="px-3 py-2 text-right">{p.confidence_a_to_a ?? p.confidence_a_to_b}</td>
+                      <td className="px-3 py-2 text-right">{p.confidence_a_to_b}</td>
                       <td className="px-3 py-2 text-right">{p.confidence_b_to_a}</td>
                       <td className="px-3 py-2 text-right">{p.lift.toFixed(2)}</td>
                       <td className="px-3 py-2 text-right">{p.pmi.toFixed(3)}</td>

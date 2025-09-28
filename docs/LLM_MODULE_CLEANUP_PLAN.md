@@ -185,23 +185,26 @@ These modules are actively used in the extraction pipeline and must be preserved
   - All extraction functions accessible from ConsolidatorBase
 - **Completed**: Successfully consolidated evidence processing modules
 
-#### Task 3.3: Consolidate Token Management
-- [ ] Merge `budget.py` into `token_utils.py`
-- [ ] Update any imports
-- [ ] Delete `budget.py`
-- [ ] Test token management functionality
+#### ✅ Task 3.3: Consolidate Token Management
+**STATUS**: COMPLETED - Budget functionality merged into token_utils.py
+- [x] Merge `budget.py` into `token_utils.py`
+- [x] Update imports in `sequence.py`
+- [x] Delete `budget.py`
+- [x] Test token management functionality (only used by experimental endpoints)
+- **Result**: Successfully consolidated token and budget management into single module
 - **Commit**: "Consolidate token management modules"
 
 ### Phase 4: Documentation and Organization
 **Goal**: Document the cleaned-up structure for future maintenance.
 
-#### Task 4.1: Create Module Documentation
-- [ ] Create `bandjacks/llm/README.md` with:
-  - Module organization overview
-  - Extraction pipeline flow diagram
-  - Module dependency graph
-  - Purpose of each production module
-- **Commit**: "Add LLM module documentation"
+#### ✅ Task 4.1: Documentation Cleanup
+**STATUS**: COMPLETED - Removed outdated documentation
+- [x] Reviewed all documentation for outdated references
+- [x] Identified EXTRACTION_GUIDE.md with dead endpoint references
+- [x] Deleted EXTRACTION_GUIDE.md (contained references to deleted `/extract/runs` and `agentic_v2_async`)
+- [x] Verified CLAUDE.md, README.md, CLI_USAGE.md, API_DOCUMENTATION.md are all clean
+- **Result**: All documentation now references only current modules and endpoints
+- **Commit**: "Remove outdated extraction guide documentation"
 
 #### Task 4.2: Add Deprecation Notices
 - [ ] Add deprecation warnings to any modules scheduled for future removal
@@ -245,14 +248,14 @@ After each phase, verify:
 
 ### After Full Cleanup (Projected)
 - **~38 modules remaining in llm/** after Phase 3 consolidation
-  - 39 production modules currently in `bandjacks/llm/` (was 41, now entity_utils.py and evidence_utils.py deleted)
+  - 38 production modules currently in `bandjacks/llm/` (was 41, now entity_utils.py, evidence_utils.py, and budget.py deleted)
   - 11 modules in `bandjacks/llm/experimental/` (judge, PTG, simulation, etc.)
-  - 9 modules deleted total (2 legacy extractors, 3 active learning, 2 route files, entity_utils, evidence_utils)
+  - 10 modules deleted total (2 legacy extractors, 3 active learning, 2 route files, entity_utils, evidence_utils, budget)
   - Clear separation between production and experimental
 - Single extraction pipeline path (`extraction_pipeline.py`)
 - No dead code paths
 - Well-documented module purposes
-- Phase 3 will further consolidate by ~1 more module (budget)
+- Phase 3 completed with 3 modules consolidated (entity_utils, evidence_utils, budget)
 
 ## Module Status Reference
 
