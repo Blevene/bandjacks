@@ -90,12 +90,13 @@ async def submit_unified_review(
     items_approved = 0
     items_rejected = 0
     items_edited = 0
-    
+    entities_added_to_ignorelist = []
+
     # Group decisions by type
     entity_decisions = []
     technique_decisions = []
     flow_decisions = []
-    
+
     for decision in submission.decisions:
         if decision.item_id.startswith("entity-"):
             entity_decisions.append(decision)
@@ -103,7 +104,7 @@ async def submit_unified_review(
             technique_decisions.append(decision)
         elif decision.item_id.startswith("flow-"):
             flow_decisions.append(decision)
-        
+
         # Count actions
         if decision.action == "approve":
             items_approved += 1
@@ -136,6 +137,9 @@ async def submit_unified_review(
                             entity.update(decision.edited_value)
                         if decision.confidence_adjustment is not None:
                             entity["confidence"] = decision.confidence_adjustment
+
+                        # Note: Adding to ignorelist is now handled immediately in the UI
+                        # when the reject dialog is confirmed, not during final submission
     
     # Apply technique decisions
     if technique_decisions and report.get("extraction", {}).get("claims"):
@@ -257,8 +261,7 @@ async def submit_unified_review(
         
         logger.info(f"Unified review submitted for report {report_id}: "
                    f"{items_approved} approved, {items_rejected} rejected, {items_edited} edited")
-
-        entities_added_to_ignorelist = []  # Note: This is handled immediately in the UI now
+        
         message = "Unified review submitted successfully"
         if entities_added_to_ignorelist:
             message += f". {len(entities_added_to_ignorelist)} entities added to ignore list"
@@ -292,24 +295,32 @@ async def update_review_decision(
     decision: ReviewDecisionUpdate,
     os_client: OpenSearch = Depends(get_opensearch_client)
 ):
-    """Update a single review decision in the report."""
+    """Update a single review decision in the report with retry logic for version conflicts."""
+    import time
+    from opensearchpy.exceptions import ConflictError
 
     os_store = OpenSearchReportStore(os_client)
 
-    # Get the report
-    report = os_store.get_report(report_id)
-    if not report:
-        raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
+    # Retry logic for version conflicts
+    max_retries = 3
+    retry_count = 0
+    last_error = None
 
-    # Parse item ID to determine type and index
-    item_parts = decision.item_id.split("-")
-    if len(item_parts) < 2:
-        raise HTTPException(status_code=400, detail=f"Invalid item ID format: {decision.item_id}")
+    while retry_count < max_retries:
+        try:
+            # Get the fresh report on each retry
+            report = os_store.get_report(report_id)
+            if not report:
+                raise HTTPException(status_code=404, detail=f"Report {report_id} not found")
 
-    item_type = item_parts[0]
+            # Parse item ID to determine type and index
+            item_parts = decision.item_id.split("-")
+            if len(item_parts) < 2:
+                raise HTTPException(status_code=400, detail=f"Invalid item ID format: {decision.item_id}")
 
-    try:
-        if item_type == "entity":
+            item_type = item_parts[0]
+
+            if item_type == "entity":
             # Update entity review status
             if len(item_parts) < 3:
                 raise HTTPException(status_code=400, detail=f"Invalid entity ID format: {decision.item_id}")
@@ -318,34 +329,17 @@ async def update_review_decision(
             index = int(item_parts[2])
 
             entities = report.get("extraction", {}).get("entities", {})
-            logger.info(f"Entity structure type: {type(entities)}, has 'entities' key: {'entities' in entities if isinstance(entities, dict) else 'N/A'}")
             if isinstance(entities, dict) and "entities" in entities:
                 entity_list = entities.get("entities", [])
                 if index < len(entity_list):
                     entity = entity_list[index]
-                    # Map action to review_status format expected by frontend
-                    status_map = {
-                        "approve": "approved",
-                        "reject": "rejected",
-                        "edit": "edited"
-                    }
-                    entity["review_status"] = status_map.get(decision.action, decision.action)
-                    logger.info(f"Setting entity {index} review_status to: {entity['review_status']} (from action: {decision.action})")
+                    entity["review_status"] = decision.action
                     if decision.notes:
                         entity["review_notes"] = decision.notes
                     if decision.edited_value:
-                        # Handle entity type change if present
-                        if "category" in decision.edited_value:
-                            entity["type"] = decision.edited_value["category"]
-                            if "metadata" in decision.edited_value and "entity_type" in decision.edited_value["metadata"]:
-                                # Update metadata entity_type as well
-                                if "metadata" not in entity:
-                                    entity["metadata"] = {}
-                                entity["metadata"]["entity_type"] = decision.edited_value["metadata"]["entity_type"]
                         entity.update(decision.edited_value)
                     if decision.confidence_adjustment is not None:
                         entity["confidence"] = decision.confidence_adjustment
-                    logger.info(f"Entity {index} after update: review_status={entity.get('review_status')}")
                 else:
                     raise HTTPException(status_code=404, detail=f"Entity index {index} not found")
             else:
@@ -358,14 +352,7 @@ async def update_review_decision(
 
             if index < len(claims):
                 claim = claims[index]
-                # Map action to review_status format expected by frontend
-                status_map = {
-                    "approve": "approved",
-                    "reject": "rejected",
-                    "edit": "edited"
-                }
-                claim["review_status"] = status_map.get(decision.action, decision.action)
-                logger.info(f"Setting technique {index} review_status to: {claim['review_status']} (from action: {decision.action})")
+                claim["review_status"] = decision.action
                 if decision.notes:
                     claim["review_notes"] = decision.notes
                 if decision.confidence_adjustment is not None:
@@ -375,7 +362,6 @@ async def update_review_decision(
                         claim["external_id"] = decision.edited_value["external_id"]
                     if "name" in decision.edited_value:
                         claim["name"] = decision.edited_value["name"]
-                logger.info(f"Technique {index} after update: review_status={claim.get('review_status')}")
             else:
                 raise HTTPException(status_code=404, detail=f"Technique index {index} not found")
 
@@ -388,13 +374,7 @@ async def update_review_decision(
             for step in flow_steps:
                 # Check both step_id and action_id (different field names in different versions)
                 if step.get("step_id") == step_id or step.get("action_id") == step_id:
-                    # Map action to review_status format expected by frontend
-                    status_map = {
-                        "approve": "approved",
-                        "reject": "rejected",
-                        "edit": "edited"
-                    }
-                    step["review_status"] = status_map.get(decision.action, decision.action)
+                    step["review_status"] = decision.action
                     if decision.notes:
                         step["review_notes"] = decision.notes
                     if decision.edited_value:
@@ -408,46 +388,62 @@ async def update_review_decision(
                 logger.error(f"Flow step {step_id} not found. Available: {available_ids}")
                 raise HTTPException(status_code=404, detail=f"Flow step {step_id} not found")
 
-        else:
-            raise HTTPException(status_code=400, detail=f"Unknown item type: {item_type}")
+            else:
+                raise HTTPException(status_code=400, detail=f"Unknown item type: {item_type}")
 
-        # Update the report in OpenSearch
-        # Debug: Log what we're about to save
-        extraction_data = report.get("extraction", {})
-        if item_type == "technique" and extraction_data.get("claims"):
-            if index < len(extraction_data["claims"]):
-                logger.info(f"About to save technique {index} with review_status={extraction_data['claims'][index].get('review_status')}")
-        elif item_type == "entity" and extraction_data.get("entities", {}).get("entities"):
-            entity_list = extraction_data["entities"]["entities"]
-            if index < len(entity_list):
-                logger.info(f"About to save entity {index} with review_status={entity_list[index].get('review_status')}")
-
-        update_doc = {
-            "doc": {
-                "extraction": extraction_data,
-                "modified": datetime.utcnow().isoformat()
+            # Update the report in OpenSearch
+            update_doc = {
+                "doc": {
+                    "extraction": report.get("extraction", {}),
+                    "modified": datetime.utcnow().isoformat()
+                }
             }
-        }
 
-        os_client.update(
-            index="bandjacks_reports",
-            id=report_id,
-            body=update_doc
-        )
+            os_client.update(
+                index="bandjacks_reports",
+                id=report_id,
+                body=update_doc
+            )
 
-        logger.info(f"Updated review decision for {decision.item_id} (action={decision.action}) in report {report_id}")
+            logger.info(f"Updated review decision for {decision.item_id} in report {report_id}")
 
-        return ReviewDecisionResponse(
-            success=True,
-            message=f"Review decision saved for {decision.item_id}",
-            updated_item_id=decision.item_id
-        )
+            return ReviewDecisionResponse(
+                success=True,
+                message=f"Review decision saved for {decision.item_id}",
+                updated_item_id=decision.item_id
+            )
 
-    except Exception as e:
-        logger.error(f"Failed to update review decision for {report_id}: {e}")
+        except ConflictError as e:
+            # Version conflict - retry with fresh data
+            retry_count += 1
+            last_error = e
+            if retry_count < max_retries:
+                logger.warning(f"Version conflict for {decision.item_id}, retrying ({retry_count}/{max_retries})...")
+                time.sleep(0.1 * retry_count)  # Exponential backoff
+                continue
+            else:
+                logger.error(f"Failed to update review decision after {max_retries} retries: {e}")
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Version conflict after {max_retries} retries. Please refresh and try again."
+                )
+
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+
+        except Exception as e:
+            logger.error(f"Failed to update review decision for {report_id}: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to save review decision: {str(e)}"
+            )
+
+    # Should not reach here
+    if last_error:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to save review decision: {str(e)}"
+            detail=f"Failed to save review decision: {str(last_error)}"
         )
 
 

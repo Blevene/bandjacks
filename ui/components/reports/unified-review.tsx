@@ -39,6 +39,7 @@ import {
   AlertTriangle,
   Info,
 } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 import type { Report, ReviewableItem, UnifiedReviewState, UnifiedReviewDecision } from "@/lib/report-types";
 import {
   createUnifiedReviewState,
@@ -59,7 +60,33 @@ interface UnifiedReviewProps {
 }
 
 export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedReviewProps) {
-  const [state, setState] = useState<UnifiedReviewState>(() => createUnifiedReviewState(report));
+  const [state, setState] = useState<UnifiedReviewState>(() => {
+    // Debug: Log the report data to see what we're receiving
+    console.log('UnifiedReview: Initializing state from report:', report);
+    if (report.extraction?.claims) {
+      console.log('Sample claim review_status:', report.extraction.claims[0]?.review_status);
+    }
+    const newState = createUnifiedReviewState(report);
+
+    // Rebuild decisions from items' existing review_status
+    const existingDecisions = new Map<string, UnifiedReviewDecision>();
+    newState.items.forEach(item => {
+      if (item.review_status && item.review_status !== 'pending') {
+        existingDecisions.set(item.id, {
+          item_id: item.id,
+          action: item.review_status === 'approved' ? 'approve' :
+                  item.review_status === 'rejected' ? 'reject' : 'edit',
+          notes: item.review_notes,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    });
+
+    return {
+      ...newState,
+      decisions: existingDecisions
+    };
+  });
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
   const [searchTerm, setSearchTerm] = useState("");
@@ -67,6 +94,32 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
   const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [currentItemIndex, setCurrentItemIndex] = useState(0);
+  const { toast } = useToast();
+
+  // Update state when report changes (e.g., navigating between tabs)
+  useEffect(() => {
+    console.log('Report prop changed, reinitializing state');
+    const newState = createUnifiedReviewState(report);
+
+    // Rebuild decisions from items' existing review_status
+    const existingDecisions = new Map<string, UnifiedReviewDecision>();
+    newState.items.forEach(item => {
+      if (item.review_status && item.review_status !== 'pending') {
+        existingDecisions.set(item.id, {
+          item_id: item.id,
+          action: item.review_status === 'approved' ? 'approve' :
+                  item.review_status === 'rejected' ? 'reject' : 'edit',
+          notes: item.review_notes,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    });
+
+    setState({
+      ...newState,
+      decisions: existingDecisions
+    });
+  }, [report.report_id]);
 
   // Filter items based on search and state
   const filteredItems = filterReviewableItems(
@@ -91,12 +144,43 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
       const currentItem = filteredItems[currentItemIndex];
       if (!currentItem) return;
 
+      // Handle Ctrl/Cmd shortcuts first
+      if (e.ctrlKey || e.metaKey) {
+        switch (e.key.toLowerCase()) {
+          case 'a':
+            e.preventDefault();
+            // Select all visible items
+            const allItemIds = new Set(filteredItems.map(item => item.id));
+            setSelectedItems(allItemIds);
+            return;
+          case 'd':
+            e.preventDefault();
+            // Deselect all
+            setSelectedItems(new Set());
+            return;
+          case 'f':
+            e.preventDefault();
+            setShowFilters(!showFilters);
+            return;
+        }
+      }
+
       switch (e.key.toLowerCase()) {
         case 'a':
-          handleReviewAction(currentItem.id, 'approve');
+          if (e.shiftKey && selectedItems.size > 0) {
+            // Approve all selected items
+            handleBulkAction('approve');
+          } else {
+            handleReviewAction(currentItem.id, 'approve');
+          }
           break;
         case 'r':
-          handleReviewAction(currentItem.id, 'reject');
+          if (e.shiftKey && selectedItems.size > 0) {
+            // Reject all selected items
+            handleBulkAction('reject');
+          } else {
+            handleReviewAction(currentItem.id, 'reject');
+          }
           break;
         case 'e':
           // Trigger edit for current item
@@ -104,19 +188,29 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
         case ' ':
           e.preventDefault();
           if (e.shiftKey) {
-            setCurrentItemIndex(Math.max(0, currentItemIndex - 1));
+            // Add current item to selection
+            const newSelected = new Set(selectedItems);
+            if (newSelected.has(currentItem.id)) {
+              newSelected.delete(currentItem.id);
+            } else {
+              newSelected.add(currentItem.id);
+            }
+            setSelectedItems(newSelected);
           } else {
+            // Navigate to next item
             setCurrentItemIndex(Math.min(filteredItems.length - 1, currentItemIndex + 1));
           }
           break;
+        case 'arrowup':
+          e.preventDefault();
+          setCurrentItemIndex(Math.max(0, currentItemIndex - 1));
+          break;
+        case 'arrowdown':
+          e.preventDefault();
+          setCurrentItemIndex(Math.min(filteredItems.length - 1, currentItemIndex + 1));
+          break;
         case 'enter':
           toggleExpanded(currentItem.id);
-          break;
-        case 'f':
-          if (e.ctrlKey || e.metaKey) {
-            e.preventDefault();
-            setShowFilters(!showFilters);
-          }
           break;
         case '?':
           setShowKeyboardShortcuts(true);
@@ -128,18 +222,21 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
     return () => window.removeEventListener('keydown', handleKeyPress);
   }, [currentItemIndex, filteredItems, readOnly, showFilters]);
 
-  const handleReviewAction = (itemId: string, action: 'approve' | 'reject' | 'edit') => {
+  const handleReviewAction = async (itemId: string, action: 'approve' | 'reject' | 'edit', addToIgnorelist?: boolean) => {
+    console.log(`handleReviewAction called: itemId=${itemId}, action=${action}`);
+
     const decision: UnifiedReviewDecision = {
       item_id: itemId,
       action,
       timestamp: new Date().toISOString(),
+      add_to_ignorelist: addToIgnorelist,
     };
 
     const newDecisions = new Map(state.decisions);
     newDecisions.set(itemId, decision);
 
     // Update item status
-    const updatedItems = state.items.map(item => 
+    const updatedItems = state.items.map(item =>
       item.id === itemId ? applyReviewDecision(item, decision) : item
     );
 
@@ -148,9 +245,37 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
       items: updatedItems,
       decisions: newDecisions,
     });
+
+    // Save the decision to the backend immediately
+    console.log(`Sending PATCH request for ${itemId} with action=${action}`);
+    try {
+      const response = await fetch(`http://localhost:8000/v1/reports/${report.report_id}/review-decision`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          item_id: itemId,
+          action,
+          timestamp: new Date().toISOString(),
+          notes: undefined,
+          edited_value: undefined,
+          confidence_adjustment: undefined
+        })
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Failed to save review decision:', errorText);
+      } else {
+        console.log(`Successfully saved ${action} decision for ${itemId}`);
+      }
+    } catch (error) {
+      console.error('Error saving review decision:', error);
+    }
   };
 
-  const handleEditSave = (itemId: string, editedValues: Partial<ReviewableItem>) => {
+  const handleEditSave = async (itemId: string, editedValues: Partial<ReviewableItem>) => {
     const decision: UnifiedReviewDecision = {
       item_id: itemId,
       action: 'edit',
@@ -163,7 +288,7 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
     newDecisions.set(itemId, decision);
 
     // Update item
-    const updatedItems = state.items.map(item => 
+    const updatedItems = state.items.map(item =>
       item.id === itemId ? { ...item, ...editedValues, review_status: 'edited' as const } : item
     );
 
@@ -172,13 +297,41 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
       items: updatedItems,
       decisions: newDecisions,
     });
+
+    // Save the edit decision to the backend immediately
+    try {
+      const response = await fetch(`http://localhost:8000/v1/reports/${report.report_id}/review-decision`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          item_id: itemId,
+          action: 'edit',
+          timestamp: new Date().toISOString(),
+          notes: editedValues.review_notes,
+          edited_value: editedValues,
+          confidence_adjustment: editedValues.confidence
+        })
+      });
+
+      if (!response.ok) {
+        console.error('Failed to save edit decision:', await response.text());
+      }
+    } catch (error) {
+      console.error('Error saving edit decision:', error);
+    }
   };
 
-  const handleBulkAction = (action: 'approve' | 'reject') => {
+  const handleBulkAction = async (action: 'approve' | 'reject') => {
     const newDecisions = new Map(state.decisions);
     const updatedItems = [...state.items];
 
-    selectedItems.forEach(itemId => {
+    // Process bulk saves sequentially to avoid version conflicts
+    const itemIds = Array.from(selectedItems);
+
+    // First update all items locally
+    itemIds.forEach(itemId => {
       const decision: UnifiedReviewDecision = {
         item_id: itemId,
         action,
@@ -199,6 +352,65 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
     });
 
     setSelectedItems(new Set());
+    let successCount = 0;
+    let failCount = 0;
+
+    for (const itemId of itemIds) {
+      // Save decision with retry logic
+      let retries = 3;
+      let saved = false;
+
+      while (retries > 0 && !saved) {
+        try {
+          const response = await fetch(`http://localhost:8000/v1/reports/${report.report_id}/review-decision`, {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              item_id: itemId,
+              action,
+              timestamp: new Date().toISOString(),
+              notes: undefined,
+              edited_value: undefined,
+              confidence_adjustment: undefined
+            })
+          });
+
+          if (response.ok) {
+            saved = true;
+            successCount++;
+          } else if (response.status === 409) {
+            // Version conflict - retry
+            retries--;
+            if (retries > 0) {
+              await new Promise(resolve => setTimeout(resolve, 100 * (4 - retries))); // Exponential backoff
+            } else {
+              const text = await response.text();
+              console.error(`Failed to save bulk decision for ${itemId} after retries:`, text);
+              failCount++;
+            }
+          } else {
+            const text = await response.text();
+            console.error(`Failed to save bulk decision for ${itemId}:`, text);
+            failCount++;
+            break;
+          }
+        } catch (error) {
+          console.error(`Error saving bulk decision for ${itemId}:`, error);
+          failCount++;
+          break;
+        }
+      }
+    }
+
+    // Show result toast
+    if (successCount > 0) {
+      toast({
+        title: `Bulk ${action} completed`,
+        description: `${successCount} items ${action}ed successfully${failCount > 0 ? `, ${failCount} failed` : ''}`,
+      });
+    }
   };
 
   const toggleSelected = (itemId: string, selected: boolean) => {
@@ -248,7 +460,7 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
             isExpanded={expandedItems.has(item.id)}
             onSelect={(selected) => toggleSelected(item.id, selected)}
             onExpand={(expanded) => toggleExpanded(item.id)}
-            onReviewAction={(action) => handleReviewAction(item.id, action)}
+            onReviewAction={(action, addToIgnorelist) => handleReviewAction(item.id, action, addToIgnorelist)}
             onEditSave={(edited) => handleEditSave(item.id, edited)}
             readOnly={readOnly}
           />
@@ -352,32 +564,123 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
                   </Card>
                 )}
 
-                {/* Bulk actions */}
+                {/* Selection controls */}
+                {!readOnly && (
+                  <div className="flex items-center justify-between">
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          const allItemIds = new Set(filteredItems.map(item => item.id));
+                          setSelectedItems(allItemIds);
+                        }}
+                      >
+                        Select All ({filteredItems.length})
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setSelectedItems(new Set())}
+                      >
+                        Clear Selection
+                      </Button>
+                      <Select
+                        value=""
+                        onValueChange={(value) => {
+                          if (value) {
+                            let itemsToSelect: ReviewableItem[] = [];
+
+                            if (value === 'entity' || value === 'technique' || value === 'flow_step') {
+                              // Select all items of a type
+                              itemsToSelect = filteredItems.filter(item => item.type === value);
+                            } else if (value.startsWith('entity-')) {
+                              // Select entity sub-category
+                              const category = value.replace('entity-', '');
+                              itemsToSelect = filteredItems.filter(item =>
+                                item.type === 'entity' && item.category === category
+                              );
+                            }
+
+                            const newSelection = new Set(itemsToSelect.map(item => item.id));
+                            setSelectedItems(newSelection);
+                          }
+                        }}
+                      >
+                        <SelectTrigger className="w-[180px]">
+                          <SelectValue placeholder="Select by type..." />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="entity">All Entities</SelectItem>
+                          {/* Add entity sub-categories dynamically */}
+                          {Object.keys(groupedItems.entities).length > 0 && (
+                            <>
+                              {Object.keys(groupedItems.entities).map(category => (
+                                <SelectItem key={`entity-${category}`} value={`entity-${category}`}>
+                                  ├─ {category.charAt(0).toUpperCase() + category.slice(1)}
+                                </SelectItem>
+                              ))}
+                            </>
+                          )}
+                          <SelectItem value="technique">All Techniques</SelectItem>
+                          <SelectItem value="flow_step">All Flow Steps</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {selectedItems.size > 0 && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            // Invert selection
+                            const newSelection = new Set<string>();
+                            filteredItems.forEach(item => {
+                              if (!selectedItems.has(item.id)) {
+                                newSelection.add(item.id);
+                              }
+                            });
+                            setSelectedItems(newSelection);
+                          }}
+                        >
+                          Invert Selection
+                        </Button>
+                      )}
+                    </div>
+                    {selectedItems.size > 0 && (
+                      <span className="text-sm text-muted-foreground">
+                        {selectedItems.size} of {filteredItems.length} items selected
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Bulk actions - Fixed position */}
                 {selectedItems.size > 0 && !readOnly && (
-                  <Alert>
-                    <Info className="h-4 w-4" />
-                    <AlertDescription className="flex items-center justify-between">
-                      <span>{selectedItems.size} items selected</span>
-                      <div className="flex gap-2">
-                        <Button
-                          size="sm"
-                          variant="default"
-                          onClick={() => handleBulkAction('approve')}
-                        >
-                          <CheckCircle className="h-4 w-4 mr-1" />
-                          Approve All
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="destructive"
-                          onClick={() => handleBulkAction('reject')}
-                        >
-                          <XCircle className="h-4 w-4 mr-1" />
-                          Reject All
-                        </Button>
-                      </div>
-                    </AlertDescription>
-                  </Alert>
+                  <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 w-full max-w-2xl px-4">
+                    <Alert className="border-primary/20 bg-primary shadow-lg">
+                      <Info className="h-4 w-4" />
+                      <AlertDescription className="flex items-center justify-between">
+                        <span className="font-medium">{selectedItems.size} items selected</span>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="default"
+                            onClick={() => handleBulkAction('approve')}
+                          >
+                            <CheckCircle className="h-4 w-4 mr-1" />
+                            Approve Selected
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="destructive"
+                            onClick={() => handleBulkAction('reject')}
+                          >
+                            <XCircle className="h-4 w-4 mr-1" />
+                            Reject Selected
+                          </Button>
+                        </div>
+                      </AlertDescription>
+                    </Alert>
+                  </div>
                 )}
               </div>
             </CardContent>
@@ -417,7 +720,41 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
             <div className="space-y-4">
               {Object.entries(groupedItems.entities).map(([category, items]) => (
                 <div key={category}>
-                  <h3 className="text-sm font-medium mb-2 capitalize">{category}</h3>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-sm font-medium capitalize">{category}</h3>
+                    {!readOnly && (
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            const categoryItemIds = new Set(items.map(item => item.id));
+                            setSelectedItems(prev => {
+                              const newSelection = new Set(prev);
+                              categoryItemIds.forEach(id => newSelection.add(id));
+                              return newSelection;
+                            });
+                          }}
+                        >
+                          Select All {category} ({items.length})
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            const categoryItemIds = new Set(items.map(item => item.id));
+                            setSelectedItems(prev => {
+                              const newSelection = new Set(prev);
+                              categoryItemIds.forEach(id => newSelection.delete(id));
+                              return newSelection;
+                            });
+                          }}
+                        >
+                          Clear {category}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
                   {renderItemsList(items)}
                 </div>
               ))}
