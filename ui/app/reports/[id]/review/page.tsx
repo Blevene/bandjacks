@@ -35,6 +35,10 @@ export default function ReportReviewPage() {
         throw new Error(`Failed to fetch report: ${response.statusText}`);
       }
       const data = await response.json();
+      console.log('Fetched report data:', data);
+      if (data.extraction?.claims) {
+        console.log('Sample claim with review_status:', data.extraction.claims[0]);
+      }
       setReport(data);
     } catch (error: any) {
       console.error("Error fetching report:", error);
@@ -70,13 +74,15 @@ export default function ReportReviewPage() {
       }
 
       const result = await response.json();
-      
+
       toast({
         title: "Review submitted successfully",
         description: `${result.items_reviewed} items reviewed (${result.items_approved} approved, ${result.items_rejected} rejected)`,
       });
 
-      setTimeout(() => router.push(`/reports/${reportId}`), 1500);
+      // Refresh the report data instead of redirecting
+      // This ensures we get the updated review states
+      await fetchReport();
     } catch (error: any) {
       console.error("Error submitting review:", error);
       toast({

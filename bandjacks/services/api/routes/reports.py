@@ -507,12 +507,26 @@ async def get_report(
     neo4j_session: Session = Depends(get_neo4j_session)
 ):
     """Get a report by ID."""
-    
+
     # First check OpenSearch
     os_store = OpenSearchReportStore(os_client)
     report = os_store.get_report(report_id)
-    
+
     if report:
+        # Debug logging to see what's in the report
+        if report.get("extraction", {}).get("claims"):
+            sample_claim = report["extraction"]["claims"][0] if report["extraction"]["claims"] else None
+            if sample_claim:
+                logger.info(f"GET report {report_id}: sample claim has review_status={sample_claim.get('review_status', 'NOT FOUND')}")
+
+        # Check entities structure
+        entities = report.get("extraction", {}).get("entities", {})
+        if isinstance(entities, dict) and "entities" in entities:
+            entity_list = entities.get("entities", [])
+            if entity_list:
+                sample_entity = entity_list[0]
+                logger.info(f"GET report {report_id}: sample entity has review_status={sample_entity.get('review_status', 'NOT FOUND')}")
+
         return report
     
     # Not in OpenSearch, check Neo4j
