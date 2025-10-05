@@ -38,6 +38,7 @@ import {
   Keyboard,
   AlertTriangle,
   Info,
+  Eye,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { Report, ReviewableItem, UnifiedReviewState, UnifiedReviewDecision } from "@/lib/report-types";
@@ -52,6 +53,7 @@ import {
 } from "@/lib/review-utils";
 import { ReviewItemCard } from "./review-item-card";
 import { ReviewProgress } from "./review-progress";
+import { GraphPreviewModal } from "./graph-preview-modal";
 
 interface UnifiedReviewProps {
   report: Report;
@@ -92,6 +94,7 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
   const [searchTerm, setSearchTerm] = useState("");
   const [showFilters, setShowFilters] = useState(false);
   const [showKeyboardShortcuts, setShowKeyboardShortcuts] = useState(false);
+  const [showGraphPreview, setShowGraphPreview] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [currentItemIndex, setCurrentItemIndex] = useState(0);
   const { toast } = useToast();
@@ -433,6 +436,10 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
     setExpandedItems(newExpanded);
   };
 
+  const handlePreview = () => {
+    setShowGraphPreview(true);
+  };
+
   const handleSubmit = async () => {
     const validation = validateReviewDecisions(state.decisions);
     if (!validation.valid) {
@@ -447,6 +454,11 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleConfirmSubmit = async () => {
+    setShowGraphPreview(false);
+    await handleSubmit();
   };
 
   const renderItemsList = (items: ReviewableItem[]) => (
@@ -835,6 +847,14 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
                     Reset Review
                   </Button>
                   <Button
+                    variant="outline"
+                    onClick={handlePreview}
+                    disabled={submitting || state.decisions.size === 0}
+                  >
+                    <Eye className="h-4 w-4 mr-2" />
+                    Preview Graph
+                  </Button>
+                  <Button
                     onClick={handleSubmit}
                     disabled={submitting || state.decisions.size === 0}
                   >
@@ -847,6 +867,19 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Graph preview modal */}
+      {showGraphPreview && (
+        <GraphPreviewModal
+          open={showGraphPreview}
+          onClose={() => setShowGraphPreview(false)}
+          onConfirm={handleConfirmSubmit}
+          reportId={report.report_id}
+          decisions={Array.from(state.decisions.values())}
+          globalNotes={state.globalNotes}
+          loading={submitting}
+        />
+      )}
 
       {/* Keyboard shortcuts dialog */}
       <Dialog open={showKeyboardShortcuts} onOpenChange={setShowKeyboardShortcuts}>
