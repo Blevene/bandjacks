@@ -293,6 +293,14 @@ async def submit_unified_review(
 
         entities_added_to_ignorelist = []  # Note: This is handled immediately in the UI now
 
+        # Update report with graph upsert timestamp if we pushed anything to the graph
+        if (entity_stats.get("created", 0) > 0 or entity_stats.get("updated", 0) > 0 or
+            technique_stats.get("created", 0) > 0 or technique_stats.get("updated", 0) > 0):
+            # Store graph upsert timestamp
+            report["graph_upserted_at"] = datetime.utcnow().isoformat()
+            store.index_report(report)
+            logger.info(f"Updated graph_upserted_at timestamp for report {report_id}")
+
         # Build detailed message with graph statistics
         message_parts = ["Unified review submitted successfully"]
 
@@ -903,6 +911,16 @@ async def upsert_to_graph(
     # Process the review decisions to create nodes and edges
     entity_stats = await _create_entities(report_id, submission, report, db)
     technique_stats = await _create_technique_links(report_id, submission, report, db)
+
+    # Update report with graph upsert timestamp if we pushed anything to the graph
+    if (entity_stats.get("created", 0) > 0 or entity_stats.get("updated", 0) > 0 or
+        technique_stats.get("created", 0) > 0 or technique_stats.get("updated", 0) > 0):
+        # Store graph upsert timestamp
+        os_client = get_opensearch_client()
+        store = OpenSearchReportStore(os_client)
+        report["graph_upserted_at"] = datetime.utcnow().isoformat()
+        store.index_report(report)
+        logger.info(f"Updated graph_upserted_at timestamp for report {report_id}")
 
     # Return statistics about what was created
     return UnifiedReviewResponse(
