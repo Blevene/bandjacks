@@ -174,6 +174,22 @@ bandjacks analytics actor intrusion-set--<uuid> \
   --output actor_analysis.json
 ```
 
+### Or Use Auto-Approve for Faster Processing:
+
+```bash
+# Auto-approve high-confidence extractions (no manual review)
+python -m bandjacks.cli.batch_extract \
+  --store-in-neo4j \
+  --skip-entity-extraction \
+  --auto-approve \
+  --auto-approve-threshold 0.80 \
+  --workers 8 \
+  ./threat_reports/
+
+# Immediately run analytics (data is already approved!)
+bandjacks analytics global --format csv --output results.csv
+```
+
 ### Or Use the Integrated Workflow:
 
 ```bash
