@@ -2,7 +2,7 @@
 
 from typing import Dict, Any, List, Optional
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Path, Body
+from fastapi import APIRouter, Depends, HTTPException, Path, Body, Query
 from pydantic import BaseModel, Field
 from neo4j import Session
 import logging
@@ -243,9 +243,11 @@ async def submit_unified_review(
         # Track graph statistics
         entity_stats = {"created": 0, "updated": 0}
         technique_stats = {"created": 0, "updated": 0, "skipped": 0}
+        flow_stats = {"episodes": 0, "actions": 0, "edges": 0, "skipped": 0}
 
         # If there are approved entities, upsert them to Neo4j
         if entity_decisions:
+            logger.info(f"Processing {len(entity_decisions)} entity decisions")
             approved_entities = []
             entities = report.get("extraction", {}).get("entities", {})
 
@@ -269,7 +271,11 @@ async def submit_unified_review(
 
             # Upsert approved entities to Neo4j
             if approved_entities:
+                logger.info(f"Upserting {len(approved_entities)} approved entities to Neo4j")
                 entity_stats = _upsert_entities_to_graph(neo4j_session, approved_entities, report_id)
+                logger.info(f"Entity upsert stats: {entity_stats}")
+            else:
+                logger.info("No approved entities to upsert")
 
         # If there are approved techniques, create relationships
         if technique_decisions:
@@ -286,19 +292,60 @@ async def submit_unified_review(
 
             # Create technique relationships in Neo4j
             if approved_techniques:
+                logger.info(f"Creating relationships for {len(approved_techniques)} approved techniques")
                 technique_stats = _create_technique_relationships(neo4j_session, approved_techniques, report_id)
-        
+                logger.info(f"Technique relationship stats: {technique_stats}")
+            else:
+                logger.info("No approved techniques to create relationships for")
+
+        # If there are approved flow steps, create attack flow graph
+        if flow_decisions:
+            logger.info(f"Processing {len(flow_decisions)} flow decisions")
+            approved_flow_steps = []
+            flow_steps = report.get("extraction", {}).get("flow", {}).get("steps", [])
+
+            for decision in flow_decisions:
+                if decision.action == "approve":
+                    # Parse flow ID format: flow-{step_id}
+                    parts = decision.item_id.split("-", 1)
+                    if len(parts) >= 2:
+                        step_id = parts[1]
+
+                        # Find the matching step
+                        for step in flow_steps:
+                            if step.get("step_id") == step_id or step.get("action_id") == step_id:
+                                approved_flow_steps.append(step)
+                                break
+
+            # Create attack flow graph in Neo4j
+            if approved_flow_steps:
+                logger.info(f"Creating attack flow graph with {len(approved_flow_steps)} approved steps")
+                flow_stats = _create_attack_flow_graph(neo4j_session, approved_flow_steps, report_id)
+                logger.info(f"Attack flow creation stats: {flow_stats}")
+            else:
+                logger.info("No approved flow steps to create graph for")
+
         logger.info(f"Unified review submitted for report {report_id}: "
                    f"{items_approved} approved, {items_rejected} rejected, {items_edited} edited")
 
         entities_added_to_ignorelist = []  # Note: This is handled immediately in the UI now
 
         # Update report with graph upsert timestamp if we pushed anything to the graph
+        logger.info(f"Final stats - Entities: {entity_stats}, Techniques: {technique_stats}, Flow: {flow_stats}")
         if (entity_stats.get("created", 0) > 0 or entity_stats.get("updated", 0) > 0 or
-            technique_stats.get("created", 0) > 0 or technique_stats.get("updated", 0) > 0):
+            technique_stats.get("created", 0) > 0 or technique_stats.get("updated", 0) > 0 or
+            flow_stats.get("episodes", 0) > 0 or flow_stats.get("actions", 0) > 0):
             # Store graph upsert timestamp
-            report["graph_upserted_at"] = datetime.utcnow().isoformat()
-            store.index_report(report)
+            graph_timestamp = datetime.utcnow().isoformat()
+            os_store.client.update(
+                index=os_store.index_name,
+                id=report_id,
+                body={
+                    "doc": {
+                        "graph_upserted_at": graph_timestamp
+                    }
+                }
+            )
             logger.info(f"Updated graph_upserted_at timestamp for report {report_id}")
 
         # Build detailed message with graph statistics
@@ -316,11 +363,12 @@ async def submit_unified_review(
         graph_stats = {
             "entities": entity_stats,
             "techniques": technique_stats,
-            "total_nodes_created": entity_stats["created"],
+            "flow": flow_stats,
+            "total_nodes_created": entity_stats["created"] + flow_stats.get("episodes", 0) + flow_stats.get("actions", 0),
             "total_nodes_updated": entity_stats["updated"],
-            "total_edges_created": technique_stats["created"],
+            "total_edges_created": technique_stats["created"] + flow_stats.get("edges", 0),
             "total_edges_updated": technique_stats["updated"],
-            "duplicates_consolidated": technique_stats.get("skipped", 0)
+            "duplicates_consolidated": technique_stats.get("skipped", 0) + flow_stats.get("skipped", 0)
         }
 
         return UnifiedReviewResponse(
@@ -513,16 +561,19 @@ async def update_review_decision(
 
 
 def _upsert_entities_to_graph(session: Session, entities: List[Dict], report_id: str) -> Dict[str, int]:
-    """Helper to upsert entities to Neo4j - only called after review approval.
+    """Helper to upsert entities to Neo4j with evidence tracking - only called after review approval.
     Returns statistics about created/updated nodes.
     """
     import uuid
 
+    logger.info(f"_upsert_entities_to_graph called with {len(entities)} entities for report {report_id}")
+
     stats = {"created": 0, "updated": 0}
 
     for entity in entities:
+        logger.debug(f"Processing entity: {entity}")
         entity_type = entity.get("entity_type", "unknown")
-        
+
         # Map entity type to Neo4j labels and STIX types
         label_map = {
             "malware": ("Software", "malware"),
@@ -533,16 +584,36 @@ def _upsert_entities_to_graph(session: Session, entities: List[Dict], report_id:
             "intrusion-set": ("IntrusionSet", "intrusion-set"),
             "campaign": ("Campaign", "campaign")
         }
-        
+
         label, stix_type = label_map.get(entity_type.lower(), ("Entity", "x-unknown"))
-        
+
         # Use resolved STIX ID if available, otherwise generate new one
         stix_id = entity.get("resolved_stix_id") or entity.get("stix_id")
         if not stix_id:
             stix_id = f"{stix_type}--{uuid.uuid4()}"
             logger.info(f"Creating new entity {entity.get('name')} with ID {stix_id}")
-        
-        # Create or update entity
+
+        # Extract evidence mentions if available
+        evidence_mentions = []
+        metadata = entity.get("metadata", {})
+        if metadata.get("mentions"):
+            # Limit to 10 mentions, each truncated to 200 chars
+            evidence_mentions = [
+                mention[:200] for mention in metadata.get("mentions", [])[:10]
+            ]
+
+        # Extract line references if available
+        line_refs = metadata.get("line_refs", [])[:20]  # Limit to 20 line refs
+
+        # Create extraction metadata string
+        extraction_meta = {
+            "confidence": entity.get("confidence", 50.0),
+            "source_report": report_id,
+            "extraction_method": metadata.get("extraction_method", "llm"),
+            "entity_category": entity.get("type", entity_type)
+        }
+
+        # Create or update entity with evidence
         query = f"""
             MERGE (e:{label} {{stix_id: $stix_id}})
             ON CREATE SET
@@ -553,17 +624,31 @@ def _upsert_entities_to_graph(session: Session, entities: List[Dict], report_id:
                 e.source_report = $report_id,
                 e.created = datetime(),
                 e.modified = datetime(),
-                e.x_bj_confidence = $confidence
+                e.x_bj_confidence = $confidence,
+                e.evidence_mentions = $evidence_mentions,
+                e.line_refs = $line_refs,
+                e.extraction_metadata = $extraction_metadata
             ON MATCH SET
                 e.modified = datetime(),
                 e.x_bj_confidence = CASE
                     WHEN e.x_bj_confidence < $confidence
                     THEN $confidence
                     ELSE e.x_bj_confidence
+                END,
+                e.evidence_mentions = CASE
+                    WHEN size($evidence_mentions) > 0
+                    THEN $evidence_mentions
+                    ELSE e.evidence_mentions
+                END,
+                e.line_refs = CASE
+                    WHEN size($line_refs) > 0
+                    THEN $line_refs
+                    ELSE e.line_refs
                 END
             RETURN e, e.created = datetime() as was_created
         """
 
+        logger.debug(f"Executing Neo4j MERGE for entity {stix_id} ({label})")
         result = session.run(
             query,
             stix_id=stix_id,
@@ -571,22 +656,29 @@ def _upsert_entities_to_graph(session: Session, entities: List[Dict], report_id:
             stix_type=stix_type,
             description=entity.get("description", ""),
             report_id=report_id,
-            confidence=entity.get("confidence", 50.0)
+            confidence=entity.get("confidence", 50.0),
+            evidence_mentions=evidence_mentions,
+            line_refs=line_refs,
+            extraction_metadata=str(extraction_meta)  # Convert dict to string for storage
         )
 
         record = result.single()
         if record and record["was_created"]:
             stats["created"] += 1
+            logger.info(f"Created entity {stix_id} in Neo4j")
         else:
             stats["updated"] += 1
+            logger.info(f"Updated entity {stix_id} in Neo4j")
 
+    logger.info(f"Entity upsert complete. Stats: {stats}")
     return stats
 
 
 def _create_technique_relationships(session: Session, techniques: List[Dict], report_id: str) -> Dict[str, int]:
-    """Helper to create technique relationships in Neo4j.
+    """Helper to create technique relationships in Neo4j with evidence tracking.
     Returns statistics about created/updated relationships.
     """
+    logger.info(f"_create_technique_relationships called with {len(techniques)} techniques for report {report_id}")
 
     stats = {"created": 0, "updated": 0, "skipped": 0}
 
@@ -596,21 +688,62 @@ def _create_technique_relationships(session: Session, techniques: List[Dict], re
         SET r.modified = datetime()
     """, report_id=report_id)
 
-    # Group techniques by external_id to consolidate duplicates
+    # Group techniques by external_id to consolidate duplicates and merge evidence
     technique_map = {}
-    for technique in techniques:
+    for idx, technique in enumerate(techniques):
         external_id = technique.get("external_id")
         if external_id:
             if external_id not in technique_map:
-                technique_map[external_id] = technique
+                technique_map[external_id] = {
+                    **technique,
+                    "claim_ids": [f"technique-{idx}"],
+                    "all_evidence": technique.get("evidence", [])
+                }
             else:
-                # Merge with higher confidence
+                # Merge with existing, keeping higher confidence and combining evidence
                 existing = technique_map[external_id]
                 if technique.get("confidence", 0) > existing.get("confidence", 0):
-                    technique_map[external_id] = technique
+                    technique_map[external_id]["confidence"] = technique.get("confidence", 0)
 
-    # Create unique relationships to techniques
+                # Combine evidence from multiple claims
+                technique_map[external_id]["claim_ids"].append(f"technique-{idx}")
+                technique_map[external_id]["all_evidence"].extend(technique.get("evidence", []))
+
+    # Create unique relationships to techniques with evidence
     for external_id, technique in technique_map.items():
+        # Extract and process evidence
+        evidence_texts = []
+        line_numbers = []
+
+        for ev in technique.get("all_evidence", []):
+            if isinstance(ev, dict):
+                quote = ev.get("quote", "")
+                if quote:
+                    # Limit each evidence to 500 chars
+                    evidence_texts.append(quote[:500])
+                line_refs = ev.get("line_refs", [])
+                if line_refs:
+                    line_numbers.extend(line_refs)
+            elif isinstance(ev, str):
+                evidence_texts.append(ev[:500])
+
+        # Deduplicate evidence while preserving order
+        seen = set()
+        unique_evidence = []
+        for txt in evidence_texts[:10]:  # Limit to 10 pieces
+            if txt not in seen:
+                seen.add(txt)
+                unique_evidence.append(txt)
+
+        # Deduplicate line numbers
+        unique_lines = list(set(line_numbers))[:20]  # Limit to 20 line refs
+
+        # Create source summary from description
+        source_summary = technique.get("description", "")[:200]
+
+        # Join claim IDs
+        claim_ids_str = ",".join(technique.get("claim_ids", []))[:100]  # Limit length
+
         result = session.run("""
             MATCH (r:Report {stix_id: $report_id})
             MATCH (t:AttackPattern {external_id: $external_id})
@@ -620,7 +753,12 @@ def _create_technique_relationships(session: Session, techniques: List[Dict], re
                 rel.evidence_score = $evidence_score,
                 rel.reviewed = true,
                 rel.review_timestamp = datetime(),
-                rel.created = datetime()
+                rel.created = datetime(),
+                rel.evidence_texts = $evidence_texts,
+                rel.line_numbers = $line_numbers,
+                rel.source_summary = $source_summary,
+                rel.claim_ids = $claim_ids,
+                rel.technique_name = $technique_name
             ON MATCH SET
                 rel.confidence = CASE
                     WHEN rel.confidence < $confidence
@@ -632,13 +770,23 @@ def _create_technique_relationships(session: Session, techniques: List[Dict], re
                     THEN $evidence_score
                     ELSE rel.evidence_score
                 END,
-                rel.modified = datetime()
+                rel.modified = datetime(),
+                rel.evidence_texts = $evidence_texts,
+                rel.line_numbers = $line_numbers,
+                rel.source_summary = $source_summary,
+                rel.claim_ids = $claim_ids,
+                rel.technique_name = $technique_name
             RETURN rel.created = datetime() as was_created
         """,
         report_id=report_id,
         external_id=external_id,
         confidence=technique.get("confidence", 0),
-        evidence_score=technique.get("evidence_score", 0)
+        evidence_score=technique.get("evidence_score", 0),
+        evidence_texts=unique_evidence,
+        line_numbers=unique_lines,
+        source_summary=source_summary,
+        claim_ids=claim_ids_str,
+        technique_name=technique.get("name", external_id)
         )
 
         record = result.single()
@@ -650,6 +798,182 @@ def _create_technique_relationships(session: Session, techniques: List[Dict], re
         else:
             stats["skipped"] += 1
 
+    return stats
+
+
+def _create_attack_flow_graph(session: Session, flow_steps: List[Dict], report_id: str) -> Dict[str, int]:
+    """Helper to create attack flow graph in Neo4j with AttackEpisode and AttackAction nodes.
+    Returns statistics about created nodes and relationships.
+    """
+    import uuid
+
+    logger.info(f"_create_attack_flow_graph called with {len(flow_steps)} flow steps for report {report_id}")
+
+    stats = {"episodes": 0, "actions": 0, "edges": 0, "skipped": 0}
+
+    if not flow_steps:
+        logger.info("No flow steps to process")
+        return stats
+
+    # Create or get AttackEpisode for this report
+    episode_id = f"episode--{report_id.split('--')[1]}"
+
+    result = session.run("""
+        MERGE (ep:AttackEpisode {episode_id: $episode_id})
+        ON CREATE SET
+            ep.stix_id = $episode_id,
+            ep.report_id = $report_id,
+            ep.source_report = $report_id,
+            ep.flow_id = $flow_id,
+            ep.name = $report_name,
+            ep.description = 'Attack flow extracted from report',
+            ep.created = datetime(),
+            ep.modified = datetime(),
+            ep.confidence = $avg_confidence
+        ON MATCH SET
+            ep.modified = datetime(),
+            ep.confidence = CASE
+                WHEN ep.confidence < $avg_confidence
+                THEN $avg_confidence
+                ELSE ep.confidence
+            END
+        RETURN ep.created = datetime() as was_created
+    """,
+        episode_id=episode_id,
+        report_id=report_id,
+        flow_id=f"flow--{report_id.split('--')[1]}",
+        report_name=f"Attack flow from {report_id}",
+        avg_confidence=sum(s.get("confidence", 80) for s in flow_steps) / len(flow_steps)
+    )
+
+    if result.single()["was_created"]:
+        stats["episodes"] += 1
+        logger.info(f"Created AttackEpisode {episode_id}")
+    else:
+        logger.info(f"Updated existing AttackEpisode {episode_id}")
+
+    # Create AttackAction nodes for each approved flow step
+    action_nodes = []
+    for i, step in enumerate(flow_steps):
+        # Generate unique action ID
+        step_id = step.get("step_id") or step.get("action_id") or f"step-{i}"
+        action_id = f"action--{report_id.split('--')[1]}-{step_id}"
+
+        # Get technique reference - check multiple possible field names
+        technique_ref = step.get("attack_pattern_ref") or step.get("technique_ref") or step.get("technique_id") or ""
+        technique_name = step.get("name") or step.get("technique_name") or f"Step {i+1}"
+
+        # Create AttackAction node
+        result = session.run("""
+            MERGE (aa:AttackAction {action_id: $action_id})
+            ON CREATE SET
+                aa.stix_id = $action_id,
+                aa.report_id = $report_id,
+                aa.source_report = $report_id,
+                aa.episode_id = $episode_id,
+                aa.attack_pattern_ref = $technique_ref,
+                aa.technique_ref = $technique_ref,
+                aa.name = $technique_name,
+                aa.description = $description,
+                aa.order = $order,
+                aa.sequence = $order,
+                aa.confidence = $confidence,
+                aa.evidence = $evidence,
+                aa.created = datetime(),
+                aa.modified = datetime()
+            ON MATCH SET
+                aa.modified = datetime(),
+                aa.confidence = CASE
+                    WHEN aa.confidence < $confidence
+                    THEN $confidence
+                    ELSE aa.confidence
+                END
+            RETURN aa.created = datetime() as was_created
+        """,
+            action_id=action_id,
+            report_id=report_id,
+            episode_id=episode_id,
+            technique_ref=technique_ref,
+            technique_name=technique_name,
+            description=step.get("description", "")[:500],
+            order=step.get("order", i + 1),
+            confidence=step.get("confidence", 80),
+            evidence=step.get("evidence") or step.get("rationale") or step.get("reason") or ""
+        )
+
+        if result.single()["was_created"]:
+            stats["actions"] += 1
+            logger.info(f"Created AttackAction {action_id} for technique {technique_ref}")
+        else:
+            logger.info(f"Updated AttackAction {action_id}")
+
+        action_nodes.append({
+            "action_id": action_id,
+            "technique_ref": technique_ref,
+            "sequence": i
+        })
+
+        # Link AttackAction to AttackEpisode
+        session.run("""
+            MATCH (ep:AttackEpisode {episode_id: $episode_id})
+            MATCH (aa:AttackAction {action_id: $action_id})
+            MERGE (ep)-[:CONTAINS]->(aa)
+        """, episode_id=episode_id, action_id=action_id)
+
+        # Link AttackAction to AttackPattern if technique exists
+        if technique_ref:
+            # Extract just the technique ID if it's a full STIX ID
+            if technique_ref.startswith("attack-pattern--"):
+                # Use STIX ID directly
+                session.run("""
+                    MATCH (aa:AttackAction {action_id: $action_id})
+                    MATCH (t:AttackPattern {stix_id: $technique_ref})
+                    MERGE (aa)-[:USES_TECHNIQUE]->(t)
+                """, action_id=action_id, technique_ref=technique_ref)
+            else:
+                # Use external_id (e.g., T1566.001)
+                session.run("""
+                    MATCH (aa:AttackAction {action_id: $action_id})
+                    MATCH (t:AttackPattern {external_id: $technique_ref})
+                    MERGE (aa)-[:USES_TECHNIQUE]->(t)
+                """, action_id=action_id, technique_ref=technique_ref)
+
+    # Create NEXT relationships between sequential AttackActions
+    for i in range(len(action_nodes) - 1):
+        current = action_nodes[i]
+        next_node = action_nodes[i + 1]
+
+        # Calculate probability based on sequence distance and confidence
+        probability = 0.9 - (0.1 * i / max(1, len(action_nodes) - 1))  # Decay probability slightly
+
+        result = session.run("""
+            MATCH (a1:AttackAction {action_id: $current_id})
+            MATCH (a2:AttackAction {action_id: $next_id})
+            MERGE (a1)-[r:NEXT]->(a2)
+            ON CREATE SET
+                r.probability = $probability,
+                r.sequence_delta = 1,
+                r.created = datetime(),
+                r.source = 'review_approved'
+            ON MATCH SET
+                r.probability = CASE
+                    WHEN r.probability < $probability
+                    THEN $probability
+                    ELSE r.probability
+                END,
+                r.modified = datetime()
+            RETURN r.created = datetime() as was_created
+        """,
+            current_id=current["action_id"],
+            next_id=next_node["action_id"],
+            probability=probability
+        )
+
+        if result.single()["was_created"]:
+            stats["edges"] += 1
+            logger.info(f"Created NEXT edge from {current['technique_ref']} to {next_node['technique_ref']}")
+
+    logger.info(f"Attack flow graph creation complete. Stats: {stats}")
     return stats
 
 
@@ -937,3 +1261,104 @@ async def upsert_to_graph(
             "duplicates_consolidated": technique_stats.get("skipped", 0)
         }
     )
+
+@router.get(
+    "/evidence/{node_id}",
+    summary="Get Evidence for Node",
+    description="Retrieve evidence for a technique or entity from the graph"
+)
+async def get_node_evidence(
+    node_id: str = Path(..., description="Node ID (technique external_id or entity stix_id)"),
+    node_type: str = Query("technique", description="Node type: 'technique' or 'entity'"),
+    neo4j_session: Session = Depends(get_neo4j_session)
+):
+    """Retrieve evidence for a technique or entity from the Neo4j graph."""
+    try:
+        if node_type == "technique":
+            # Query for technique evidence from EXTRACTED_TECHNIQUE relationships
+            query = """
+            MATCH (r:Report)-[rel:EXTRACTED_TECHNIQUE]->(t:AttackPattern)
+            WHERE t.external_id = $node_id OR t.stix_id = $node_id
+            RETURN
+                r.stix_id as report_id,
+                r.name as report_name,
+                rel.evidence_texts as evidence_texts,
+                rel.line_numbers as line_numbers,
+                rel.source_summary as source_summary,
+                rel.claim_ids as claim_ids,
+                rel.confidence as confidence,
+                rel.technique_name as technique_name,
+                t.name as technique_full_name,
+                t.external_id as technique_id
+            ORDER BY rel.confidence DESC
+            """
+            results = neo4j_session.run(query, node_id=node_id)
+
+            evidence_records = []
+            for record in results:
+                evidence_records.append({
+                    "report_id": record["report_id"],
+                    "report_name": record["report_name"],
+                    "evidence_texts": record["evidence_texts"] or [],
+                    "line_numbers": record["line_numbers"] or [],
+                    "source_summary": record["source_summary"],
+                    "claim_ids": record["claim_ids"],
+                    "confidence": record["confidence"],
+                    "technique_name": record["technique_name"] or record["technique_full_name"],
+                    "technique_id": record["technique_id"]
+                })
+
+            return {
+                "node_id": node_id,
+                "node_type": "technique",
+                "evidence_count": len(evidence_records),
+                "evidence": evidence_records
+            }
+
+        elif node_type == "entity":
+            # Query for entity evidence from node properties
+            query = """
+            MATCH (e)
+            WHERE e.stix_id = $node_id
+            RETURN
+                e.stix_id as entity_id,
+                e.name as entity_name,
+                e.type as entity_type,
+                e.evidence_mentions as evidence_mentions,
+                e.line_refs as line_refs,
+                e.source_report as source_report,
+                e.description as description,
+                e.x_bj_confidence as confidence,
+                e.extraction_metadata as extraction_metadata
+            """
+            result = neo4j_session.run(query, node_id=node_id).single()
+
+            if not result:
+                raise HTTPException(status_code=404, detail=f"Entity {node_id} not found")
+
+            return {
+                "node_id": node_id,
+                "node_type": "entity",
+                "entity_name": result["entity_name"],
+                "entity_type": result["entity_type"],
+                "evidence": {
+                    "evidence_mentions": result["evidence_mentions"] or [],
+                    "line_refs": result["line_refs"] or [],
+                    "source_report": result["source_report"],
+                    "description": result["description"],
+                    "confidence": result["confidence"],
+                    "extraction_metadata": result["extraction_metadata"]
+                }
+            }
+
+        else:
+            raise HTTPException(status_code=400, detail=f"Invalid node type: {node_type}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to retrieve evidence for {node_id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve evidence: {str(e)}"
+        )
