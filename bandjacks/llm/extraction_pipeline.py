@@ -98,7 +98,8 @@ class ExtractionPipeline:
             extraction_result,
             flow,
             embeddings,
-            source_id
+            source_id,
+            config
         )
         
         # Add metrics
@@ -143,13 +144,17 @@ class ExtractionPipeline:
         )
         
         # Run agent pipeline
-        
-        # NEW: Extract entities first (malware, threat actors, etc.)
-        tracker.set_stage("EntityExtraction")
-        if progress_callback:
-            progress_callback(30, "Extracting threat entities...")
-        EntityExtractionAgent().run(mem, config)
-        logger.info(f"Extracted entities: primary={mem.entities.get('primary_entity', {}).get('name')}")
+
+        # NEW: Extract entities first (malware, threat actors, etc.) unless skipped
+        if not config.get("skip_entity_extraction", False):
+            tracker.set_stage("EntityExtraction")
+            if progress_callback:
+                progress_callback(30, "Extracting threat entities...")
+            EntityExtractionAgent().run(mem, config)
+            logger.info(f"Extracted entities: primary={mem.entities.get('primary_entity', {}).get('name')}")
+        else:
+            logger.info("Entity extraction skipped (skip_entity_extraction=True)")
+            mem.entities = {"entities": [], "extraction_status": "skipped"}
         
         tracker.set_stage("SpanFinder")
         if progress_callback:
@@ -408,49 +413,73 @@ class ExtractionPipeline:
         extraction_result: Dict[str, Any],
         flow: Optional[Dict[str, Any]],
         embeddings: Dict[str, List[float]],
-        source_id: Optional[str] = None
+        source_id: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Prepare complete review package for analyst validation.
-        
+
         Args:
             extraction_result: The extraction results
             flow: Generated attack flow (optional)
             embeddings: Technique embeddings
             source_id: Optional source identifier
-            
+            config: Configuration options including auto-approval settings
+
         Returns:
             Review package ready for analyst validation
         """
         logger.info(f"Preparing review package with flow: {flow is not None}, flow_id: {flow.get('flow_id') if flow else 'None'}")
-        
+
+        config = config or {}
+
+        # Calculate average confidence for auto-approval decision
+        avg_confidence = self._calculate_avg_confidence(extraction_result)
+        auto_approve = config.get("auto_approve", False)
+        auto_approve_threshold = config.get("auto_approve_threshold", 0.9)
+
+        # Determine if auto-approved
+        is_auto_approved = auto_approve and avg_confidence >= auto_approve_threshold
+
+        if is_auto_approved:
+            logger.info(f"Auto-approved: avg_confidence={avg_confidence:.2f} >= threshold={auto_approve_threshold}")
+            status = "auto_approved"
+            review_required = False
+        else:
+            if auto_approve:
+                logger.info(f"Manual review required: avg_confidence={avg_confidence:.2f} < threshold={auto_approve_threshold}")
+            status = "pending_review"
+            review_required = True
+
         review_package = {
             "extraction_id": str(uuid.uuid4()),
             "source_id": source_id,
             "timestamp": datetime.utcnow().isoformat(),
-            "status": "pending_review",
-            
+            "status": status,
+
             # Extraction results
             "techniques": extraction_result.get("techniques", {}),
             "technique_count": len(extraction_result.get("techniques", {})),
             "claims": extraction_result.get("claims", []),
             "entities": extraction_result.get("entities", {"entities": [], "extraction_status": "not_attempted"}),
-            
+
             # Evidence mapping for review
             "evidence_map": self._build_evidence_map(extraction_result),
-            
+
             # Embeddings (store separately or include reference)
             "has_embeddings": len(embeddings) > 0,
             "embedding_count": len(embeddings),
-            
+
             # Attack flow
             "flow": flow,
-            
+
             # Review metadata
-            "review_required": True,
-            "auto_approve_threshold": 0.9,  # Confidence threshold for auto-approval
-            "requires_manual_review": self._requires_manual_review(extraction_result, flow)
+            "review_required": review_required,
+            "auto_approved": is_auto_approved,
+            "auto_approve_threshold": auto_approve_threshold,
+            "average_confidence": avg_confidence,
+            "requires_manual_review": self._requires_manual_review(extraction_result, flow) and not is_auto_approved
         }
-        
+
         return review_package
     
     def _build_evidence_map(self, extraction_result: Dict[str, Any]) -> Dict[str, List[Dict]]:

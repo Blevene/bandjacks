@@ -62,7 +62,10 @@ class BatchExtractor:
         store_in_neo4j: bool = False,
         neo4j_uri: str = None,
         neo4j_user: str = None,
-        neo4j_password: str = None
+        neo4j_password: str = None,
+        skip_entity_extraction: bool = False,
+        auto_approve: bool = False,
+        auto_approve_threshold: float = 0.80
     ):
         self.workers = workers
         self.use_api = use_api
@@ -73,6 +76,9 @@ class BatchExtractor:
         self.neo4j_uri = neo4j_uri
         self.neo4j_user = neo4j_user
         self.neo4j_password = neo4j_password
+        self.skip_entity_extraction = skip_entity_extraction
+        self.auto_approve = auto_approve
+        self.auto_approve_threshold = auto_approve_threshold
         self.results = []
         self.start_time = time.time()
     
@@ -122,6 +128,9 @@ class BatchExtractor:
                 "span_score_threshold": 0.85,
                 "confidence_threshold": 50.0,
                 "model": os.getenv("PRIMARY_LLM", "gemini/gemini-2.5-flash"),
+                "skip_entity_extraction": getattr(self, 'skip_entity_extraction', False),
+                "auto_approve": getattr(self, 'auto_approve', False),
+                "auto_approve_threshold": getattr(self, 'auto_approve_threshold', 0.80),
             }
             
             # Use chunked extraction
@@ -141,6 +150,13 @@ class BatchExtractor:
             result["chunks_used"] = extraction_result.get("metrics", {}).get("total_chunks", 0)
             result["status"] = "success"
             result["technique_details"] = techniques
+
+            # Calculate average confidence for auto-approval
+            if techniques:
+                confidences = [t.get("confidence", 50.0) / 100.0 for t in techniques.values()]
+                result["average_confidence"] = sum(confidences) / len(confidences)
+            else:
+                result["average_confidence"] = 0.0
             
         except Exception as e:
             result["status"] = "error"
@@ -232,6 +248,9 @@ class BatchExtractor:
         """
         Store extraction result in Neo4j as AttackEpisode with AttackActions.
 
+        If auto-approved, creates full USES relationships to AttackPattern nodes.
+        If review required, only creates AttackAction nodes pending review.
+
         Args:
             result: Extraction result dictionary
 
@@ -245,6 +264,9 @@ class BatchExtractor:
             from neo4j import GraphDatabase
             import uuid
             from datetime import datetime
+
+            # Check if auto-approved based on extraction config
+            is_auto_approved = self.auto_approve and result.get("average_confidence", 0) >= self.auto_approve_threshold
 
             driver = GraphDatabase.driver(
                 self.neo4j_uri,
@@ -262,20 +284,24 @@ class BatchExtractor:
                         name: $name,
                         created: $created,
                         source_file: $source_file,
-                        extraction_timestamp: $timestamp
+                        extraction_timestamp: $timestamp,
+                        auto_approved: $auto_approved
                     })
                 """, episode_id=episode_id, name=episode_name,
                     created=datetime.utcnow().isoformat() + "Z",
                     source_file=result['file'],
-                    timestamp=datetime.utcnow().isoformat() + "Z")
+                    timestamp=datetime.utcnow().isoformat() + "Z",
+                    auto_approved=is_auto_approved)
 
                 # Create AttackAction nodes for each technique
+                action_ids = {}
                 for technique_id in result.get("techniques", []):
                     # Get technique details if available
                     tech_details = result.get("technique_details", {}).get(technique_id, {})
                     confidence = tech_details.get("confidence", 50.0)
 
                     action_id = f"attack-action--{uuid.uuid4()}"
+                    action_ids[technique_id] = action_id
 
                     # Create AttackAction node
                     session.run("""
@@ -284,40 +310,59 @@ class BatchExtractor:
                             stix_id: $action_id,
                             attack_pattern_ref: $technique_id,
                             confidence: $confidence,
-                            created: $created
+                            created: $created,
+                            auto_approved: $auto_approved
                         })
                         CREATE (e)-[:CONTAINS]->(a)
                     """, episode_id=episode_id, action_id=action_id,
                         technique_id=technique_id, confidence=confidence,
-                        created=datetime.utcnow().isoformat() + "Z")
+                        created=datetime.utcnow().isoformat() + "Z",
+                        auto_approved=is_auto_approved)
 
-                # Link to extracted entities if available
-                entities = result.get("entities", {})
-                if entities and isinstance(entities, dict):
-                    for entity in entities.get("entities", []):
-                        entity_name = entity.get("name", "")
-                        entity_type = entity.get("type", "")
+                    # If auto-approved, create USES relationship to AttackPattern
+                    if is_auto_approved:
+                        session.run("""
+                            MATCH (action:AttackAction {stix_id: $action_id})
+                            MATCH (pattern:AttackPattern {stix_id: $technique_id})
+                            MERGE (action)-[:USES {
+                                confidence: $confidence,
+                                auto_approved: true,
+                                approved_at: $timestamp
+                            }]->(pattern)
+                        """, action_id=action_id, technique_id=technique_id,
+                            confidence=confidence,
+                            timestamp=datetime.utcnow().isoformat() + "Z")
 
-                        if entity_name:
-                            # Try to find existing entity node
-                            existing = session.run("""
-                                MATCH (n)
-                                WHERE n.name =~ $pattern
-                                  AND (n:IntrusionSet OR n:Malware OR n:Tool OR n:Campaign)
-                                RETURN n.stix_id as id
-                                LIMIT 1
-                            """, pattern=f"(?i).*{entity_name}.*").single()
+                # Link to extracted entities if available (unless entity extraction was skipped)
+                if not self.skip_entity_extraction:
+                    entities = result.get("entities", {})
+                    if entities and isinstance(entities, dict):
+                        for entity in entities.get("entities", []):
+                            entity_name = entity.get("name", "")
+                            entity_type = entity.get("type", "")
 
-                            if existing:
-                                # Link episode to existing entity
-                                session.run("""
-                                    MATCH (e:AttackEpisode {stix_id: $episode_id})
-                                    MATCH (entity {stix_id: $entity_id})
-                                    MERGE (e)-[:ATTRIBUTED_TO]->(entity)
-                                """, episode_id=episode_id, entity_id=existing["id"])
+                            if entity_name:
+                                # Try to find existing entity node
+                                existing = session.run("""
+                                    MATCH (n)
+                                    WHERE n.name =~ $pattern
+                                      AND (n:IntrusionSet OR n:Malware OR n:Tool OR n:Campaign)
+                                    RETURN n.stix_id as id
+                                    LIMIT 1
+                                """, pattern=f"(?i).*{entity_name}.*").single()
 
-                print(f"  ✓ Stored in Neo4j: {episode_id} ({len(result.get('techniques', []))} techniques)")
+                                if existing:
+                                    # Link episode to existing entity
+                                    session.run("""
+                                        MATCH (e:AttackEpisode {stix_id: $episode_id})
+                                        MATCH (entity {stix_id: $entity_id})
+                                        MERGE (e)-[:ATTRIBUTED_TO]->(entity)
+                                    """, episode_id=episode_id, entity_id=existing["id"])
+
+                status_msg = "auto-approved" if is_auto_approved else "pending review"
+                print(f"  ✓ Stored in Neo4j: {episode_id} ({len(result.get('techniques', []))} techniques, {status_msg})")
                 result["neo4j_episode_id"] = episode_id
+                result["auto_approved"] = is_auto_approved
                 return True
 
         except Exception as e:
@@ -532,6 +577,12 @@ Examples:
                        help="Neo4j username")
     parser.add_argument("--neo4j-password", default=os.getenv("NEO4J_PASSWORD", "password"),
                        help="Neo4j password")
+    parser.add_argument("--skip-entity-extraction", action="store_true",
+                       help="Skip entity extraction (faster, techniques only)")
+    parser.add_argument("--auto-approve", action="store_true",
+                       help="Auto-approve high-confidence techniques and flows")
+    parser.add_argument("--auto-approve-threshold", type=float, default=0.80,
+                       help="Confidence threshold for auto-approval (0.0-1.0, default: 0.80)")
 
     args = parser.parse_args()
     
@@ -574,6 +625,10 @@ Examples:
     if args.store_in_neo4j:
         print(f"   - Neo4j storage: Enabled")
         print(f"   - Neo4j URI: {args.neo4j_uri}")
+    if args.skip_entity_extraction:
+        print(f"   - Entity extraction: Skipped (techniques only)")
+    if args.auto_approve:
+        print(f"   - Auto-approve: Enabled (threshold: {args.auto_approve_threshold})")
     print("=" * 60)
 
     # Create batch extractor
@@ -586,7 +641,10 @@ Examples:
         store_in_neo4j=args.store_in_neo4j,
         neo4j_uri=args.neo4j_uri,
         neo4j_user=args.neo4j_user,
-        neo4j_password=args.neo4j_password
+        neo4j_password=args.neo4j_password,
+        skip_entity_extraction=args.skip_entity_extraction,
+        auto_approve=args.auto_approve,
+        auto_approve_threshold=args.auto_approve_threshold
     )
     
     # Process files
