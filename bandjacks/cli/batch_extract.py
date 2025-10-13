@@ -51,20 +51,28 @@ def extract_text_from_pdf(pdf_path: str) -> str:
 
 class BatchExtractor:
     """Batch extraction processor for threat reports."""
-    
+
     def __init__(
         self,
         workers: int = 3,
         use_api: bool = False,
         api_url: str = "http://localhost:8000",
         chunk_size: int = 3000,
-        max_chunks: int = 10
+        max_chunks: int = 10,
+        store_in_neo4j: bool = False,
+        neo4j_uri: str = None,
+        neo4j_user: str = None,
+        neo4j_password: str = None
     ):
         self.workers = workers
         self.use_api = use_api
         self.api_url = api_url
         self.chunk_size = chunk_size
         self.max_chunks = max_chunks
+        self.store_in_neo4j = store_in_neo4j
+        self.neo4j_uri = neo4j_uri
+        self.neo4j_user = neo4j_user
+        self.neo4j_password = neo4j_password
         self.results = []
         self.start_time = time.time()
     
@@ -219,7 +227,108 @@ class BatchExtractor:
         
         result["processing_time"] = round(time.time() - start_time, 2)
         return result
-    
+
+    def store_result_in_neo4j(self, result: Dict[str, Any]) -> bool:
+        """
+        Store extraction result in Neo4j as AttackEpisode with AttackActions.
+
+        Args:
+            result: Extraction result dictionary
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.store_in_neo4j or result["status"] != "success":
+            return False
+
+        try:
+            from neo4j import GraphDatabase
+            import uuid
+            from datetime import datetime
+
+            driver = GraphDatabase.driver(
+                self.neo4j_uri,
+                auth=(self.neo4j_user, self.neo4j_password)
+            )
+
+            with driver.session() as session:
+                # Create AttackEpisode node
+                episode_id = f"attack-episode--{uuid.uuid4()}"
+                episode_name = f"Extracted from {result['file']}"
+
+                session.run("""
+                    CREATE (e:AttackEpisode {
+                        stix_id: $episode_id,
+                        name: $name,
+                        created: $created,
+                        source_file: $source_file,
+                        extraction_timestamp: $timestamp
+                    })
+                """, episode_id=episode_id, name=episode_name,
+                    created=datetime.utcnow().isoformat() + "Z",
+                    source_file=result['file'],
+                    timestamp=datetime.utcnow().isoformat() + "Z")
+
+                # Create AttackAction nodes for each technique
+                for technique_id in result.get("techniques", []):
+                    # Get technique details if available
+                    tech_details = result.get("technique_details", {}).get(technique_id, {})
+                    confidence = tech_details.get("confidence", 50.0)
+
+                    action_id = f"attack-action--{uuid.uuid4()}"
+
+                    # Create AttackAction node
+                    session.run("""
+                        MATCH (e:AttackEpisode {stix_id: $episode_id})
+                        CREATE (a:AttackAction {
+                            stix_id: $action_id,
+                            attack_pattern_ref: $technique_id,
+                            confidence: $confidence,
+                            created: $created
+                        })
+                        CREATE (e)-[:CONTAINS]->(a)
+                    """, episode_id=episode_id, action_id=action_id,
+                        technique_id=technique_id, confidence=confidence,
+                        created=datetime.utcnow().isoformat() + "Z")
+
+                # Link to extracted entities if available
+                entities = result.get("entities", {})
+                if entities and isinstance(entities, dict):
+                    for entity in entities.get("entities", []):
+                        entity_name = entity.get("name", "")
+                        entity_type = entity.get("type", "")
+
+                        if entity_name:
+                            # Try to find existing entity node
+                            existing = session.run("""
+                                MATCH (n)
+                                WHERE n.name =~ $pattern
+                                  AND (n:IntrusionSet OR n:Malware OR n:Tool OR n:Campaign)
+                                RETURN n.stix_id as id
+                                LIMIT 1
+                            """, pattern=f"(?i).*{entity_name}.*").single()
+
+                            if existing:
+                                # Link episode to existing entity
+                                session.run("""
+                                    MATCH (e:AttackEpisode {stix_id: $episode_id})
+                                    MATCH (entity {stix_id: $entity_id})
+                                    MERGE (e)-[:ATTRIBUTED_TO]->(entity)
+                                """, episode_id=episode_id, entity_id=existing["id"])
+
+                print(f"  ✓ Stored in Neo4j: {episode_id} ({len(result.get('techniques', []))} techniques)")
+                result["neo4j_episode_id"] = episode_id
+                return True
+
+        except Exception as e:
+            print(f"  ⚠ Failed to store in Neo4j: {e}")
+            return False
+        finally:
+            try:
+                driver.close()
+            except:
+                pass
+
     def process_files(self, file_paths: List[Path]) -> List[Dict[str, Any]]:
         """Process multiple files with parallel workers."""
         
@@ -261,11 +370,16 @@ class BatchExtractor:
                     file_path = futures[future]
                     try:
                         result = future.result(timeout=300)  # 5 minute timeout
+
+                        # Store in Neo4j if requested
+                        if self.store_in_neo4j and result["status"] == "success":
+                            self.store_result_in_neo4j(result)
+
                         results.append(result)
-                        
+
                         status_icon = "✅" if result["status"] == "success" else "❌"
                         print(f"{status_icon} {file_path.name}: {result['count']} techniques ({result['processing_time']:.1f}s)")
-                        
+
                     except concurrent.futures.TimeoutError:
                         results.append({
                             "file": file_path.name,
@@ -382,15 +496,22 @@ def main():
 Examples:
   # Process all PDFs in a directory
   python -m bandjacks.cli.batch_extract ./reports/
-  
+
   # Use async API for processing
   python -m bandjacks.cli.batch_extract --api ./reports/
-  
+
   # Process with 5 parallel workers
   python -m bandjacks.cli.batch_extract --workers 5 ./reports/*.pdf
-  
+
+  # Process and store in Neo4j for analytics
+  python -m bandjacks.cli.batch_extract --store-in-neo4j ./reports/
+
   # Customize chunking parameters
   python -m bandjacks.cli.batch_extract --chunk-size 4000 --max-chunks 15 ./reports/
+
+  # Full workflow: Extract, store in Neo4j, then analyze
+  python -m bandjacks.cli.batch_extract --store-in-neo4j ./reports/
+  bandjacks analytics global --format csv --output cooccurrence.csv
         """
     )
     
@@ -400,10 +521,18 @@ Examples:
     parser.add_argument("--workers", type=int, default=3, help="Number of parallel workers")
     parser.add_argument("--chunk-size", type=int, default=3000, help="Size of text chunks")
     parser.add_argument("--max-chunks", type=int, default=10, help="Maximum chunks per document")
-    parser.add_argument("--extensions", nargs="+", default=[".pdf", ".txt", ".md"], 
+    parser.add_argument("--extensions", nargs="+", default=[".pdf", ".txt", ".md"],
                        help="File extensions to process")
     parser.add_argument("--output-dir", default="batch_results", help="Output directory for reports")
-    
+    parser.add_argument("--store-in-neo4j", action="store_true",
+                       help="Store results in Neo4j for analytics")
+    parser.add_argument("--neo4j-uri", default=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
+                       help="Neo4j connection URI")
+    parser.add_argument("--neo4j-user", default=os.getenv("NEO4J_USER", "neo4j"),
+                       help="Neo4j username")
+    parser.add_argument("--neo4j-password", default=os.getenv("NEO4J_PASSWORD", "password"),
+                       help="Neo4j password")
+
     args = parser.parse_args()
     
     # Collect all files to process
@@ -442,15 +571,22 @@ Examples:
     print(f"   - Workers: {args.workers}")
     print(f"   - Chunk size: {args.chunk_size} chars")
     print(f"   - Max chunks: {args.max_chunks}")
+    if args.store_in_neo4j:
+        print(f"   - Neo4j storage: Enabled")
+        print(f"   - Neo4j URI: {args.neo4j_uri}")
     print("=" * 60)
-    
+
     # Create batch extractor
     extractor = BatchExtractor(
         workers=args.workers,
         use_api=args.api,
         api_url=args.api_url,
         chunk_size=args.chunk_size,
-        max_chunks=args.max_chunks
+        max_chunks=args.max_chunks,
+        store_in_neo4j=args.store_in_neo4j,
+        neo4j_uri=args.neo4j_uri,
+        neo4j_user=args.neo4j_user,
+        neo4j_password=args.neo4j_password
     )
     
     # Process files

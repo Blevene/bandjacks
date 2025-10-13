@@ -4,6 +4,8 @@
 import os
 import sys
 import json
+import subprocess
+from pathlib import Path
 from typing import Optional
 import click
 from rich.console import Console
@@ -537,6 +539,13 @@ def analytics(ctx):
     pass
 
 
+@cli.group()
+@click.pass_context
+def workflow(ctx):
+    """End-to-end workflows for extraction and analytics."""
+    pass
+
+
 @analytics.command("top-cooccurrence")
 @click.option('--limit', default=25, help='Max pairs to return', show_default=True)
 @click.option('--min-episode-size', default=2, help='Min actions per episode to count', show_default=True)
@@ -780,9 +789,17 @@ def analytics_actor(ctx, intrusion_set_id, min_support, metric):
 @click.option('--min-size', default=3, show_default=True)
 @click.option('--max-size', default=5, show_default=True)
 @click.option('--actor', default=None, help='Optional Intrusion Set STIX ID')
+@click.option('--format', type=click.Choice(['table', 'csv', 'json']), default='table', help='Output format')
+@click.option('--output', type=click.Path(), help='Output file path (required for csv/json)')
 @click.pass_context
-def analytics_bundles(ctx, min_support, min_size, max_size, actor):
+def analytics_bundles(ctx, min_support, min_size, max_size, actor, format, output):
     """Extract frequently co-occurring technique bundles."""
+
+    # Validate output file for export formats
+    if format in ['csv', 'json'] and not output:
+        console.print("[red]Error: --output is required for csv/json formats[/red]")
+        return
+
     analyzer = CooccurrenceAnalyzer(
         ctx.obj['neo4j_uri'], ctx.obj['neo4j_user'], ctx.obj['neo4j_password']
     )
@@ -794,23 +811,46 @@ def analytics_bundles(ctx, min_support, min_size, max_size, actor):
             console.print("[yellow]No bundles found[/yellow]")
             return
 
-        table = Table(title="Technique Bundles")
-        table.add_column("#", style="cyan", width=4)
-        table.add_column("Techniques", style="green")
-        table.add_column("Support", justify="right")
-        table.add_column("Confidence", justify="right")
-        table.add_column("Lift", justify="right")
-        table.add_column("Tactics")
-        for idx, b in enumerate(sorted(bundles, key=lambda x: x.lift, reverse=True)[:25], 1):
-            table.add_row(
-                str(idx),
-                ", ".join(b.techniques),
-                str(b.support),
-                f"{b.confidence:.3f}",
-                f"{b.lift:.2f}",
-                ", ".join(b.tactics),
-            )
-        console.print(table)
+        # Sort bundles by lift
+        bundles_sorted = sorted(bundles, key=lambda x: x.lift, reverse=True)
+
+        # Export to file if requested
+        if format == 'csv':
+            from bandjacks.cli.formatters import AnalyticsFormatter
+            from pathlib import Path
+            AnalyticsFormatter.export_bundles_csv(bundles_sorted, Path(output))
+            console.print(f"[green]✓ Exported {len(bundles)} bundles to {output}[/green]")
+        elif format == 'json':
+            from bandjacks.cli.formatters import AnalyticsFormatter
+            from pathlib import Path
+            metadata = {
+                "analysis_type": "technique_bundles",
+                "min_support": min_support,
+                "min_size": min_size,
+                "max_size": max_size,
+                "intrusion_set_filter": actor
+            }
+            AnalyticsFormatter.export_bundles_json(bundles_sorted, Path(output), metadata)
+            console.print(f"[green]✓ Exported {len(bundles)} bundles to {output}[/green]")
+        else:
+            # Display table format
+            table = Table(title="Technique Bundles")
+            table.add_column("#", style="cyan", width=4)
+            table.add_column("Techniques", style="green")
+            table.add_column("Support", justify="right")
+            table.add_column("Confidence", justify="right")
+            table.add_column("Lift", justify="right")
+            table.add_column("Tactics")
+            for idx, b in enumerate(bundles_sorted[:25], 1):
+                table.add_row(
+                    str(idx),
+                    ", ".join(b.techniques),
+                    str(b.support),
+                    f"{b.confidence:.3f}",
+                    f"{b.lift:.2f}",
+                    ", ".join(b.tactics),
+                )
+            console.print(table)
     except Exception as e:
         console.print(f"[red]Bundle extraction failed: {e}[/red]")
     finally:
@@ -821,9 +861,17 @@ def analytics_bundles(ctx, min_support, min_size, max_size, actor):
 @click.option('--min-support', default=2, show_default=True)
 @click.option('--min-episodes-per-pair', default=2, show_default=True)
 @click.option('--limit', default=50, show_default=True)
+@click.option('--format', type=click.Choice(['table', 'csv', 'json']), default='table', help='Output format')
+@click.option('--output', type=click.Path(), help='Output file path (required for csv/json)')
 @click.pass_context
-def analytics_global(ctx, min_support, min_episodes_per_pair, limit):
+def analytics_global(ctx, min_support, min_episodes_per_pair, limit, format, output):
     """Compute global co-occurrence metrics (PMI/NPMI, Lift) across all episodes."""
+
+    # Validate output file for export formats
+    if format in ['csv', 'json'] and not output:
+        console.print("[red]Error: --output is required for csv/json formats[/red]")
+        return
+
     analyzer = CooccurrenceAnalyzer(
         ctx.obj['neo4j_uri'], ctx.obj['neo4j_user'], ctx.obj['neo4j_password']
     )
@@ -854,32 +902,210 @@ def analytics_global(ctx, min_support, min_episodes_per_pair, limit):
         finally:
             driver.close()
 
-        table = Table(title="Global Co-occurrence Metrics")
-        table.add_column("#", style="cyan", width=4)
-        table.add_column("Technique A", style="green")
-        table.add_column("Technique B", style="green")
-        table.add_column("Count", justify="right")
-        table.add_column("Lift", justify="right")
-        table.add_column("PMI", justify="right")
-        table.add_column("NPMI", style="yellow", justify="right")
-        table.add_column("Jaccard", justify="right")
+        # Export to file if requested
+        if format == 'csv':
+            from bandjacks.cli.formatters import AnalyticsFormatter
+            from pathlib import Path
+            AnalyticsFormatter.export_cooccurrence_csv(metrics, Path(output), name_map)
+            console.print(f"[green]✓ Exported {len(metrics)} pairs to {output}[/green]")
+        elif format == 'json':
+            from bandjacks.cli.formatters import AnalyticsFormatter
+            from pathlib import Path
+            metadata = {
+                "analysis_type": "global_cooccurrence",
+                "min_support": min_support,
+                "min_episodes_per_pair": min_episodes_per_pair
+            }
+            AnalyticsFormatter.export_cooccurrence_json(metrics, Path(output), name_map, metadata)
+            console.print(f"[green]✓ Exported {len(metrics)} pairs to {output}[/green]")
+        else:
+            # Display table format
+            table = Table(title="Global Co-occurrence Metrics")
+            table.add_column("#", style="cyan", width=4)
+            table.add_column("Technique A", style="green")
+            table.add_column("Technique B", style="green")
+            table.add_column("Count", justify="right")
+            table.add_column("Lift", justify="right")
+            table.add_column("PMI", justify="right")
+            table.add_column("NPMI", style="yellow", justify="right")
+            table.add_column("Jaccard", justify="right")
 
-        for idx, m in enumerate(metrics, 1):
-            a = f"{name_map.get(m.technique_a, m.technique_a)} ({m.technique_a})"
-            b = f"{name_map.get(m.technique_b, m.technique_b)} ({m.technique_b})"
-            table.add_row(
-                str(idx), a, b,
-                str(m.count),
-                f"{m.lift:.2f}",
-                f"{m.pmi:.3f}",
-                f"{m.npmi:.3f}",
-                f"{m.jaccard:.3f}",
-            )
-        console.print(table)
+            for idx, m in enumerate(metrics, 1):
+                a = f"{name_map.get(m.technique_a, m.technique_a)} ({m.technique_a})"
+                b = f"{name_map.get(m.technique_b, m.technique_b)} ({m.technique_b})"
+                table.add_row(
+                    str(idx), a, b,
+                    str(m.count),
+                    f"{m.lift:.2f}",
+                    f"{m.pmi:.3f}",
+                    f"{m.npmi:.3f}",
+                    f"{m.jaccard:.3f}",
+                )
+            console.print(table)
     except Exception as e:
         console.print(f"[red]Global analysis failed: {e}[/red]")
     finally:
         analyzer.close()
+
+
+@workflow.command("process-reports")
+@click.argument('report_dir', type=click.Path(exists=True))
+@click.option('--workers', default=3, help='Number of parallel workers')
+@click.option('--analyze', is_flag=True, help='Run analytics after extraction')
+@click.option('--export-dir', type=click.Path(), help='Export analytics to directory')
+@click.option('--api', is_flag=True, help='Use API for extraction')
+@click.pass_context
+def workflow_process_reports(ctx, report_dir, workers, analyze, export_dir, api):
+    """
+    Process a directory of reports and optionally run analytics.
+
+    Example:
+        bandjacks workflow process-reports ./reports/ --analyze --export-dir ./results/
+    """
+    console.print(Panel("[bold]Report Processing Workflow[/bold]", style="blue"))
+
+    report_path = Path(report_dir)
+
+    # Step 1: Extract reports
+    console.print("\n[bold cyan]Step 1: Extracting techniques from reports[/bold cyan]")
+
+    extract_cmd = [
+        sys.executable, "-m", "bandjacks.cli.batch_extract",
+        str(report_path),
+        "--workers", str(workers),
+        "--store-in-neo4j",
+        "--neo4j-uri", ctx.obj['neo4j_uri'],
+        "--neo4j-user", ctx.obj['neo4j_user'],
+        "--neo4j-password", ctx.obj['neo4j_password']
+    ]
+
+    if api:
+        extract_cmd.append("--api")
+
+    console.print(f"[dim]Running extraction...[/dim]")
+    result = subprocess.run(extract_cmd)
+
+    if result.returncode != 0:
+        console.print("[red]✗ Extraction failed[/red]")
+        return
+
+    console.print("[green]✓ Extraction complete[/green]")
+
+    # Step 2: Run analytics if requested
+    if analyze:
+        console.print("\n[bold cyan]Step 2: Running co-occurrence analytics[/bold cyan]")
+
+        if export_dir:
+            export_path = Path(export_dir)
+            export_path.mkdir(parents=True, exist_ok=True)
+
+            # Run global co-occurrence analysis
+            console.print("[yellow]→ Computing global co-occurrence metrics...[/yellow]")
+            from bandjacks.analytics.cooccurrence import CooccurrenceAnalyzer
+            from bandjacks.cli.formatters import AnalyticsFormatter
+            from neo4j import GraphDatabase
+
+            analyzer = CooccurrenceAnalyzer(
+                ctx.obj['neo4j_uri'], ctx.obj['neo4j_user'], ctx.obj['neo4j_password']
+            )
+
+            try:
+                metrics = analyzer.calculate_global_cooccurrence(min_support=2, min_episodes_per_pair=2)
+                metrics = metrics[:100]
+
+                # Get technique names
+                driver = GraphDatabase.driver(ctx.obj['neo4j_uri'], auth=(ctx.obj['neo4j_user'], ctx.obj['neo4j_password']))
+                try:
+                    ids = sorted({tid for m in metrics for tid in (m.technique_a, m.technique_b)})
+                    with driver.session() as session:
+                        name_rows = session.run(
+                            "MATCH (t:AttackPattern) WHERE t.stix_id IN $ids RETURN t.stix_id as id, t.name as name",
+                            ids=ids
+                        )
+                        name_map = {r['id']: r['name'] for r in name_rows}
+                finally:
+                    driver.close()
+
+                # Export
+                AnalyticsFormatter.export_cooccurrence_csv(metrics, export_path / "global_cooccurrence.csv", name_map)
+                console.print(f"[green]✓ Exported {len(metrics)} pairs to {export_path / 'global_cooccurrence.csv'}[/green]")
+
+                # Bundles
+                console.print("[yellow]→ Extracting technique bundles...[/yellow]")
+                bundles = analyzer.extract_technique_bundles(min_support=3, min_size=3, max_size=5)
+                AnalyticsFormatter.export_bundles_json(bundles, export_path / "technique_bundles.json")
+                console.print(f"[green]✓ Exported {len(bundles)} bundles to {export_path / 'technique_bundles.json'}[/green]")
+            finally:
+                analyzer.close()
+
+            console.print(f"\n[green]✓ Analytics exported to {export_path}[/green]")
+
+    console.print("\n[bold green]✓ Workflow complete![/bold green]")
+
+
+@workflow.command("bulk-export")
+@click.option('--export-dir', type=click.Path(), required=True, help='Export directory')
+@click.pass_context
+def workflow_bulk_export(ctx, export_dir):
+    """
+    Export all analytics data (co-occurrence, bundles).
+
+    Example:
+        bandjacks workflow bulk-export --export-dir ./analytics_export/
+    """
+    from pathlib import Path
+    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from bandjacks.analytics.cooccurrence import CooccurrenceAnalyzer
+    from bandjacks.cli.formatters import AnalyticsFormatter
+    from neo4j import GraphDatabase
+
+    console.print(Panel("[bold]Bulk Analytics Export[/bold]", style="blue"))
+
+    export_path = Path(export_dir)
+    export_path.mkdir(parents=True, exist_ok=True)
+
+    analyzer = CooccurrenceAnalyzer(
+        ctx.obj['neo4j_uri'], ctx.obj['neo4j_user'], ctx.obj['neo4j_password']
+    )
+
+    try:
+        with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
+            # Global co-occurrence
+            task1 = progress.add_task("Exporting global co-occurrence...", total=None)
+            metrics = analyzer.calculate_global_cooccurrence(min_support=2, min_episodes_per_pair=2)
+            metrics = metrics[:500]
+
+            # Get technique names
+            driver = GraphDatabase.driver(ctx.obj['neo4j_uri'], auth=(ctx.obj['neo4j_user'], ctx.obj['neo4j_password']))
+            try:
+                ids = sorted({tid for m in metrics for tid in (m.technique_a, m.technique_b)})
+                with driver.session() as session:
+                    name_rows = session.run(
+                        "MATCH (t:AttackPattern) WHERE t.stix_id IN $ids RETURN t.stix_id as id, t.name as name",
+                        ids=ids
+                    )
+                    name_map = {r['id']: r['name'] for r in name_rows}
+            finally:
+                driver.close()
+
+            AnalyticsFormatter.export_cooccurrence_csv(metrics, export_path / "global_cooccurrence.csv", name_map)
+            AnalyticsFormatter.export_cooccurrence_json(metrics, export_path / "global_cooccurrence.json", name_map)
+            progress.update(task1, completed=True)
+
+            # Bundles
+            task2 = progress.add_task("Exporting technique bundles...", total=None)
+            bundles = analyzer.extract_technique_bundles(min_support=3, min_size=3, max_size=5)
+            AnalyticsFormatter.export_bundles_csv(bundles, export_path / "technique_bundles.csv")
+            AnalyticsFormatter.export_bundles_json(bundles, export_path / "technique_bundles.json")
+            progress.update(task2, completed=True)
+
+    finally:
+        analyzer.close()
+
+    console.print(f"\n[bold green]✓ Analytics data exported to {export_path}[/bold green]")
+    console.print("\nExported files:")
+    for file in export_path.glob("*"):
+        console.print(f"  • {file.name}")
 
 
 def main():
