@@ -351,19 +351,75 @@ Filters are applied cumulatively and in real-time.
 
 ### Neo4j Graph Updates
 
-Approved entities create nodes:
+#### Native Relationship Structure
+The system now creates native Neo4j relationships for better graph traversal:
+
+**Entity Relationships:**
+- `EXTRACTED_ENTITY` - Generic relationship from Report to all entities
+- `IDENTIFIED_ACTOR` - Report → IntrusionSet (threat actors)
+- `EXTRACTED_MALWARE` - Report → Software (type=malware)
+- `MENTIONS_TOOL` - Report → Software (type=tool)
+- `DESCRIBES_CAMPAIGN` - Report → Campaign
+
+**Flow Relationships:**
+- `HAS_FLOW` - Report → AttackEpisode (with step_count property)
+
+**Technique Relationships:**
+- `EXTRACTED_TECHNIQUE` - Report → AttackPattern (ATT&CK techniques)
+
+#### Entity Creation
+Approved entities create nodes with relationships:
 ```cypher
+// Create entity node
 MERGE (e:EntityType {stix_id: $stix_id})
 SET e.name = $name,
     e.verified = true,
     e.source_report = $report_id,
     e.confidence = $confidence
+
+// Create generic relationship
+MERGE (r:Report {stix_id: $report_id})-[rel:EXTRACTED_ENTITY]->(e)
+SET rel.confidence = $confidence,
+    rel.extraction_method = 'llm',
+    rel.reviewed = true
+
+// Create specific relationship based on type
+MERGE (r)-[specific:IDENTIFIED_ACTOR|EXTRACTED_MALWARE|MENTIONS_TOOL|DESCRIBES_CAMPAIGN]->(e)
+SET specific.confidence = $confidence
 ```
 
-Approved techniques create relationships:
+#### Attack Flow Creation
+Approved flow steps create episode and action nodes:
+```cypher
+// Create or update AttackEpisode
+MERGE (ep:AttackEpisode {episode_id: $episode_id})
+SET ep.stix_id = $episode_id,
+    ep.report_id = $report_id,
+    ep.flow_id = $flow_id,
+    ep.name = $report_name,
+    ep.created = datetime()
+
+// Create HAS_FLOW relationship
+MERGE (r:Report {stix_id: $report_id})-[flow:HAS_FLOW]->(ep)
+SET flow.flow_type = 'sequential',
+    flow.step_count = $step_count
+
+// Create AttackAction nodes
+MERGE (act:AttackAction {action_id: $action_id})
+SET act.stix_id = $stix_id,
+    act.attack_pattern_ref = $technique_ref,
+    act.order = $order,
+    act.confidence = $confidence
+
+// Link action to episode
+MERGE (ep)-[:CONTAINS]->(act)
+```
+
+#### Technique Relationships
+Approved techniques create direct relationships:
 ```cypher
 MATCH (r:Report {stix_id: $report_id})
-MATCH (t:AttackPattern {external_id: $technique_id})
+MATCH (t:AttackPattern {stix_id: $technique_stix_id})
 MERGE (r)-[:EXTRACTED_TECHNIQUE {
   confidence: $confidence,
   reviewed: true

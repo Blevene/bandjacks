@@ -670,6 +670,87 @@ def _upsert_entities_to_graph(session: Session, entities: List[Dict], report_id:
             stats["updated"] += 1
             logger.info(f"Updated entity {stix_id} in Neo4j")
 
+        # Create relationships from Report to Entity
+        # First ensure Report node exists
+        session.run("""
+            MERGE (r:Report {stix_id: $report_id})
+            ON CREATE SET r.created = datetime()
+            ON MATCH SET r.modified = datetime()
+        """, report_id=report_id)
+
+        # Determine relationship type based on entity type
+        rel_type_map = {
+            "malware": "EXTRACTED_MALWARE",
+            "software": "MENTIONS_TOOL",
+            "tool": "MENTIONS_TOOL",
+            "threat_actor": "IDENTIFIED_ACTOR",
+            "group": "IDENTIFIED_ACTOR",
+            "intrusion-set": "IDENTIFIED_ACTOR",
+            "campaign": "DESCRIBES_CAMPAIGN"
+        }
+
+        specific_rel_type = rel_type_map.get(entity_type.lower(), "EXTRACTED_ENTITY")
+
+        # Create both generic and specific relationships
+        # Generic EXTRACTED_ENTITY relationship
+        session.run(f"""
+            MATCH (r:Report {{stix_id: $report_id}})
+            MATCH (e:{label} {{stix_id: $stix_id}})
+            MERGE (r)-[rel:EXTRACTED_ENTITY]->(e)
+            ON CREATE SET
+                rel.created = datetime(),
+                rel.confidence = $confidence,
+                rel.extraction_method = $extraction_method,
+                rel.reviewed = true,
+                rel.evidence_count = size($evidence_mentions),
+                rel.line_refs = $line_refs
+            ON MATCH SET
+                rel.modified = datetime(),
+                rel.confidence = CASE
+                    WHEN rel.confidence < $confidence
+                    THEN $confidence
+                    ELSE rel.confidence
+                END
+        """,
+        report_id=report_id,
+        stix_id=stix_id,
+        confidence=entity.get("confidence", 50.0),
+        extraction_method=metadata.get("extraction_method", "llm"),
+        evidence_mentions=evidence_mentions,
+        line_refs=line_refs)
+
+        # Specific typed relationship if different from generic
+        if specific_rel_type != "EXTRACTED_ENTITY":
+            session.run(f"""
+                MATCH (r:Report {{stix_id: $report_id}})
+                MATCH (e:{label} {{stix_id: $stix_id}})
+                MERGE (r)-[rel:{specific_rel_type}]->(e)
+                ON CREATE SET
+                    rel.created = datetime(),
+                    rel.confidence = $confidence,
+                    rel.extraction_method = $extraction_method,
+                    rel.reviewed = true,
+                    rel.entity_type = $entity_type,
+                    rel.evidence_count = size($evidence_mentions),
+                    rel.line_refs = $line_refs
+                ON MATCH SET
+                    rel.modified = datetime(),
+                    rel.confidence = CASE
+                        WHEN rel.confidence < $confidence
+                        THEN $confidence
+                        ELSE rel.confidence
+                    END
+            """,
+            report_id=report_id,
+            stix_id=stix_id,
+            confidence=entity.get("confidence", 50.0),
+            extraction_method=metadata.get("extraction_method", "llm"),
+            entity_type=entity_type,
+            evidence_mentions=evidence_mentions,
+            line_refs=line_refs)
+
+            logger.debug(f"Created {specific_rel_type} relationship from Report to {label}")
+
     logger.info(f"Entity upsert complete. Stats: {stats}")
     return stats
 
@@ -851,6 +932,41 @@ def _create_attack_flow_graph(session: Session, flow_steps: List[Dict], report_i
         logger.info(f"Created AttackEpisode {episode_id}")
     else:
         logger.info(f"Updated existing AttackEpisode {episode_id}")
+
+    # Create HAS_FLOW relationship from Report to AttackEpisode
+    # First ensure Report node exists
+    session.run("""
+        MERGE (r:Report {stix_id: $report_id})
+        ON CREATE SET r.created = datetime()
+        ON MATCH SET r.modified = datetime()
+    """, report_id=report_id)
+
+    # Create HAS_FLOW relationship
+    session.run("""
+        MATCH (r:Report {stix_id: $report_id})
+        MATCH (e:AttackEpisode {episode_id: $episode_id})
+        MERGE (r)-[rel:HAS_FLOW]->(e)
+        ON CREATE SET
+            rel.created = datetime(),
+            rel.flow_type = 'sequential',
+            rel.step_count = $step_count,
+            rel.avg_confidence = $avg_confidence,
+            rel.extraction_timestamp = datetime()
+        ON MATCH SET
+            rel.modified = datetime(),
+            rel.step_count = $step_count,
+            rel.avg_confidence = CASE
+                WHEN rel.avg_confidence < $avg_confidence
+                THEN $avg_confidence
+                ELSE rel.avg_confidence
+            END
+    """,
+    report_id=report_id,
+    episode_id=episode_id,
+    step_count=len(flow_steps),
+    avg_confidence=sum(s.get("confidence", 80) for s in flow_steps) / len(flow_steps))
+
+    logger.info(f"Created/updated HAS_FLOW relationship from Report to AttackEpisode")
 
     # Create AttackAction nodes for each approved flow step
     action_nodes = []

@@ -38,6 +38,20 @@ python -m bandjacks.cli.batch_extract \
   --neo4j-user neo4j \
   --neo4j-password mypassword \
   ./reports/
+
+# Auto-approve high-confidence results (no manual review)
+python -m bandjacks.cli.batch_extract \
+  --store-in-neo4j \
+  --auto-approve \
+  --auto-approve-threshold 0.80 \
+  ./reports/
+
+# Skip entity extraction (techniques only, faster)
+python -m bandjacks.cli.batch_extract \
+  --store-in-neo4j \
+  --skip-entity-extraction \
+  --auto-approve \
+  ./reports/
 ```
 
 ### 3. End-to-End Workflows
@@ -53,6 +67,83 @@ bandjacks workflow bulk-export --export-dir ./analytics_export/
 ```
 
 ---
+
+## Auto-Approve Features (NEW)
+
+### What is Auto-Approve?
+
+Auto-approve automatically validates high-confidence technique extractions, skipping manual review for trusted results. This is ideal for:
+- **Bulk processing** of large report archives
+- **Trusted sources** with consistent quality
+- **Automated pipelines** requiring immediate analytics
+
+### How It Works
+
+1. **Confidence Calculation**: Average confidence across all extracted techniques
+2. **Threshold Check**: Compare against `--auto-approve-threshold` (default: 0.80)
+3. **Direct Storage**: Auto-approved techniques get full Neo4j relationships immediately
+4. **Immediate Analytics**: Data available for co-occurrence analysis without review
+
+### Auto-Approve Flags
+
+```bash
+--auto-approve                    # Enable auto-approval
+--auto-approve-threshold FLOAT    # Confidence threshold (0.0-1.0, default: 0.80)
+--skip-entity-extraction          # Skip entities, techniques only (faster)
+```
+
+### Auto-Approve Examples
+
+#### Example 1: High-Confidence Auto-Approve
+```bash
+# Only auto-approve techniques with 85%+ confidence
+python -m bandjacks.cli.batch_extract \
+  --store-in-neo4j \
+  --auto-approve \
+  --auto-approve-threshold 0.85 \
+  ./reports/
+```
+
+#### Example 2: Fast Bulk Processing
+```bash
+# Skip entities, auto-approve 75%+, use 8 workers
+python -m bandjacks.cli.batch_extract \
+  --store-in-neo4j \
+  --skip-entity-extraction \
+  --auto-approve \
+  --auto-approve-threshold 0.75 \
+  --workers 8 \
+  ./reports/
+```
+
+#### Example 3: Conservative Auto-Approval
+```bash
+# Very high threshold (90%+) for maximum quality
+python -m bandjacks.cli.batch_extract \
+  --store-in-neo4j \
+  --auto-approve \
+  --auto-approve-threshold 0.90 \
+  ./reports/
+```
+
+### What Gets Created in Neo4j
+
+**Without Auto-Approve** (default):
+```
+AttackEpisode → CONTAINS → AttackAction
+                            (pending review)
+```
+
+**With Auto-Approve**:
+```
+AttackEpisode → CONTAINS → AttackAction → USES → AttackPattern
+                            (auto_approved=true)
+```
+
+Auto-approved data is **immediately available** for:
+- Co-occurrence analysis (`bandjacks analytics global`)
+- Technique bundles (`bandjacks analytics bundles`)
+- Actor profiling (`bandjacks analytics actor`)
 
 ## Complete Workflow Example
 
@@ -173,6 +264,11 @@ python -m bandjacks.cli.batch_extract [PATHS] [OPTIONS]
   --neo4j-password TEXT       # Neo4j password (default: from env NEO4J_PASSWORD)
   --workers INT               # Parallel workers (default: 3)
   --api                       # Use API instead of direct Python
+
+  # Auto-Approve Flags (NEW)
+  --skip-entity-extraction    # Skip entity extraction (techniques only, faster)
+  --auto-approve              # Auto-approve high-confidence results
+  --auto-approve-threshold    # Confidence threshold for auto-approval (default: 0.80)
 ```
 
 ### Workflow Commands
