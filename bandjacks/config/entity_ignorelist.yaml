@@ -1,133 +1,136 @@
-# Entity Ignorelist Configuration
-# Terms that should not be extracted as entities
-
-# Security vendors and research teams that are not threat actors
 vendors:
-  - "Unit 42"
-  - "Unit42"
-  - "MSTIC"
-  - "Microsoft Threat Intelligence Center"
-  - "CrowdStrike"
-  - "FireEye"
-  - "Mandiant"
-  - "Kaspersky"
-  - "Symantec"
-  - "McAfee"
-  - "Trend Micro"
-  - "TrendMicro"
-  - "Palo Alto Networks"
-  - "Check Point"
-  - "Fortinet"
-  - "Sophos"
-  - "ESET"
-  - "Bitdefender"
-  - "Avast"
-  - "Norton"
-  - "Malwarebytes"
-  - "SentinelOne"
-  - "CyberArk"
-  - "Proofpoint"
-  - "Recorded Future"
-  - "Digital Shadows"
-  - "Anomali"
-  - "ThreatConnect"
-  - "Intel 471"
-  - "Flashpoint"
-  - "RiskIQ"
-  - "Secureworks"
-  - "F-Secure"
-  - "G-Data"
-  - "Cybereason"
-  - "Carbon Black"
-  - "VMware"
-  - "Cisco Talos"
-  - "Cisco"
-  - "IBM X-Force"
-  - "IBM Security"
-  - "Dell SecureWorks"
-  - "Accenture Security"
-  - "PwC"
-  - "Deloitte"
-  - "EY"
-  - "KPMG"
-  - "Verizon DBIR"
-  - "AT&T Cybersecurity"
-  - "NTT Security"
-  - "BAE Systems"
-  - "Raytheon"
-  - "Lockheed Martin"
-  - "Northrop Grumman"
-  - "MITRE"
-  - "SANS"
-  - "US-CERT"
-  - "CISA"
-  - "FBI"
-  - "NSA"
-  - "NCSC"
-  - "Cyber Threat Alliance"
-  - "CTA"
-
-# File extensions that are not entities
+- Unit 42
+- Unit42
+- MSTIC
+- Microsoft Threat Intelligence Center
+- CrowdStrike
+- FireEye
+- Mandiant
+- Kaspersky
+- Symantec
+- McAfee
+- Trend Micro
+- TrendMicro
+- Palo Alto Networks
+- Check Point
+- Fortinet
+- Sophos
+- ESET
+- Bitdefender
+- Avast
+- Norton
+- Malwarebytes
+- SentinelOne
+- CyberArk
+- Proofpoint
+- Recorded Future
+- Digital Shadows
+- Anomali
+- ThreatConnect
+- Intel 471
+- Flashpoint
+- RiskIQ
+- Secureworks
+- F-Secure
+- G-Data
+- Cybereason
+- Carbon Black
+- VMware
+- Cisco Talos
+- Cisco
+- IBM X-Force
+- IBM Security
+- Dell SecureWorks
+- Accenture Security
+- PwC
+- Deloitte
+- EY
+- KPMG
+- Verizon DBIR
+- AT&T Cybersecurity
+- NTT Security
+- BAE Systems
+- Raytheon
+- Lockheed Martin
+- Northrop Grumman
+- MITRE
+- SANS
+- US-CERT
+- CISA
+- FBI
+- NSA
+- NCSC
+- Cyber Threat Alliance
+- CTA
+- Google TAG
+- Threat Analysis Group
 file_extensions:
-  - ".ps1"
-  - ".js"
-  - ".exe"
-  - ".dll"
-  - ".bat"
-  - ".cmd"
-  - ".vbs"
-  - ".wsf"
-  - ".7z"
-  - ".zip"
-  - ".rar"
-  - ".tar"
-  - ".txt"
-  - ".doc"
-  - ".pdf"
-
-# Generic terms that are too broad to be entities
+- .ps1
+- .js
+- .exe
+- .dll
+- .bat
+- .cmd
+- .vbs
+- .wsf
+- .7z
+- .zip
+- .rar
+- .tar
+- .txt
+- .doc
+- .pdf
 generic_terms:
-  - "script"
-  - "file"
-  - "command"
-  - "expression"
-  - "payload"
-  - "sample"
-  - "archive"
-  - "download"
-  - "document"
-  - "object"
-  - "process"
-  - "system"
-  - "application"
-  - "program"
-  - "software"
-
-# Code constructs and functions that aren't entities
+- script
+- file
+- command
+- expression
+- payload
+- sample
+- archive
+- download
+- document
+- object
+- process
+- system
+- application
+- program
+- software
 code_constructs:
-  - "Convert.FromBase64String"
-  - "ActiveXObject"
-  - "Invoke-Expression"
-  - "Start-Process"
-  - "WScript.Shell"
-  - "Scripting.FileSystemObject"
-  - "MSXML2.XMLHTTP"
-  - "ActiveXObject('MSXML2.XMLHTTP')"
-  - "ActiveXObject('Scripting.FileSystemObject')"
-  - "ActiveXObject('WScript.Shell')"
-  - "Convert.FromBase64String"
-  - "System.Reflection.Assembly"
-  - "System.Text.Encoding"
-
-# Regex patterns to match non-entities
+- Convert.FromBase64String
+- ActiveXObject
+- Invoke-Expression
+- Start-Process
+- WScript.Shell
+- Scripting.FileSystemObject
+- MSXML2.XMLHTTP
+- ActiveXObject('MSXML2.XMLHTTP')
+- ActiveXObject('Scripting.FileSystemObject')
+- ActiveXObject('WScript.Shell')
+- Convert.FromBase64String
+- System.Reflection.Assembly
+- System.Text.Encoding
 patterns:
-  - "^PS1 .*"           # PS1 file, PS1 script, etc.
-  - "^JS .*"            # JS file, JS script, etc.
-  - "^7Z .*"            # 7Z archive, etc.
-  - "^WSF .*"           # WSF file, WSF downloader, etc.
-  - "^VB6 .*"           # VB6 payload, etc.
-  - ".*Object\\(.*\\)$"  # ActiveXObject(...) patterns
-  - "^proxy call .*"    # proxy call remover, etc.
-  - "^.* expression$"   # PowerShell expression, etc.
-  - "^.* command$"      # PowerShell command, etc.
-  - "^.* files?$"       # PS1 files, JS file, etc.
+- ^PS1 .*
+- ^JS .*
+- ^7Z .*
+- ^WSF .*
+- ^VB6 .*
+- .*Object\(.*\)$
+- ^proxy call .*
+- ^.* expression$
+- ^.* command$
+- ^.* files?$
+user_added:
+- name: Google's Threat Analysis Group (TAG)
+  added_at: '2025-09-29T11:44:05.127253'
+  metadata:
+    entity_type: group
+    rejected_from_ui: true
+    timestamp: '2025-09-29T11:44:05.108Z'
+- name: "Google\u2019s Threat Analysis Group (TAG)"
+  added_at: '2025-09-30T11:41:13.926477'
+  metadata:
+    entity_type: group
+    rejected_from_ui: true
+    timestamp: '2025-09-30T11:41:13.906Z'

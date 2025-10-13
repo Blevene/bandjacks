@@ -9,6 +9,13 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -31,6 +38,7 @@ import {
   FileText,
   TrendingUp,
   Wrench,
+  RotateCcw,
 } from "lucide-react";
 import type { ReviewableItem, UnifiedReviewDecision } from "@/lib/report-types";
 
@@ -40,7 +48,7 @@ interface ReviewItemCardProps {
   isExpanded?: boolean;
   onSelect?: (selected: boolean) => void;
   onExpand?: (expanded: boolean) => void;
-  onReviewAction?: (action: 'approve' | 'reject' | 'edit') => void;
+  onReviewAction?: (action: 'approve' | 'reject' | 'edit', addToIgnorelist?: boolean) => void;
   onEditSave?: (editedItem: Partial<ReviewableItem>) => void;
   readOnly?: boolean;
 }
@@ -59,6 +67,9 @@ export function ReviewItemCard({
   const [editedName, setEditedName] = useState(item.name);
   const [editedConfidence, setEditedConfidence] = useState(item.confidence);
   const [editNotes, setEditNotes] = useState(item.review_notes || "");
+  const [editedCategory, setEditedCategory] = useState(item.category || "");
+  const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
+  const [addToIgnorelist, setAddToIgnorelist] = useState(false);
 
   const getIcon = () => {
     if (item.type === 'entity') {
@@ -88,9 +99,9 @@ export function ReviewItemCard({
   const getStatusBadge = () => {
     switch (item.review_status) {
       case 'approved':
-        return <Badge variant="default" className="bg-green-500">Approved</Badge>;
+        return <Badge variant="default" className="bg-green-500 text-white">Approved</Badge>;
       case 'rejected':
-        return <Badge variant="destructive">Rejected</Badge>;
+        return <Badge variant="destructive" className="bg-red-500 text-white">Rejected</Badge>;
       case 'edited':
         return <Badge variant="secondary">Edited</Badge>;
       default:
@@ -117,21 +128,76 @@ export function ReviewItemCard({
   };
 
   const handleEditSave = () => {
-    onEditSave?.({
+    const editedData: any = {
       name: editedName,
       confidence: editedConfidence,
       review_notes: editNotes,
       review_status: 'edited',
-    });
+    };
+
+    // Include category change for entities
+    if (item.type === 'entity') {
+      editedData.category = editedCategory;
+      editedData.metadata = {
+        ...item.metadata,
+        entity_type: editedCategory
+      };
+    }
+
+    onEditSave?.(editedData);
     setEditDialogOpen(false);
-    onReviewAction?.('edit');
+    // Don't call onReviewAction here as onEditSave already handles the backend save
+  };
+
+  const handleReject = () => {
+    // For entities, show the dialog to optionally add to ignore list
+    if (item.type === 'entity') {
+      setRejectDialogOpen(true);
+    } else {
+      // For non-entities, just reject directly
+      onReviewAction?.('reject');
+    }
+  };
+
+  const handleConfirmReject = async () => {
+    // If adding to ignorelist, call API immediately
+    if (addToIgnorelist && item.type === 'entity') {
+      try {
+        const response = await fetch('http://localhost:8000/v1/ignorelist/add', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            entity_name: item.name,
+            metadata: {
+              entity_type: item.category,
+              rejected_from_ui: true,
+              timestamp: new Date().toISOString()
+            }
+          })
+        });
+
+        if (!response.ok) {
+          console.error('Failed to add entity to ignorelist');
+        } else {
+          console.log(`Successfully added '${item.name}' to ignorelist`);
+        }
+      } catch (error) {
+        console.error('Error adding to ignorelist:', error);
+      }
+    }
+
+    onReviewAction?.('reject', addToIgnorelist);
+    setRejectDialogOpen(false);
+    setAddToIgnorelist(false); // Reset for next time
   };
 
   const isReviewed = item.review_status && item.review_status !== 'pending';
 
   return (
     <>
-      <Card className={`transition-all ${isSelected ? 'ring-2 ring-primary' : ''} ${isReviewed ? 'opacity-75' : ''}`}>
+      <Card className={`transition-all ${isSelected ? 'ring-2 ring-primary' : ''} ${isReviewed ? 'opacity-75' : ''} ${item.review_status === 'rejected' ? 'border-red-300 bg-red-50/50 dark:bg-red-950/20' : ''}`}>
         <CardContent className="pt-4">
           <div className="flex items-start gap-3">
             {/* Selection checkbox */}
@@ -201,30 +267,55 @@ export function ReviewItemCard({
                   {/* Review status */}
                   {getStatusBadge()}
 
-                  {/* Review actions */}
-                  {!readOnly && !isReviewed && (
+                  {/* Review actions - Always show to allow status changes */}
+                  {!readOnly && (
                     <div className="flex items-center gap-1">
                       <Button
                         size="sm"
-                        variant="ghost"
+                        variant={item.review_status === 'approved' ? "default" : "ghost"}
                         onClick={() => onReviewAction?.('approve')}
+                        title={item.review_status === 'approved' ? 'Already approved (click to re-approve)' : 'Approve'}
                       >
-                        <CheckCircle className="h-4 w-4 text-green-500" />
+                        <CheckCircle className={`h-4 w-4 ${item.review_status === 'approved' ? 'text-white' : 'text-green-500'}`} />
                       </Button>
                       <Button
                         size="sm"
-                        variant="ghost"
-                        onClick={() => onReviewAction?.('reject')}
+                        variant={item.review_status === 'rejected' ? "destructive" : "ghost"}
+                        onClick={handleReject}
+                        title={item.review_status === 'rejected' ? 'Already rejected (click to re-reject)' : 'Reject'}
                       >
-                        <XCircle className="h-4 w-4 text-red-500" />
+                        <XCircle className={`h-4 w-4 ${item.review_status === 'rejected' ? 'text-white' : 'text-red-500'}`} />
                       </Button>
                       <Button
                         size="sm"
                         variant="ghost"
                         onClick={handleEdit}
+                        title="Edit"
                       >
                         <Edit className="h-4 w-4" />
                       </Button>
+                      {/* Show reset button if item has been reviewed */}
+                      {isReviewed && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            // Reset to pending by removing the review decision
+                            onReviewAction?.('approve');  // This will trigger handleReviewAction
+                            // But we need to actually clear the status - let's create a proper reset handler
+                            // For now, we can use edit with empty status
+                            onEditSave?.({
+                              name: item.name,
+                              confidence: item.confidence,
+                              review_status: 'pending',
+                              review_notes: '',
+                            });
+                          }}
+                          title="Reset to pending"
+                        >
+                          <RotateCcw className="h-4 w-4 text-gray-500" />
+                        </Button>
+                      )}
                     </div>
                   )}
 
@@ -376,6 +467,24 @@ export function ReviewItemCard({
                 onChange={(e) => setEditedName(e.target.value)}
               />
             </div>
+            {item.type === 'entity' && (
+              <div>
+                <Label htmlFor="entity-type">Entity Type</Label>
+                <Select value={editedCategory} onValueChange={setEditedCategory}>
+                  <SelectTrigger id="entity-type">
+                    <SelectValue placeholder="Select entity type" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="malware">Malware</SelectItem>
+                    <SelectItem value="tool">Tool</SelectItem>
+                    <SelectItem value="software">Software</SelectItem>
+                    <SelectItem value="threat_actor">Threat Actor</SelectItem>
+                    <SelectItem value="campaign">Campaign</SelectItem>
+                    <SelectItem value="target">Target</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             <div>
               <Label htmlFor="confidence">Confidence (%)</Label>
               <Input
@@ -405,6 +514,63 @@ export function ReviewItemCard({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Reject Dialog (for entities only) */}
+      {item.type === 'entity' && (
+        <Dialog open={rejectDialogOpen} onOpenChange={setRejectDialogOpen}>
+          <DialogContent className="sm:max-w-[500px]">
+            <DialogHeader>
+              <DialogTitle>Reject Entity</DialogTitle>
+              <DialogDescription>
+                Confirm rejection of "{item.name}"
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="flex items-start space-x-3">
+                <Checkbox
+                  id="add-to-ignorelist"
+                  checked={addToIgnorelist}
+                  onCheckedChange={(checked) => setAddToIgnorelist(checked as boolean)}
+                />
+                <div className="space-y-1">
+                  <label
+                    htmlFor="add-to-ignorelist"
+                    className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                  >
+                    Add to ignore list
+                  </label>
+                  <p className="text-sm text-muted-foreground">
+                    Prevent this entity from being extracted in future reports.
+                    This helps reduce false positives over time.
+                  </p>
+                </div>
+              </div>
+              {item.category && (
+                <div className="text-sm text-muted-foreground">
+                  <span className="font-medium">Entity Type:</span> {item.category}
+                </div>
+              )}
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setRejectDialogOpen(false);
+                  setAddToIgnorelist(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={handleConfirmReject}
+              >
+                Reject Entity
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </>
   );
 }

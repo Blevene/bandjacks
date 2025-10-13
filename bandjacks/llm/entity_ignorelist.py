@@ -3,8 +3,10 @@
 import yaml
 import re
 import logging
+import threading
 from typing import Set, List, Optional, Dict, Any
 from pathlib import Path
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,8 @@ class EntityIgnorelist:
         
         self.config_path = config_path
         self.ignorelist = self._load_config(config_path)
-        
+        self._lock = threading.Lock()  # Thread-safe operations
+
         # Pre-compile regex patterns for efficiency
         self.patterns = []
         for pattern_str in self.ignorelist.get("patterns", []):
@@ -35,16 +38,28 @@ class EntityIgnorelist:
                 self.patterns.append(re.compile(pattern_str, re.IGNORECASE))
             except re.error as e:
                 logger.warning(f"Invalid regex pattern '{pattern_str}': {e}")
-        
+
         # Convert lists to sets for O(1) lookups
         self.vendors = set(vendor.lower() for vendor in self.ignorelist.get("vendors", []))
         self.file_extensions = set(ext.lower() for ext in self.ignorelist.get("file_extensions", []))
         self.generic_terms = set(term.lower() for term in self.ignorelist.get("generic_terms", []))
         self.code_constructs = set(construct.lower() for construct in self.ignorelist.get("code_constructs", []))
-        
+
+        # Track user-added entities separately
+        user_added_raw = self.ignorelist.get("user_added", [])
+        self.user_added = set()
+        for entry in user_added_raw:
+            if isinstance(entry, dict):
+                entity_name = entry.get("name", "")
+                if entity_name:
+                    self.user_added.add(entity_name.lower())
+            elif isinstance(entry, str):
+                self.user_added.add(entry.lower())
+
         logger.info(f"Loaded entity ignorelist with {len(self.vendors)} vendors, "
                    f"{len(self.file_extensions)} extensions, {len(self.generic_terms)} generic terms, "
-                   f"{len(self.code_constructs)} code constructs, and {len(self.patterns)} patterns")
+                   f"{len(self.code_constructs)} code constructs, {len(self.patterns)} patterns, "
+                   f"and {len(self.user_added)} user-added entities")
     
     def _load_config(self, config_path: Path) -> Dict[str, Any]:
         """Load the YAML configuration file.
@@ -98,50 +113,55 @@ class EntityIgnorelist:
     
     def should_ignore(self, entity_name: str) -> bool:
         """Check if an entity name should be filtered out.
-        
+
         Args:
             entity_name: The entity name to check
-            
+
         Returns:
             True if the entity should be ignored, False otherwise
         """
         if not entity_name:
             return True
-        
+
         name_lower = entity_name.lower().strip()
-        
+
+        # Check user-added entities first
+        if name_lower in self.user_added:
+            logger.debug(f"Ignoring '{entity_name}' - user-added to ignore list")
+            return True
+
         # Check if it's a vendor
         if name_lower in self.vendors:
             logger.debug(f"Ignoring '{entity_name}' - matches vendor/security company")
             return True
-        
+
         # Check if it's a file extension
         if name_lower in self.file_extensions:
             logger.debug(f"Ignoring '{entity_name}' - matches file extension")
             return True
-        
+
         # Check if it ends with a file extension
         for ext in self.file_extensions:
             if name_lower.endswith(ext):
                 logger.debug(f"Ignoring '{entity_name}' - ends with file extension {ext}")
                 return True
-        
+
         # Check generic terms
         if name_lower in self.generic_terms:
             logger.debug(f"Ignoring '{entity_name}' - matches generic term")
             return True
-        
+
         # Check code constructs
         if name_lower in self.code_constructs:
             logger.debug(f"Ignoring '{entity_name}' - matches code construct")
             return True
-        
+
         # Check regex patterns
         for pattern in self.patterns:
             if pattern.match(entity_name):
                 logger.debug(f"Ignoring '{entity_name}' - matches pattern {pattern.pattern}")
                 return True
-        
+
         return False
     
     def filter_entities(self, entities: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -168,6 +188,146 @@ class EntityIgnorelist:
         
         return filtered
     
+    def add_to_ignorelist(self, entity_name: str, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """Add an entity to the user-added ignore list.
+
+        Args:
+            entity_name: The entity name to add
+            metadata: Optional metadata about why it was added
+
+        Returns:
+            True if successfully added, False otherwise
+        """
+        if not entity_name:
+            return False
+
+        with self._lock:
+            name_lower = entity_name.lower().strip()
+
+            # Check if already in user_added
+            if name_lower in self.user_added:
+                logger.info(f"Entity '{entity_name}' already in user-added ignore list")
+                return True
+
+            # Add to user_added set
+            self.user_added.add(name_lower)
+
+            # Update the config dict
+            if "user_added" not in self.ignorelist:
+                self.ignorelist["user_added"] = []
+
+            # Add with original casing and metadata
+            entry = {
+                "name": entity_name,
+                "added_at": datetime.utcnow().isoformat(),
+            }
+            if metadata:
+                entry["metadata"] = metadata
+
+            self.ignorelist["user_added"].append(entry)
+
+            # Save to file
+            if self._save_config():
+                logger.info(f"Added '{entity_name}' to user-added ignore list")
+                return True
+            else:
+                # Rollback on save failure
+                self.user_added.discard(name_lower)
+                return False
+
+    def remove_from_ignorelist(self, entity_name: str) -> bool:
+        """Remove an entity from the user-added ignore list.
+
+        Args:
+            entity_name: The entity name to remove
+
+        Returns:
+            True if successfully removed, False otherwise
+        """
+        if not entity_name:
+            return False
+
+        with self._lock:
+            name_lower = entity_name.lower().strip()
+
+            # Check if in user_added
+            if name_lower not in self.user_added:
+                logger.info(f"Entity '{entity_name}' not in user-added ignore list")
+                return False
+
+            # Remove from set
+            self.user_added.discard(name_lower)
+
+            # Remove from config
+            if "user_added" in self.ignorelist:
+                # Filter out matching entries
+                self.ignorelist["user_added"] = [
+                    entry for entry in self.ignorelist["user_added"]
+                    if (isinstance(entry, dict) and entry.get("name", "").lower() != name_lower) or
+                       (isinstance(entry, str) and entry.lower() != name_lower)
+                ]
+
+            # Save to file
+            if self._save_config():
+                logger.info(f"Removed '{entity_name}' from user-added ignore list")
+                return True
+            else:
+                # Rollback on save failure
+                self.user_added.add(name_lower)
+                return False
+
+    def get_user_additions(self) -> List[Dict[str, Any]]:
+        """Get list of user-added entities with metadata.
+
+        Returns:
+            List of user-added entities with their metadata
+        """
+        with self._lock:
+            if "user_added" not in self.ignorelist:
+                return []
+
+            result = []
+            for entry in self.ignorelist.get("user_added", []):
+                if isinstance(entry, dict):
+                    result.append(entry)
+                else:
+                    # Convert string entries to dict format
+                    result.append({"name": entry, "added_at": None})
+
+            return result
+
+    def _save_config(self) -> bool:
+        """Save the configuration back to the YAML file.
+
+        Returns:
+            True if successfully saved, False otherwise
+        """
+        try:
+            # Create backup first
+            backup_path = self.config_path.with_suffix(".yaml.bak")
+            if self.config_path.exists():
+                import shutil
+                shutil.copy2(self.config_path, backup_path)
+
+            # Write the updated config
+            with open(self.config_path, 'w') as f:
+                yaml.safe_dump(self.ignorelist, f, default_flow_style=False, sort_keys=False)
+
+            logger.info(f"Saved entity ignorelist to {self.config_path}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to save entity ignorelist: {e}")
+            # Restore from backup if exists
+            if backup_path.exists():
+                try:
+                    import shutil
+                    shutil.copy2(backup_path, self.config_path)
+                    logger.info("Restored from backup after save failure")
+                except:
+                    pass
+            return False
+
     def reload(self):
         """Reload the configuration from disk."""
         logger.info("Reloading entity ignorelist configuration")

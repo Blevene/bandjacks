@@ -21,6 +21,8 @@ import {
   XCircle,
   Edit,
   Eye,
+  Network,
+  Upload,
 } from "lucide-react";
 import Link from "next/link";
 import { format } from "date-fns";
@@ -30,6 +32,9 @@ import { TechniqueClaims } from "@/components/reports/technique-claims";
 import { EvidenceViewer } from "@/components/reports/evidence-viewer";
 import { FlowVisualization } from "@/components/reports/flow-visualization";
 import { EntityReview } from "@/components/reports/entity-review";
+import { GraphPreviewModal } from "@/components/reports/graph-preview-modal";
+import { GraphConfirmationDialog } from "@/components/reports/graph-confirmation-dialog";
+import type { UnifiedReviewDecision } from "@/lib/report-types";
 
 export default function ReportDetailPage() {
   const params = useParams();
@@ -38,6 +43,11 @@ export default function ReportDetailPage() {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"overview" | "claims" | "entities" | "evidence" | "flow">("overview");
+  const [showGraphPreview, setShowGraphPreview] = useState(false);
+  const [showConfirmation, setShowConfirmation] = useState(false);
+  const [graphStats, setGraphStats] = useState<any>(null);
+  const [confirmationMessage, setConfirmationMessage] = useState<string>("");
+  const [submitting, setSubmitting] = useState(false);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -45,6 +55,107 @@ export default function ReportDetailPage() {
       fetchReport();
     }
   }, [reportId]);
+
+  // Generate decisions from approved items in the report
+  const getApprovedDecisions = (): UnifiedReviewDecision[] => {
+    if (!report || !report.extraction) return [];
+
+    const decisions: UnifiedReviewDecision[] = [];
+    const timestamp = new Date().toISOString();
+
+    // Process approved entities
+    if (report.extraction.entities?.entities) {
+      report.extraction.entities.entities.forEach((entity: any, index: number) => {
+        if (entity.review_status === 'approved') {
+          decisions.push({
+            item_id: `entity-${entity.type || 'unknown'}-${index}`,
+            action: 'approve',
+            timestamp,
+          });
+        }
+      });
+    }
+
+    // Process approved techniques
+    if (report.extraction.claims) {
+      report.extraction.claims.forEach((claim: any, index: number) => {
+        if (claim.review_status === 'approved') {
+          decisions.push({
+            item_id: `technique-${index}`,
+            action: 'approve',
+            timestamp,
+          });
+        }
+      });
+    }
+
+    // Process approved flow steps
+    if (report.extraction.flow?.steps) {
+      report.extraction.flow.steps.forEach((step: any) => {
+        if (step.review_status === 'approved') {
+          decisions.push({
+            item_id: `flow-${step.action_id || step.step_id}`,
+            action: 'approve',
+            timestamp,
+          });
+        }
+      });
+    }
+
+    return decisions;
+  };
+
+  const handleUpsertToGraph = async () => {
+    const decisions = getApprovedDecisions();
+    if (decisions.length === 0) {
+      toast({
+        title: "No approved items",
+        description: "There are no approved items to upsert to the graph",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const response = await fetch(`http://localhost:8000/v1/reports/${reportId}/unified-review`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          report_id: reportId,
+          reviewer_id: 'manual-upsert',
+          decisions,
+          global_notes: 'Manual upsert from reviewed report',
+          review_timestamp: new Date().toISOString(),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to upsert to graph');
+      }
+
+      const result = await response.json();
+
+      // Show detailed confirmation dialog instead of toast
+      setGraphStats(result.graph_stats);
+      setConfirmationMessage(result.message);
+      setShowConfirmation(true);
+
+      // Refresh the report to show updated status
+      await fetchReport();
+    } catch (error: any) {
+      toast({
+        title: "Error upserting to graph",
+        description: error.message || "Failed to update graph",
+        variant: "destructive",
+      });
+    } finally {
+      setSubmitting(false);
+      setShowGraphPreview(false);
+    }
+  };
 
   const fetchReport = async () => {
     try {
@@ -128,15 +239,38 @@ export default function ReportDetailPage() {
           }>
             {report.status.replace('_', ' ').toUpperCase()}
           </Badge>
-          {hasExtraction && report.status === 'pending_review' && (
-            <Button
-              onClick={() => router.push(`/reports/${report.report_id}/review`)}
-              className="flex items-center gap-2"
-            >
-              <Edit className="h-4 w-4" />
-              Review Claims
-            </Button>
-          )}
+          <div className="flex flex-col gap-2">
+            {hasExtraction && report.status === 'pending_review' && (
+              <Button
+                onClick={() => router.push(`/reports/${report.report_id}/review`)}
+                className="flex items-center gap-2"
+              >
+                <Edit className="h-4 w-4" />
+                Review Claims
+              </Button>
+            )}
+            {hasExtraction && (report.status === 'reviewed' || report.unified_review) && (
+              <>
+                <Button
+                  onClick={() => setShowGraphPreview(true)}
+                  variant="outline"
+                  className="flex items-center gap-2"
+                  disabled={getApprovedDecisions().length === 0}
+                >
+                  <Eye className="h-4 w-4" />
+                  Preview Graph
+                </Button>
+                <Button
+                  onClick={handleUpsertToGraph}
+                  className="flex items-center gap-2 bg-green-600 hover:bg-green-700"
+                  disabled={submitting || getApprovedDecisions().length === 0}
+                >
+                  <Upload className="h-4 w-4" />
+                  Upsert to Graph
+                </Button>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -412,6 +546,30 @@ export default function ReportDetailPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Graph Preview Modal */}
+      {showGraphPreview && (
+        <GraphPreviewModal
+          open={showGraphPreview}
+          onClose={() => setShowGraphPreview(false)}
+          onConfirm={handleUpsertToGraph}
+          reportId={report.report_id}
+          decisions={getApprovedDecisions()}
+          globalNotes="Preview of approved items from reviewed report"
+          loading={submitting}
+        />
+      )}
+
+      {/* Graph Confirmation Dialog */}
+      <GraphConfirmationDialog
+        open={showConfirmation}
+        onClose={() => {
+          setShowConfirmation(false);
+          setGraphStats(null);
+        }}
+        stats={graphStats}
+        message={confirmationMessage}
+      />
     </div>
   );
 }

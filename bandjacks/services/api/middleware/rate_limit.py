@@ -33,6 +33,7 @@ ENDPOINT_LIMITS = {
     "/v1/reports/ingest": 30,  # Report ingestion - moderate
     "/v1/reports/ingest_async": 30,  # Async report ingestion
     "/v1/reports/ingest_file_async": 30,  # Async file ingestion
+    "/v1/reports/": 200,  # Report retrieval and details - UI needs frequent access for navigation/display
 }
 
 

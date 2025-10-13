@@ -339,23 +339,50 @@ When sequential evidence is lacking:
 
 ## Graph Schema
 
+### Node Types
+
 Primary node types:
-- AttackPattern (techniques & sub-techniques with `x_mitre_is_subtechnique`)
-- Tactic, IntrusionSet, Software, Mitigation
-- DataSource, DataComponent
-- AttackEpisode, AttackAction (operational)
-- D3fendTechnique, DigitalArtifact (defense overlay)
+- **Report** - Threat intelligence reports with extracted content
+- **AttackPattern** - Techniques & sub-techniques with `x_mitre_is_subtechnique`
+- **Tactic**, **IntrusionSet**, **Software**, **Mitigation**, **Campaign** - Core STIX entities
+- **DataSource**, **DataComponent** - Detection components
+- **AttackEpisode**, **AttackAction** - Attack flow operational nodes
+- **D3fendTechnique**, **DigitalArtifact** - Defense overlay
 
-Primary edge types:
-- USES (Group→Technique, Software→Technique)
-- HAS_TACTIC (Technique→Tactic via kill_chain_phases)
-- MITIGATES (Mitigation→Technique)
-- NEXT {p} (AttackAction→AttackAction with probability)
-- COUNTERS (D3fendTechnique→Technique/AttackAction)
+### Relationship Types
 
-Core properties (all nodes):
+#### Report-to-Entity Relationships (Native Graph Traversal)
+- **EXTRACTED_ENTITY** - Report→Entity (generic relationship)
+- **IDENTIFIED_ACTOR** - Report→IntrusionSet (threat actors)
+- **EXTRACTED_MALWARE** - Report→Software[type=malware]
+- **MENTIONS_TOOL** - Report→Software[type=tool]
+- **DESCRIBES_CAMPAIGN** - Report→Campaign
+- **EXTRACTED_TECHNIQUE** - Report→AttackPattern
+- **HAS_FLOW** - Report→AttackEpisode {step_count, flow_type}
+
+#### Entity and Flow Relationships
+- **USES** - Group→Technique, Software→Technique
+- **HAS_TACTIC** - Technique→Tactic via kill_chain_phases
+- **MITIGATES** - Mitigation→Technique
+- **CONTAINS** - AttackEpisode→AttackAction (structural)
+- **NEXT** {probability, reasoning} - AttackAction→AttackAction
+- **COUNTERS** - D3fendTechnique→Technique/AttackAction
+
+### Core Properties
+
+All nodes include:
 - `stix_id`, `type`, `name`, `description`, `created`, `modified`, `revoked`
 - `source`: `{collection, version, modified, url, adm_spec, adm_sha}`
+- `confidence` (extracted entities)
+- `source_report` (entities linked to reports)
+
+### Migration for Native Relationships
+
+For existing data using property-based connections, run:
+```bash
+python migrations/add_native_relationships.py
+```
+This creates all native relationships for existing entities and flows.
 
 ## Report Processing Architecture
 

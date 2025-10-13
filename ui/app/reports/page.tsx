@@ -19,6 +19,7 @@ import {
   TrendingUp,
   Shield,
   Hash,
+  Database,
 } from "lucide-react";
 import Link from "next/link";
 import { format } from "date-fns";
@@ -34,6 +35,7 @@ interface ReportSummary {
   techniques_count?: number;
   claims_count?: number;
   confidence_avg?: number;
+  graph_upserted_at?: string;
 }
 
 export default function ReportsPage() {
@@ -168,17 +170,12 @@ export default function ReportsPage() {
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Avg Confidence</CardTitle>
-            <TrendingUp className="h-4 w-4 text-green-500" />
+            <CardTitle className="text-sm font-medium">In Graph</CardTitle>
+            <Database className="h-4 w-4 text-purple-500" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {reports.length > 0
-                ? Math.round(
-                    reports.reduce((sum, r) => sum + (r.confidence_avg || 0), 0) / 
-                    reports.filter(r => r.confidence_avg).length || 1
-                  )
-                : 0}%
+              {reports.filter(r => r.graph_upserted_at).length}
             </div>
           </CardContent>
         </Card>
@@ -238,6 +235,12 @@ export default function ReportsPage() {
                         <div className="flex items-center gap-2">
                           <h3 className="font-semibold">{report.name}</h3>
                           {getStatusBadge(report.status)}
+                          {report.graph_upserted_at && (
+                            <Badge className="bg-purple-600" title={`Graph updated: ${format(new Date(report.graph_upserted_at), "MMM d, yyyy HH:mm")}`}>
+                              <Database className="h-3 w-3 mr-1" />
+                              In Graph
+                            </Badge>
+                          )}
                         </div>
                         {report.description && (
                           <p className="text-sm text-muted-foreground line-clamp-2">

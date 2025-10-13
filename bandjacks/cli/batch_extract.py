@@ -51,20 +51,34 @@ def extract_text_from_pdf(pdf_path: str) -> str:
 
 class BatchExtractor:
     """Batch extraction processor for threat reports."""
-    
+
     def __init__(
         self,
         workers: int = 3,
         use_api: bool = False,
         api_url: str = "http://localhost:8000",
         chunk_size: int = 3000,
-        max_chunks: int = 10
+        max_chunks: int = 10,
+        store_in_neo4j: bool = False,
+        neo4j_uri: str = None,
+        neo4j_user: str = None,
+        neo4j_password: str = None,
+        skip_entity_extraction: bool = False,
+        auto_approve: bool = False,
+        auto_approve_threshold: float = 0.80
     ):
         self.workers = workers
         self.use_api = use_api
         self.api_url = api_url
         self.chunk_size = chunk_size
         self.max_chunks = max_chunks
+        self.store_in_neo4j = store_in_neo4j
+        self.neo4j_uri = neo4j_uri
+        self.neo4j_user = neo4j_user
+        self.neo4j_password = neo4j_password
+        self.skip_entity_extraction = skip_entity_extraction
+        self.auto_approve = auto_approve
+        self.auto_approve_threshold = auto_approve_threshold
         self.results = []
         self.start_time = time.time()
     
@@ -114,6 +128,9 @@ class BatchExtractor:
                 "span_score_threshold": 0.85,
                 "confidence_threshold": 50.0,
                 "model": os.getenv("PRIMARY_LLM", "gemini/gemini-2.5-flash"),
+                "skip_entity_extraction": getattr(self, 'skip_entity_extraction', False),
+                "auto_approve": getattr(self, 'auto_approve', False),
+                "auto_approve_threshold": getattr(self, 'auto_approve_threshold', 0.80),
             }
             
             # Use chunked extraction
@@ -133,6 +150,13 @@ class BatchExtractor:
             result["chunks_used"] = extraction_result.get("metrics", {}).get("total_chunks", 0)
             result["status"] = "success"
             result["technique_details"] = techniques
+
+            # Calculate average confidence for auto-approval
+            if techniques:
+                confidences = [t.get("confidence", 50.0) / 100.0 for t in techniques.values()]
+                result["average_confidence"] = sum(confidences) / len(confidences)
+            else:
+                result["average_confidence"] = 0.0
             
         except Exception as e:
             result["status"] = "error"
@@ -219,7 +243,137 @@ class BatchExtractor:
         
         result["processing_time"] = round(time.time() - start_time, 2)
         return result
-    
+
+    def store_result_in_neo4j(self, result: Dict[str, Any]) -> bool:
+        """
+        Store extraction result in Neo4j as AttackEpisode with AttackActions.
+
+        If auto-approved, creates full USES relationships to AttackPattern nodes.
+        If review required, only creates AttackAction nodes pending review.
+
+        Args:
+            result: Extraction result dictionary
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not self.store_in_neo4j or result["status"] != "success":
+            return False
+
+        try:
+            from neo4j import GraphDatabase
+            import uuid
+            from datetime import datetime
+
+            # Check if auto-approved based on extraction config
+            is_auto_approved = self.auto_approve and result.get("average_confidence", 0) >= self.auto_approve_threshold
+
+            driver = GraphDatabase.driver(
+                self.neo4j_uri,
+                auth=(self.neo4j_user, self.neo4j_password)
+            )
+
+            with driver.session() as session:
+                # Create AttackEpisode node
+                episode_id = f"attack-episode--{uuid.uuid4()}"
+                episode_name = f"Extracted from {result['file']}"
+
+                session.run("""
+                    CREATE (e:AttackEpisode {
+                        stix_id: $episode_id,
+                        name: $name,
+                        created: $created,
+                        source_file: $source_file,
+                        extraction_timestamp: $timestamp,
+                        auto_approved: $auto_approved
+                    })
+                """, episode_id=episode_id, name=episode_name,
+                    created=datetime.utcnow().isoformat() + "Z",
+                    source_file=result['file'],
+                    timestamp=datetime.utcnow().isoformat() + "Z",
+                    auto_approved=is_auto_approved)
+
+                # Create AttackAction nodes for each technique
+                action_ids = {}
+                for technique_id in result.get("techniques", []):
+                    # Get technique details if available
+                    tech_details = result.get("technique_details", {}).get(technique_id, {})
+                    confidence = tech_details.get("confidence", 50.0)
+
+                    action_id = f"attack-action--{uuid.uuid4()}"
+                    action_ids[technique_id] = action_id
+
+                    # Create AttackAction node
+                    session.run("""
+                        MATCH (e:AttackEpisode {stix_id: $episode_id})
+                        CREATE (a:AttackAction {
+                            stix_id: $action_id,
+                            attack_pattern_ref: $technique_id,
+                            confidence: $confidence,
+                            created: $created,
+                            auto_approved: $auto_approved
+                        })
+                        CREATE (e)-[:CONTAINS]->(a)
+                    """, episode_id=episode_id, action_id=action_id,
+                        technique_id=technique_id, confidence=confidence,
+                        created=datetime.utcnow().isoformat() + "Z",
+                        auto_approved=is_auto_approved)
+
+                    # If auto-approved, create USES relationship to AttackPattern
+                    if is_auto_approved:
+                        session.run("""
+                            MATCH (action:AttackAction {stix_id: $action_id})
+                            MATCH (pattern:AttackPattern {stix_id: $technique_id})
+                            MERGE (action)-[:USES {
+                                confidence: $confidence,
+                                auto_approved: true,
+                                approved_at: $timestamp
+                            }]->(pattern)
+                        """, action_id=action_id, technique_id=technique_id,
+                            confidence=confidence,
+                            timestamp=datetime.utcnow().isoformat() + "Z")
+
+                # Link to extracted entities if available (unless entity extraction was skipped)
+                if not self.skip_entity_extraction:
+                    entities = result.get("entities", {})
+                    if entities and isinstance(entities, dict):
+                        for entity in entities.get("entities", []):
+                            entity_name = entity.get("name", "")
+                            entity_type = entity.get("type", "")
+
+                            if entity_name:
+                                # Try to find existing entity node
+                                existing = session.run("""
+                                    MATCH (n)
+                                    WHERE n.name =~ $pattern
+                                      AND (n:IntrusionSet OR n:Malware OR n:Tool OR n:Campaign)
+                                    RETURN n.stix_id as id
+                                    LIMIT 1
+                                """, pattern=f"(?i).*{entity_name}.*").single()
+
+                                if existing:
+                                    # Link episode to existing entity
+                                    session.run("""
+                                        MATCH (e:AttackEpisode {stix_id: $episode_id})
+                                        MATCH (entity {stix_id: $entity_id})
+                                        MERGE (e)-[:ATTRIBUTED_TO]->(entity)
+                                    """, episode_id=episode_id, entity_id=existing["id"])
+
+                status_msg = "auto-approved" if is_auto_approved else "pending review"
+                print(f"  ✓ Stored in Neo4j: {episode_id} ({len(result.get('techniques', []))} techniques, {status_msg})")
+                result["neo4j_episode_id"] = episode_id
+                result["auto_approved"] = is_auto_approved
+                return True
+
+        except Exception as e:
+            print(f"  ⚠ Failed to store in Neo4j: {e}")
+            return False
+        finally:
+            try:
+                driver.close()
+            except:
+                pass
+
     def process_files(self, file_paths: List[Path]) -> List[Dict[str, Any]]:
         """Process multiple files with parallel workers."""
         
@@ -261,11 +415,16 @@ class BatchExtractor:
                     file_path = futures[future]
                     try:
                         result = future.result(timeout=300)  # 5 minute timeout
+
+                        # Store in Neo4j if requested
+                        if self.store_in_neo4j and result["status"] == "success":
+                            self.store_result_in_neo4j(result)
+
                         results.append(result)
-                        
+
                         status_icon = "✅" if result["status"] == "success" else "❌"
                         print(f"{status_icon} {file_path.name}: {result['count']} techniques ({result['processing_time']:.1f}s)")
-                        
+
                     except concurrent.futures.TimeoutError:
                         results.append({
                             "file": file_path.name,
@@ -382,15 +541,22 @@ def main():
 Examples:
   # Process all PDFs in a directory
   python -m bandjacks.cli.batch_extract ./reports/
-  
+
   # Use async API for processing
   python -m bandjacks.cli.batch_extract --api ./reports/
-  
+
   # Process with 5 parallel workers
   python -m bandjacks.cli.batch_extract --workers 5 ./reports/*.pdf
-  
+
+  # Process and store in Neo4j for analytics
+  python -m bandjacks.cli.batch_extract --store-in-neo4j ./reports/
+
   # Customize chunking parameters
   python -m bandjacks.cli.batch_extract --chunk-size 4000 --max-chunks 15 ./reports/
+
+  # Full workflow: Extract, store in Neo4j, then analyze
+  python -m bandjacks.cli.batch_extract --store-in-neo4j ./reports/
+  bandjacks analytics global --format csv --output cooccurrence.csv
         """
     )
     
@@ -400,10 +566,24 @@ Examples:
     parser.add_argument("--workers", type=int, default=3, help="Number of parallel workers")
     parser.add_argument("--chunk-size", type=int, default=3000, help="Size of text chunks")
     parser.add_argument("--max-chunks", type=int, default=10, help="Maximum chunks per document")
-    parser.add_argument("--extensions", nargs="+", default=[".pdf", ".txt", ".md"], 
+    parser.add_argument("--extensions", nargs="+", default=[".pdf", ".txt", ".md"],
                        help="File extensions to process")
     parser.add_argument("--output-dir", default="batch_results", help="Output directory for reports")
-    
+    parser.add_argument("--store-in-neo4j", action="store_true",
+                       help="Store results in Neo4j for analytics")
+    parser.add_argument("--neo4j-uri", default=os.getenv("NEO4J_URI", "bolt://localhost:7687"),
+                       help="Neo4j connection URI")
+    parser.add_argument("--neo4j-user", default=os.getenv("NEO4J_USER", "neo4j"),
+                       help="Neo4j username")
+    parser.add_argument("--neo4j-password", default=os.getenv("NEO4J_PASSWORD", ""),
+                       help="Neo4j password")
+    parser.add_argument("--skip-entity-extraction", action="store_true",
+                       help="Skip entity extraction (faster, techniques only)")
+    parser.add_argument("--auto-approve", action="store_true",
+                       help="Auto-approve high-confidence techniques and flows")
+    parser.add_argument("--auto-approve-threshold", type=float, default=0.80,
+                       help="Confidence threshold for auto-approval (0.0-1.0, default: 0.80)")
+
     args = parser.parse_args()
     
     # Collect all files to process
@@ -442,15 +622,29 @@ Examples:
     print(f"   - Workers: {args.workers}")
     print(f"   - Chunk size: {args.chunk_size} chars")
     print(f"   - Max chunks: {args.max_chunks}")
+    if args.store_in_neo4j:
+        print(f"   - Neo4j storage: Enabled")
+        print(f"   - Neo4j URI: {args.neo4j_uri}")
+    if args.skip_entity_extraction:
+        print(f"   - Entity extraction: Skipped (techniques only)")
+    if args.auto_approve:
+        print(f"   - Auto-approve: Enabled (threshold: {args.auto_approve_threshold})")
     print("=" * 60)
-    
+
     # Create batch extractor
     extractor = BatchExtractor(
         workers=args.workers,
         use_api=args.api,
         api_url=args.api_url,
         chunk_size=args.chunk_size,
-        max_chunks=args.max_chunks
+        max_chunks=args.max_chunks,
+        store_in_neo4j=args.store_in_neo4j,
+        neo4j_uri=args.neo4j_uri,
+        neo4j_user=args.neo4j_user,
+        neo4j_password=args.neo4j_password,
+        skip_entity_extraction=args.skip_entity_extraction,
+        auto_approve=args.auto_approve,
+        auto_approve_threshold=args.auto_approve_threshold
     )
     
     # Process files
