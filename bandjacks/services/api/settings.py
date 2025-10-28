@@ -133,6 +133,18 @@ class Settings(BaseSettings):
     sse_reconnect_max_attempts: int = 5  # Max reconnection attempts
     sse_fallback_to_polling: bool = True  # Fall back to polling if SSE fails
 
+    # Vector Update System Configuration
+    vector_update_enabled: bool = True  # Enable automatic vector updates
+    vector_update_immediate_threshold: int = 5  # Max changes for immediate update
+    vector_update_batch_interval: int = 3600  # Batch processing interval (seconds)
+    vector_update_max_batch_size: int = 1000  # Maximum items in a single batch
+    vector_update_parallelization: int = 4  # Number of parallel workers
+    vector_update_redis_queue: str = "vector_updates"  # Redis queue name
+    vector_update_priority_entities: str = "AttackPattern,IntrusionSet"  # High priority types
+    vector_update_retry_attempts: int = 3  # Retry attempts on failure
+    vector_update_retry_delay: int = 60  # Delay between retries (seconds)
+    vector_update_metrics_window: int = 3600  # Metrics collection window (seconds)
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 
