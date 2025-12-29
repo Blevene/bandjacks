@@ -774,7 +774,7 @@ Examples:
     parser.add_argument("--neo4j-user", default=os.getenv("NEO4J_USER", "neo4j"),
                        help="Neo4j username")
     parser.add_argument("--neo4j-password", default=os.getenv("NEO4J_PASSWORD", ""),
-                       help="Neo4j password")
+                       help="Neo4j password (must be set via environment variable or argument)")
     parser.add_argument("--skip-entity-extraction", action="store_true",
                        help="Skip entity extraction (faster, techniques only)")
     parser.add_argument("--auto-approve", action="store_true",

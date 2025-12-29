@@ -44,7 +44,7 @@ def cli(ctx, debug):
     # Load settings from environment
     ctx.obj['neo4j_uri'] = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
     ctx.obj['neo4j_user'] = os.getenv('NEO4J_USER', 'neo4j')
-    ctx.obj['neo4j_password'] = os.getenv('NEO4J_PASSWORD', '')
+    ctx.obj['neo4j_password'] = os.getenv('NEO4J_PASSWORD', '')  # Must be set via environment variable
     ctx.obj['opensearch_url'] = os.getenv('OPENSEARCH_URL', 'http://localhost:9200')
     ctx.obj['opensearch_index'] = os.getenv('OS_INDEX_NODES', 'bandjacks_attack_nodes-v1')
 

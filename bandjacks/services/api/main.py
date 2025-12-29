@@ -166,6 +166,9 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     # ensure infra bits exist
+    if not settings.neo4j_password:
+        print("[startup] WARNING: NEO4J_PASSWORD not set. Neo4j operations will fail.")
+        print("[startup] Please set NEO4J_PASSWORD in your .env file or environment variables.")
     try:
         ensure_ddl(settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password)
     except Exception as e:

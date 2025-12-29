@@ -13,11 +13,11 @@ class Settings(BaseSettings):
 
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: str = ""
+    neo4j_password: str = ""  # Must be set via environment variable NEO4J_PASSWORD
 
     opensearch_url: str = "http://localhost:9200"
     opensearch_user: str = "admin"
-    opensearch_password: str = ""
+    opensearch_password: str = ""  # Must be set via environment variable OPENSEARCH_PASSWORD
     os_index_nodes: str = "bandjacks_attack_nodes-v1"
 
     adm_mode: str = "schema"   # "sidecar" | "schema"

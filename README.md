@@ -45,20 +45,34 @@ pip install -e .
 
 ### Environment Setup
 
+**IMPORTANT:** You must configure environment variables before starting the application. The application requires `NEO4J_PASSWORD` to be set.
+
 Create a `.env` file in the project root:
 
 ```bash
-# Neo4j Configuration
+# Copy the sample file
+cp infra/env.sample .env
+
+# Edit .env and set your actual passwords
+nano .env
+```
+
+Required configuration in `.env`:
+
+```bash
+# Neo4j Configuration (REQUIRED)
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=password
+NEO4J_PASSWORD=your-actual-neo4j-password  # MUST BE SET - no default provided
 
 # OpenSearch Configuration
 OPENSEARCH_URL=http://localhost:9200
+OPENSEARCH_USER=admin
+OPENSEARCH_PASSWORD=your-opensearch-password  # Optional if security is disabled
 
-# LLM Configuration
-PRIMARY_LLM=gemini/gemini-2.5-flash
-GEMINI_API_KEY=your-gemini-api-key
+# LLM Configuration (Required for LLM features)
+PRIMARY_LLM=gemini
+GOOGLE_API_KEY=your-gemini-api-key
 
 # Optional: OpenAI as fallback
 OPENAI_API_KEY=your-openai-api-key
@@ -68,6 +82,8 @@ ATTACK_INDEX_URL=https://raw.githubusercontent.com/mitre-attack/attack-stix-data
 ATTACK_COLLECTION=enterprise-attack
 ATTACK_VERSION=latest
 ```
+
+**Note:** The application will fail to start if `NEO4J_PASSWORD` is not set. See [Environment Variables Fix](ENV_VARIABLES_FIX.md) for details.
 
 ### Starting the API Server
 
@@ -807,7 +823,9 @@ print(f"Technique coverage: {gaps['coverage_percentage']}%")
 
 2. **Neo4j connection failed**
    - Verify Neo4j is running: `neo4j status`
-   - Check credentials in `.env`
+   - Check that `NEO4J_PASSWORD` is set in `.env` file
+   - Ensure the password matches your Neo4j instance
+   - If you see "NEO4J_PASSWORD environment variable is required", you need to set it in your `.env` file
 
 3. **Low extraction recall**
    - Ensure you're using `agentic_v2` method

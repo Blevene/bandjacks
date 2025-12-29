@@ -86,6 +86,11 @@ class LineageGraph(BaseModel):
 
 def get_neo4j_driver():
     """Get Neo4j driver instance."""
+    if not settings.neo4j_password:
+        raise ValueError(
+            "NEO4J_PASSWORD environment variable is required. "
+            "Please set it in your .env file or environment variables."
+        )
     return GraphDatabase.driver(
         settings.neo4j_uri,
         auth=(settings.neo4j_user, settings.neo4j_password)
