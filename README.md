@@ -10,7 +10,9 @@ Bandjacks is a comprehensive cyber threat intelligence (CTI) system that:
 - Generates STIX 2.1 compliant bundles with full provenance tracking
 - Integrates D3FEND ontology for defensive recommendations
 - Provides vector search and graph analytics capabilities
+- Computes **co-occurrence analytics** to identify technique patterns
 - Features **94% faster** extraction than earlier versions with LLM response caching
+- Includes a **Next.js frontend** for report review and analytics visualization
 
 ## Architecture Highlights
 
@@ -20,6 +22,11 @@ Bandjacks is a comprehensive cyber threat intelligence (CTI) system that:
 - **1376 techniques** cached with full metadata (name, description, tactics, platforms)
 - **Consistent naming** ensures review UI always shows human-readable technique names
 
+### ActorCache
+- **In-memory cache** of all intrusion sets and threat actors
+- Fast lookups for actor name resolution and search
+- Supports alias matching and fuzzy search
+
 ## Quick Start
 
 ### Prerequisites
@@ -27,6 +34,8 @@ Bandjacks is a comprehensive cyber threat intelligence (CTI) system that:
 - Python 3.11+
 - Neo4j 5.x (graph database)
 - OpenSearch 2.x (vector store)
+- Redis (optional, for caching)
+- Node.js 18+ (for frontend)
 - API keys for LLM access (Gemini or OpenAI)
 
 ### Installation
@@ -36,11 +45,14 @@ Bandjacks is a comprehensive cyber threat intelligence (CTI) system that:
 git clone https://github.com/yourusername/bandjacks.git
 cd bandjacks
 
-# Install with uv (recommended)
+# Install Python dependencies with uv (recommended)
 uv sync
 
 # Or with pip
 pip install -e .
+
+# Install frontend dependencies
+cd ui && npm install && cd ..
 ```
 
 ### Environment Setup
@@ -81,18 +93,151 @@ OPENAI_API_KEY=your-openai-api-key
 ATTACK_INDEX_URL=https://raw.githubusercontent.com/mitre-attack/attack-stix-data/master/index.json
 ATTACK_COLLECTION=enterprise-attack
 ATTACK_VERSION=latest
+
+# Redis (optional, for caching)
+REDIS_URL=redis://localhost:6379
 ```
 
 **Note:** The application will fail to start if `NEO4J_PASSWORD` is not set. See [Environment Variables Fix](ENV_VARIABLES_FIX.md) for details.
 
-### Starting the API Server
+### Starting the Services
 
 ```bash
-# Start the FastAPI server
+# Start the FastAPI backend server
 uv run uvicorn bandjacks.services.api.main:app --reload --port 8000
 
-# Access the interactive API documentation
-open http://localhost:8000/docs
+# In another terminal, start the Next.js frontend
+cd ui && npm run dev
+
+# Access the applications
+open http://localhost:8000/docs    # API documentation
+open http://localhost:3000         # Frontend UI
+```
+
+## Command-Line Interface (CLI)
+
+Bandjacks includes a comprehensive CLI for threat intelligence operations:
+
+```bash
+# Show all available commands
+uv run python -m bandjacks.cli.main --help
+```
+
+> **Note:** The CLI requires environment variables to be set (NEO4J_PASSWORD, etc.). Run from the project root where `.env` is located.
+
+### Query Commands
+
+```bash
+# Search for threat intelligence
+uv run python -m bandjacks.cli.main query search "ransomware encryption techniques" --top-k 10
+
+# Explore graph relationships
+uv run python -m bandjacks.cli.main query graph "attack-pattern--abc123" --depth 2
+```
+
+### Review Queue Management
+
+```bash
+# Show review queue
+uv run python -m bandjacks.cli.main review queue --status pending --limit 20
+
+# Approve a candidate
+uv run python -m bandjacks.cli.main review approve "candidate-123" --reviewer analyst-1
+
+# Reject with reason
+uv run python -m bandjacks.cli.main review reject "candidate-456" --reviewer analyst-1 --reason "False positive"
+```
+
+### Document Extraction
+
+```bash
+# Extract CTI from a document
+uv run python -m bandjacks.cli.main extract document ./report.pdf --confidence-threshold 80 --show-evidence
+```
+
+### Analytics Commands
+
+> **Note:** Analytics commands require `AttackEpisode` data in Neo4j to return results.
+
+```bash
+# Show top co-occurring technique pairs
+uv run python -m bandjacks.cli.main analytics top-cooccurrence --limit 25 --min-episode-size 2
+
+# Compute conditional co-occurrence P(B|A) for a technique
+uv run python -m bandjacks.cli.main analytics conditional "attack-pattern--abc123" --limit 25
+
+# Analyze a specific threat actor
+uv run python -m bandjacks.cli.main analytics actor "intrusion-set--xyz789" --metric npmi
+
+# Extract technique bundles
+uv run python -m bandjacks.cli.main analytics bundles --min-support 3 --min-size 3 --max-size 5 --format json --output bundles.json
+
+# Global co-occurrence metrics
+uv run python -m bandjacks.cli.main analytics global --min-support 2 --limit 50 --format csv --output pairs.csv
+```
+
+### Workflow Commands
+
+```bash
+# Process a directory of reports with analytics
+uv run python -m bandjacks.cli.main workflow process-reports ./reports/ --workers 3 --analyze --export-dir ./results/
+
+# Bulk export all analytics data
+uv run python -m bandjacks.cli.main workflow bulk-export --export-dir ./analytics_export/
+```
+
+### Admin Commands
+
+```bash
+# Check system health
+uv run python -m bandjacks.cli.main admin health
+
+# View cache statistics
+uv run python -m bandjacks.cli.main admin cache-stats
+
+# Clear cache
+uv run python -m bandjacks.cli.main admin cache-clear --pattern "search:*"
+
+# Optimize database
+uv run python -m bandjacks.cli.main admin optimize
+```
+
+## Frontend UI
+
+The Next.js frontend provides a modern interface for working with the system.
+
+### Report Management (`/reports`)
+- **Report List**: View all ingested reports with status and technique counts
+- **New Report** (`/reports/new`): Upload PDF/TXT files or paste report content
+- **Report Detail** (`/reports/[id]`): View extracted techniques, entities, and evidence
+- **Review Interface** (`/reports/[id]/review`): Human-in-the-loop review workflow
+
+### Co-occurrence Analytics (`/analytics/cooccurrence`)
+
+> **Note:** These pages require `AttackEpisode` data in Neo4j. Process reports through the extraction pipeline first, or use `POST /v1/flows/build` to generate episodes from intrusion set data.
+
+- **Hub Page**: Overview with episode/technique/actor counts
+- **Top Pairs** (`/pairs`): Co-occurring technique pairs with NPMI/Lift metrics
+- **Conditional** (`/conditional`): P(B|A) conditional probabilities
+- **Bundles** (`/bundles`): Frequently co-occurring technique bundles
+- **Actors** (`/actors`): Actor-specific technique patterns
+- **Bridging** (`/bridging`): Techniques used across multiple actors
+
+### System Health (`/health`)
+- Real-time health status of all components (Neo4j, OpenSearch, Redis)
+- Cache statistics and memory usage
+- Kubernetes-compatible health endpoints
+
+### Starting the Frontend
+
+```bash
+cd ui
+npm run dev     # Development mode with hot reload
+npm run build   # Production build
+npm run start   # Start production server
+
+# Ensure backend is running
+# API_URL defaults to http://localhost:8000/v1
 ```
 
 ## Usage Guide
@@ -248,6 +393,65 @@ The Bandjacks extraction pipeline uses a multi-agent architecture to extract str
 | Small (<5KB) | 10-20 seconds | 5-10 techniques |
 | Medium (5-15KB) | 20-40 seconds | 10-15 techniques |
 | Large (>15KB) | 30-60 seconds | 15-25 techniques |
+
+## Co-occurrence Analytics
+
+Bandjacks provides analytics for understanding technique relationships. 
+
+> **Note:** Analytics require `AttackEpisode` and `AttackAction` data in Neo4j. These are created when:
+> - Reports are processed through the extraction pipeline
+> - Attack flows are built via `/v1/flows/build`
+> - STIX bundles with attack episodes are ingested
+>
+> If no episodes exist, analytics will return empty results.
+
+### Global Co-occurrence
+
+Compute which techniques frequently appear together across all attack episodes:
+
+```python
+# Via API
+response = httpx.post(
+    "http://localhost:8000/v1/analytics/cooccurrence/global",
+    json={"min_support": 2, "min_episodes_per_pair": 2, "limit": 50}
+)
+
+for pair in response.json()["pairs"]:
+    print(f"{pair['name_a']} + {pair['name_b']}: NPMI={pair['npmi']:.3f}")
+```
+
+### Conditional Probability
+
+Calculate P(B|A) - given technique A was used, what's the probability of technique B:
+
+```python
+response = httpx.get(
+    "http://localhost:8000/v1/analytics/cooccurrence/conditional",
+    params={"technique_id": "attack-pattern--abc123", "limit": 25}
+)
+```
+
+### Technique Bundles
+
+Identify frequently co-occurring technique bundles (3-5 techniques):
+
+```python
+response = httpx.post(
+    "http://localhost:8000/v1/analytics/cooccurrence/bundles",
+    json={"min_support": 3, "min_size": 3, "max_size": 5}
+)
+```
+
+### Actor-Specific Analysis
+
+Analyze technique patterns for specific threat actors:
+
+```python
+response = httpx.post(
+    "http://localhost:8000/v1/analytics/cooccurrence/actor",
+    json={"intrusion_set_id": "intrusion-set--xyz789", "min_support": 1}
+)
+```
 
 ## Human-in-the-Loop Review System
 
@@ -517,6 +721,9 @@ python tests/test_graph_upsert.py
 
 # Test STIX validation
 python tests/test_bundle_validation.py
+
+# Run frontend tests
+cd ui && npm test
 ```
 
 ## API Endpoints
@@ -531,12 +738,107 @@ python tests/test_bundle_validation.py
 - `POST /v1/reports/{id}/unified-review` - Submit review decisions
 - `POST /v1/search/ttx` - Search for techniques
 - `GET /v1/graph/technique/{id}` - Get technique details
+
+### Attack Flows
+
 - `POST /v1/flows/build` - Generate AttackFlow co-occurrence models
 - `GET /v1/flows/{flow_id}` - Retrieve specific AttackFlow details
 - `POST /v1/flows/search` - Search for similar attack flows
+
+### Analytics
+
+- `GET /v1/analytics/cooccurrence/global` - Global co-occurrence metrics
+- `GET /v1/analytics/cooccurrence/conditional` - Conditional probabilities
+- `GET /v1/analytics/cooccurrence/bundles` - Technique bundles
+- `GET /v1/analytics/cooccurrence/actor` - Actor-specific patterns
+- `GET /v1/coverage/gaps` - Technique coverage gaps
+
+### Defense & Detection
+
 - `GET /v1/defense/technique/{id}` - Get defensive recommendations
+- `GET /v1/detections/technique/{id}` - Detection strategies
+- `POST /v1/sigma/validate` - Validate Sigma rules
+
+### Monitoring
+
+- `GET /health` - Basic health check
+- `GET /health/live` - Kubernetes liveness probe
+- `GET /health/ready` - Kubernetes readiness probe
+- `GET /health/components/{component}` - Individual component health
 - `GET /v1/cache/stats` - Get LLM cache statistics
 - `POST /v1/cache/clear` - Clear LLM cache
+- `GET /v1/compliance/report` - Compliance metrics
+- `GET /v1/drift/status` - Drift detection status
+- `GET /v1/ml-metrics/performance` - ML model metrics
+
+### Actors & Provenance
+
+- `GET /v1/actors` - List threat actors
+- `GET /v1/actors/{id}` - Get actor details
+- `GET /v1/provenance/{object_id}` - Object provenance
+- `GET /v1/provenance/{object_id}/lineage` - Full lineage chain
+- `GET /v1/provenance/{object_id}/evidence` - Evidence snippets
+
+### API-Only Features (No UI/CLI)
+
+These endpoints are fully functional but are accessed via REST API only (no frontend pages or CLI commands):
+
+#### Attack Path Simulation
+- `POST /v1/simulation/paths` - Simulate attack paths from starting technique/group
+- `POST /v1/simulation/predict` - Predict next likely techniques given current state
+- `POST /v1/simulation/whatif` - What-if analysis for defensive scenarios
+- `POST /v1/simulation/scenario` - Simulate from sets of groups/software/techniques
+- `GET /v1/simulation/statistics/{technique_id}` - Technique usage statistics
+- `GET /v1/simulation/groups/{group_id}/patterns` - Group attack patterns
+- `POST /v1/simulation/compare` - Compare multiple attack paths
+
+#### MDP Policy & Rollout
+- `POST /v1/simulate/rollout` - PTG rollout simulation
+- `POST /v1/simulate/mdp` - Compute MDP optimal defense policy
+- `GET /v1/simulate/models` - List available PTG models
+
+#### Drift Detection & Monitoring
+- `GET /v1/drift/status` - Current drift status across all metrics
+- `POST /v1/drift/analyze` - Run drift analysis with custom thresholds
+- `GET /v1/drift/alerts` - Get active drift alerts
+- `POST /v1/drift/alerts/{alert_id}/acknowledge` - Acknowledge alert
+- `GET /v1/drift/metrics/{metric_name}` - Get specific drift metric
+
+#### ML Metrics Tracking
+- `POST /v1/ml-metrics/prediction` - Record model prediction for tracking
+- `POST /v1/ml-metrics/review` - Record review decision metrics
+- `POST /v1/ml-metrics/coverage-gap` - Record coverage gap
+- `GET /v1/ml-metrics/performance` - Get model performance metrics
+- `GET /v1/ml-metrics/dashboard` - Export dashboard metrics
+
+#### Notifications
+- `GET /v1/notifications/history` - Get notification history
+- `POST /v1/notifications/clear-history` - Clear notification history
+- `GET /v1/notifications/config` - Get notification configuration
+- `POST /v1/notifications/test` - Send test notification
+
+#### Vector Update Management
+- `GET /v1/vectors/status` - Vector update system status
+- `GET /v1/vectors/metrics` - Detailed vector update metrics
+- `POST /v1/vectors/update` - Manually trigger vector update
+- `POST /v1/vectors/process-batch` - Force batch processing
+- `DELETE /v1/vectors/queue` - Clear pending update queue
+- `GET /v1/vectors/health` - Vector system health check
+
+#### Entity Ignorelist
+- `GET /v1/ignorelist` - Get current ignorelist status
+- `POST /v1/ignorelist/add` - Add entity to ignorelist
+- `DELETE /v1/ignorelist/remove` - Remove entity from ignorelist
+- `POST /v1/ignorelist/reload` - Reload ignorelist from disk
+
+#### Candidate Pattern Review
+- `GET /v1/review/candidates` - List candidate attack patterns
+- `POST /v1/review/candidates` - Create candidate pattern
+- `GET /v1/review/candidates/{id}` - Get candidate details
+- `POST /v1/review/candidates/{id}/approve` - Approve candidate
+- `POST /v1/review/candidates/{id}/reject` - Reject candidate
+- `GET /v1/review/candidates/{id}/similar` - Find similar patterns
+- `GET /v1/review/candidates/stats/summary` - Candidate statistics
 
 ### Complete API Documentation
 
@@ -546,6 +848,77 @@ Access the full API documentation at:
 - OpenAPI JSON: http://localhost:8000/openapi.json
 
 ## Architecture
+
+### Project Structure
+
+```
+bandjacks/
+├── bandjacks/
+│   ├── analysis/         # Graph analysis & interdiction
+│   │   ├── graph_analyzer.py
+│   │   └── interdiction.py
+│   ├── analytics/        # Co-occurrence & clustering
+│   │   ├── clustering.py
+│   │   ├── cooccurrence.py
+│   │   └── detection_bundles.py
+│   ├── cli/              # Command-line interface
+│   │   ├── main.py       # CLI entry point
+│   │   ├── batch_extract.py
+│   │   ├── formatters.py
+│   │   └── workflows.py
+│   ├── config/           # Configuration files
+│   │   └── entity_ignorelist.yaml
+│   ├── core/             # Core utilities
+│   │   ├── cache.py      # Redis caching
+│   │   ├── connection_pool.py
+│   │   └── query_optimizer.py
+│   ├── llm/              # Extraction pipeline
+│   │   ├── extraction_pipeline.py
+│   │   ├── agents_v2.py  # Core extraction agents
+│   │   ├── chunked_extractor.py
+│   │   ├── optimized_chunked_extractor.py
+│   │   ├── entity_extractor.py
+│   │   ├── flow_builder.py
+│   │   ├── cache.py      # LLM response caching
+│   │   └── experimental/ # Experimental features
+│   ├── loaders/          # Data loading & indexing
+│   │   ├── attack_catalog.py
+│   │   ├── attack_upsert.py
+│   │   ├── opensearch_index.py
+│   │   ├── hybrid_search.py
+│   │   └── sigma_loader.py
+│   ├── monitoring/       # Metrics & monitoring
+│   │   ├── compliance_metrics.py
+│   │   ├── defense_metrics.py
+│   │   ├── drift_detector.py
+│   │   └── ml_metrics.py
+│   ├── services/         # API & services
+│   │   ├── api/          # FastAPI application
+│   │   │   ├── main.py
+│   │   │   ├── routes/   # API route handlers
+│   │   │   └── middleware/
+│   │   ├── technique_cache.py
+│   │   └── actor_cache.py
+│   ├── simulation/       # Attack simulation
+│   │   ├── attack_simulator.py
+│   │   ├── mdp_solver.py
+│   │   └── ptg_rollout.py
+│   └── store/            # Data stores
+│       ├── report_store.py
+│       ├── candidate_store.py
+│       └── review_store.py
+├── ui/                   # Next.js frontend
+│   ├── app/              # App Router pages
+│   │   ├── reports/      # Report management
+│   │   ├── analytics/    # Analytics dashboards
+│   │   └── health/       # Health monitoring
+│   ├── components/       # React components
+│   └── hooks/            # Custom React hooks
+├── tests/                # Test suite
+├── samples/              # Sample reports
+├── scripts/              # Utility scripts
+└── docs/                 # Documentation
+```
 
 ### Components
 
@@ -568,6 +941,12 @@ Access the full API documentation at:
    - FastAPI REST endpoints
    - WebSocket support for real-time updates
    - Comprehensive OpenAPI documentation
+
+4. **Frontend** (`ui/`)
+   - Next.js 15 with App Router
+   - React Query for data fetching
+   - Radix UI + Tailwind for components
+   - ReactFlow for graph visualization
 
 ### Performance
 
@@ -616,8 +995,6 @@ Control extraction quality:
     "auto_ingest": True            # Auto-add high-confidence results
 }
 ```
-
-## Performance Optimization
 
 ## Health Monitoring
 
@@ -723,6 +1100,8 @@ readinessProbe:
   periodSeconds: 5
 ```
 
+## Performance Optimization
+
 ### Caching
 
 The system includes automatic LLM response caching for improved performance:
@@ -777,7 +1156,7 @@ Every extracted entity includes full provenance:
 ```python
 # Get provenance for an object
 response = httpx.get(
-    "http://localhost:8000/v1/extract/provenance/attack-pattern--abc123"
+    "http://localhost:8000/v1/provenance/attack-pattern--abc123"
 )
 ```
 
@@ -805,13 +1184,111 @@ response = httpx.post(
 Analyze your threat intelligence coverage:
 
 ```python
-# Get coverage gaps
+# Get coverage analysis
 response = httpx.get("http://localhost:8000/v1/analytics/coverage")
-gaps = response.json()
+coverage = response.json()
 
-print(f"Uncovered tactics: {gaps['uncovered_tactics']}")
-print(f"Technique coverage: {gaps['coverage_percentage']}%")
+print(f"Summary: {coverage['summary']}")
+for tactic in coverage['tactics']:
+    print(f"  {tactic['tactic']}: {tactic['coverage_percentage']}%")
 ```
+
+> **Note:** Platform coverage (`_analyze_platforms_coverage`) currently returns placeholder data. Tactic and group coverage use real Neo4j queries.
+
+### Attack Simulation (Experimental)
+
+The simulation module provides MDP-based attack path prediction:
+
+```python
+# Note: This feature is experimental and may require additional setup
+from bandjacks.simulation.attack_simulator import AttackSimulator
+from bandjacks.simulation.mdp_solver import MDPSolver
+
+# See bandjacks/simulation/ for implementation details
+```
+
+## Feature Status
+
+This section provides transparency about the implementation status of various features:
+
+### Fully Functional ✅
+- **Report Extraction Pipeline** - LLM-based technique extraction works end-to-end
+- **MITRE ATT&CK Loading** - Load enterprise/mobile/ICS ATT&CK data into Neo4j
+- **Vector Search** - OpenSearch-based semantic search for techniques
+- **Review System** - Human-in-the-loop review workflow via API and UI
+- **Health Monitoring** - Component health checks and Kubernetes probes
+- **CLI Query/Admin Commands** - Search, graph traversal, cache management
+- **Attack Flow Generation** - Co-occurrence-based flow building for intrusion sets
+- **Attack Simulation** - MDP-based path simulation via `/simulation/*` and `/simulate/*`
+- **Coverage Reports** - JSON reports for executive, technical, tactical, operational views
+
+### Functional with Data Dependencies ⚠️
+- **Co-occurrence Analytics** - Requires `AttackEpisode` nodes from report processing
+- **Actor Analytics** - Requires episodes attributed to intrusion sets
+- **Technique Bundles** - Requires sufficient episode data for pattern mining
+- **CLI Analytics Commands** - Work but return empty if no episodes exist
+
+### API-Only (No UI/CLI) 🔌
+These are fully implemented features accessible only via REST API:
+- **Attack Path Simulation** - `/simulation/*` routes for path prediction and what-if analysis
+- **MDP Policy Solver** - `/simulate/mdp` for optimal defense policy computation
+- **Drift Detection** - `/drift/*` routes for monitoring data quality drift
+- **ML Metrics** - `/ml-metrics/*` for tracking model performance over time
+- **Vector Management** - `/vectors/*` for managing vector embeddings
+- **Entity Ignorelist** - `/ignorelist/*` for filtering false positive entities
+- **Candidate Patterns** - `/review/candidates/*` for novel technique candidates
+- **Notifications** - `/notifications/*` for alert configuration and history
+- **Provenance** - `/provenance/*` for extraction lineage tracking
+- **Compliance** - `/compliance/*` for compliance metrics reporting
+
+### Experimental (in `llm/experimental/`) 🧪
+- **PTG (Probabilistic Threat Graph)** - Core logic implemented, limited testing
+- **Judge Integration** - LLM-based sequence validation
+- **Attack Flow Simulator** - Flow-based simulation engine
+- **Sequence Extractor** - Extract sequences from flows
+
+### Removed/Cleaned Up 🗑️
+The following stub features have been removed from the API:
+- ~~Platform Coverage Analysis~~ - Was returning hardcoded stub data
+- ~~Trend Analysis~~ - Was returning random synthetic data
+- ~~CSV/PDF Report Export~~ - Was returning 501; JSON-only now
+- ~~Gemini Sequence Inference~~ - Was 501 stub; use `/sequence/propose` instead
+
+### Connectivity Matrix
+
+| Feature Area | Frontend UI | CLI | REST API |
+|--------------|-------------|-----|----------|
+| Report Management | ✅ | ✅ | ✅ |
+| Review Workflow | ✅ | ✅ | ✅ |
+| Search (TTX) | ✅ | ✅ | ✅ |
+| Co-occurrence Analytics | ✅ | ✅ | ✅ |
+| Coverage Analytics | ✅ | - | ✅ |
+| Health Monitoring | ✅ | - | ✅ |
+| Detections/Sigma | ✅ | - | ✅ |
+| Attack Flows | ✅ | - | ✅ |
+| Defense Overlay | ✅ | - | ✅ |
+| Sequences/PTG | ✅ | - | ✅ |
+| Actors | ✅ | - | ✅ |
+| Attack Simulation | - | - | ✅ |
+| Drift Detection | - | - | ✅ |
+| ML Metrics | - | - | ✅ |
+| Vector Management | - | - | ✅ |
+| Entity Ignorelist | - | - | ✅ |
+| Candidate Patterns | - | - | ✅ |
+| Notifications | - | - | ✅ |
+| Provenance | - | - | ✅ |
+| Compliance | - | - | ✅ |
+
+### Frontend Pages
+| Page | Status | Notes |
+|------|--------|-------|
+| `/reports` | ✅ Working | List, create, view reports |
+| `/reports/[id]/review` | ✅ Working | Full review workflow |
+| `/analytics/cooccurrence` | ⚠️ Data-dependent | Shows KPIs if episodes exist |
+| `/analytics/cooccurrence/pairs` | ⚠️ Data-dependent | Calls real API |
+| `/analytics/cooccurrence/bundles` | ⚠️ Data-dependent | Calls real API |
+| `/analytics/cooccurrence/actors` | ⚠️ Data-dependent | Calls real API |
+| `/health` | ✅ Working | Real-time health status |
 
 ## Troubleshooting
 
@@ -836,6 +1313,10 @@ print(f"Technique coverage: {gaps['coverage_percentage']}%")
    - Increase timeout settings for large documents
    - Consider chunking very large reports
 
+5. **Frontend not connecting to API**
+   - Ensure API is running on port 8000
+   - Check CORS settings in API configuration
+
 ### Debug Mode
 
 Enable detailed logging:
@@ -849,28 +1330,6 @@ result = run_agentic_v2(text, config)
 ```
 
 ## Development
-
-### Project Structure
-
-```
-bandjacks/
-├── bandjacks/
-│   ├── llm/              # Extraction pipeline
-│   ├── loaders/          # Data loading and indexing
-│   ├── services/api/     # REST API
-│   └── simulation/       # Attack simulation
-├── tests/                # Test suite
-├── samples/              # Sample reports
-└── docs/                 # Documentation
-```
-
-### Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run tests: `uv run pytest`
-5. Submit a pull request
 
 ### Running Tests
 
@@ -886,6 +1345,32 @@ uv run pytest tests/test_agentic_v2.py::test_extraction
 
 # With coverage
 uv run pytest --cov=bandjacks
+
+# Frontend tests
+cd ui && npm test
+cd ui && npm run test:coverage
+```
+
+### Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests: `uv run pytest`
+5. Run linting: `uv run ruff check`
+6. Submit a pull request
+
+### Code Quality
+
+```bash
+# Format code
+uv run ruff format
+
+# Check linting
+uv run ruff check
+
+# Type checking
+uv run mypy bandjacks
 ```
 
 ## License

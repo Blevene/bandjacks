@@ -22,7 +22,6 @@ settings = get_settings()
 class CoverageRequest(BaseModel):
     """Request for coverage analysis."""
     tactics: Optional[List[str]] = Field(None, description="Specific tactics to analyze")
-    platforms: Optional[List[str]] = Field(None, description="Specific platforms to analyze")
     groups: Optional[List[str]] = Field(None, description="Specific threat groups to analyze")
     include_sub_techniques: bool = Field(True, description="Include sub-techniques in analysis")
 
@@ -34,15 +33,6 @@ class TacticCoverage(BaseModel):
     covered_count: int
     coverage_percentage: float
     top_gaps: List[Dict[str, Any]]
-
-
-class PlatformCoverage(BaseModel):
-    """Coverage statistics for a platform."""
-    platform: str
-    technique_count: int
-    covered_count: int
-    coverage_percentage: float
-    tactics_breakdown: Dict[str, float]
 
 
 class GroupCoverage(BaseModel):
@@ -59,7 +49,6 @@ class CoverageResponse(BaseModel):
     """Response from coverage analysis."""
     summary: Dict[str, Any]
     tactics: List[TacticCoverage]
-    platforms: List[PlatformCoverage]
     groups: List[GroupCoverage]
     recommendations: List[Dict[str, Any]]
     generated_at: str
@@ -80,23 +69,6 @@ class GapAnalysisResponse(BaseModel):
     remediation_plan: List[Dict[str, Any]]
 
 
-class TrendRequest(BaseModel):
-    """Request for trend analysis."""
-    metric: str = Field("coverage", description="Metric to track: coverage, detections, flows")
-    period: str = Field("30d", description="Time period: 7d, 30d, 90d, 1y")
-    granularity: str = Field("daily", description="Granularity: daily, weekly, monthly")
-
-
-class TrendResponse(BaseModel):
-    """Response from trend analysis."""
-    metric: str
-    period: str
-    data_points: List[Dict[str, Any]]
-    trend_direction: str
-    change_percentage: float
-    insights: List[str]
-
-
 def get_neo4j_driver():
     """Get Neo4j driver instance."""
     if not settings.neo4j_password:
@@ -113,19 +85,17 @@ def get_neo4j_driver():
 @router.get("/coverage", response_model=CoverageResponse)
 async def analyze_coverage_get(
     tactics: Optional[str] = Query(None, description="Comma-separated list of tactics"),
-    platforms: Optional[str] = Query(None, description="Comma-separated list of platforms"),
     groups: Optional[str] = Query(None, description="Comma-separated list of threat groups"),
     include_sub_techniques: bool = Query(True, description="Include sub-techniques in analysis")
 ) -> CoverageResponse:
     """
-    Analyze attack coverage across tactics, platforms, and groups (GET version).
+    Analyze attack coverage across tactics and groups (GET version).
     
     Identifies gaps in detection and defensive capabilities.
     """
     # Convert query params to request object
     request = CoverageRequest(
         tactics=tactics.split(",") if tactics else None,
-        platforms=platforms.split(",") if platforms else None,
         groups=groups.split(",") if groups else None,
         include_sub_techniques=include_sub_techniques
     )
@@ -154,12 +124,6 @@ async def analyze_coverage(request: CoverageRequest) -> CoverageResponse:
                 request.include_sub_techniques
             )
             
-            # Analyze by platforms
-            platforms_coverage = _analyze_platforms_coverage(
-                session,
-                request.platforms
-            )
-            
             # Analyze by groups
             groups_coverage = _analyze_groups_coverage(
                 session,
@@ -169,14 +133,12 @@ async def analyze_coverage(request: CoverageRequest) -> CoverageResponse:
             # Generate recommendations
             recommendations = _generate_coverage_recommendations(
                 tactics_coverage,
-                platforms_coverage,
                 groups_coverage
             )
             
             return CoverageResponse(
                 summary=summary,
                 tactics=tactics_coverage,
-                platforms=platforms_coverage,
                 groups=groups_coverage,
                 recommendations=recommendations,
                 generated_at=datetime.utcnow().isoformat()
@@ -241,52 +203,6 @@ async def analyze_gaps(request: GapAnalysisRequest) -> GapAnalysisResponse:
         driver.close()
 
 
-@router.post("/trends", response_model=TrendResponse)
-async def analyze_trends(request: TrendRequest) -> TrendResponse:
-    """
-    Analyze coverage trends over time.
-    
-    Tracks improvements and regressions in coverage metrics.
-    """
-    driver = get_neo4j_driver()
-    
-    try:
-        with driver.session() as session:
-            # Get trend data
-            data_points = _get_trend_data(
-                session,
-                request.metric,
-                request.period,
-                request.granularity
-            )
-            
-            # Calculate trend direction
-            trend_direction, change_percentage = _calculate_trend(data_points)
-            
-            # Generate insights
-            insights = _generate_trend_insights(
-                request.metric,
-                data_points,
-                trend_direction,
-                change_percentage
-            )
-            
-            return TrendResponse(
-                metric=request.metric,
-                period=request.period,
-                data_points=data_points,
-                trend_direction=trend_direction,
-                change_percentage=change_percentage,
-                insights=insights
-            )
-            
-    except Exception as e:
-        logger.error(f"Trend analysis failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        driver.close()
-
-
 @router.get("/statistics")
 async def get_statistics() -> Dict[str, Any]:
     """
@@ -316,12 +232,9 @@ async def get_statistics() -> Dict[str, Any]:
 
 
 @router.get("/reports/{report_type}")
-async def generate_report(
-    report_type: str,
-    format: str = Query("json", description="Output format: json, csv, pdf")
-) -> Dict[str, Any]:
+async def generate_report(report_type: str) -> Dict[str, Any]:
     """
-    Generate coverage report in specified format.
+    Generate coverage report in JSON format.
     
     Report types: executive, technical, tactical, operational
     """
@@ -332,20 +245,7 @@ async def generate_report(
     
     try:
         with driver.session() as session:
-            # Generate report data
-            report_data = _generate_report_data(session, report_type)
-            
-            # Format report
-            if format == "json":
-                return report_data
-            elif format == "csv":
-                # Would convert to CSV format
-                return {"message": "CSV export not yet implemented", "data": report_data}
-            elif format == "pdf":
-                # Would generate PDF
-                return {"message": "PDF generation not yet implemented", "data": report_data}
-            else:
-                raise HTTPException(status_code=400, detail="Invalid format")
+            return _generate_report_data(session, report_type)
                 
     except Exception as e:
         logger.error(f"Report generation failed: {e}")
@@ -422,27 +322,6 @@ def _analyze_tactics_coverage(session, tactics: Optional[List[str]], include_sub
     return tactics_coverage
 
 
-def _analyze_platforms_coverage(session, platforms: Optional[List[str]]) -> List[PlatformCoverage]:
-    """Analyze coverage by platforms."""
-    # Simplified - would need actual platform data
-    return [
-        PlatformCoverage(
-            platform="Windows",
-            technique_count=250,
-            covered_count=180,
-            coverage_percentage=72.0,
-            tactics_breakdown={"initial-access": 65.0, "execution": 80.0, "persistence": 70.0}
-        ),
-        PlatformCoverage(
-            platform="Linux",
-            technique_count=180,
-            covered_count=120,
-            coverage_percentage=66.7,
-            tactics_breakdown={"initial-access": 60.0, "execution": 75.0, "persistence": 65.0}
-        )
-    ]
-
-
 def _analyze_groups_coverage(session, groups: Optional[List[str]]) -> List[GroupCoverage]:
     """Analyze coverage by threat groups."""
     query = """
@@ -488,7 +367,6 @@ def _analyze_groups_coverage(session, groups: Optional[List[str]]) -> List[Group
 
 def _generate_coverage_recommendations(
     tactics: List[TacticCoverage],
-    platforms: List[PlatformCoverage],
     groups: List[GroupCoverage]
 ) -> List[Dict[str, Any]]:
     """Generate recommendations based on coverage analysis."""
@@ -599,65 +477,6 @@ def _create_remediation_plan(gaps, improvements, impact) -> List[Dict[str, Any]]
         })
     
     return plan
-
-
-def _get_trend_data(session, metric: str, period: str, granularity: str) -> List[Dict[str, Any]]:
-    """Get trend data points."""
-    # Simplified - would query actual historical data
-    import random
-    
-    days = {"7d": 7, "30d": 30, "90d": 90, "1y": 365}.get(period, 30)
-    data_points = []
-    
-    base_value = 65.0
-    for i in range(days // (7 if granularity == "weekly" else 1)):
-        data_points.append({
-            "date": (datetime.utcnow() - timedelta(days=days-i)).isoformat(),
-            "value": base_value + random.uniform(-5, 10),
-            "count": random.randint(100, 300)
-        })
-    
-    return data_points
-
-
-def _calculate_trend(data_points: List[Dict[str, Any]]) -> Tuple[str, float]:
-    """Calculate trend direction and change percentage."""
-    if not data_points or len(data_points) < 2:
-        return "stable", 0.0
-    
-    first_value = data_points[0]["value"]
-    last_value = data_points[-1]["value"]
-    change = ((last_value - first_value) / first_value) * 100
-    
-    if change > 5:
-        direction = "improving"
-    elif change < -5:
-        direction = "declining"
-    else:
-        direction = "stable"
-    
-    return direction, round(change, 2)
-
-
-def _generate_trend_insights(metric: str, data_points: List, direction: str, change: float) -> List[str]:
-    """Generate insights from trend analysis."""
-    insights = []
-    
-    if direction == "improving":
-        insights.append(f"{metric.capitalize()} has improved by {abs(change):.1f}% over the period")
-    elif direction == "declining":
-        insights.append(f"{metric.capitalize()} has declined by {abs(change):.1f}% over the period")
-    else:
-        insights.append(f"{metric.capitalize()} has remained stable")
-    
-    # Add more specific insights based on metric
-    if metric == "coverage":
-        if change > 10:
-            insights.append("Significant improvement in defensive coverage detected")
-        elif change < -10:
-            insights.append("Coverage degradation requires immediate attention")
-    
-    return insights
 
 
 def _get_technique_stats(session) -> Dict[str, Any]:

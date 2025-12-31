@@ -30,7 +30,9 @@ from bandjacks.llm.sequence_proposal import (
     SequenceProposalBuilder, TransitionValidator, AnalystReviewFormatter
 )
 from bandjacks.services.sequence_analyzer import SequenceAnalyzer, SequenceAnalysisResult
-# from bandjacks.llm.gemini_sequence_inference import GeminiSequenceInferencer  # TODO: Add this module
+
+# Note: GeminiSequenceInferencer is planned but not yet implemented
+# See /sequence/infer-gemini endpoint which returns 501
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sequence", tags=["sequence"])
@@ -1997,93 +1999,6 @@ async def get_campaign_sequences(
     except Exception as e:
         logger.error(f"Failed to get campaign sequences for {campaign_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/infer-gemini/{intrusion_set_id}",
-    summary="Infer Sequences with Gemini-2.5-Pro",
-    description="""
-    Use Gemini-2.5-Pro to infer attack sequences from an intrusion set's techniques.
-    
-    This endpoint:
-    1. Retrieves all techniques from AttackEpisode data for the intrusion set
-    2. Groups techniques by tactic for context
-    3. Prompts Gemini-2.5-Pro to infer logical attack sequences
-    4. Returns multiple sequences with confidence scores and reasoning
-    5. Optionally compares with existing PTG model
-    
-    This is experimental functionality to explore zero-shot sequence inference from
-    unordered technique sets using large language models.
-    """
-)
-async def infer_sequences_with_gemini(
-    intrusion_set_id: str,
-    max_sequences: int = Query(5, description="Maximum number of sequences to infer", ge=1, le=10),
-    temperature: float = Query(0.3, description="Temperature for generation", ge=0, le=1),
-    compare_with_ptg: bool = Query(False, description="Compare with existing PTG model"),
-    neo4j_session=Depends(get_neo4j_session)
-) -> Dict[str, Any]:
-    """Infer attack sequences using Gemini-2.5-Pro."""
-    
-    try:
-        # TODO: Uncomment when GeminiSequenceInferencer is implemented
-        raise HTTPException(
-            status_code=501, 
-            detail="Gemini sequence inference not yet implemented"
-        )
-        # Initialize Gemini inferencer
-        # inferencer = GeminiSequenceInferencer(
-        #     neo4j_uri=settings.neo4j_uri,
-        #     neo4j_user=settings.neo4j_user,
-        #     neo4j_password=settings.neo4j_password,
-        #     model="gemini/gemini-2.5-pro",
-        #     temperature=temperature,
-        #     max_sequences=max_sequences
-        # )
-        
-        # # Infer sequences
-        # logger.info(f"Starting Gemini sequence inference for {intrusion_set_id}")
-        # inference_result = inferencer.infer_sequences(intrusion_set_id)
-        
-        # Format response
-        response = {
-            "intrusion_set_id": inference_result.intrusion_set_id,
-            "intrusion_set_name": inference_result.intrusion_set_name,
-            "total_techniques": inference_result.total_techniques,
-            "model_used": inference_result.model_used,
-            "inference_time": inference_result.inference_time,
-            "sequences": [
-                {
-                    "sequence_id": seq.sequence_id,
-                    "techniques": seq.techniques,
-                    "technique_names": seq.technique_names,
-                    "confidence": seq.confidence,
-                    "reasoning": seq.reasoning,
-                    "length": seq.length,
-                    "tactic_progression": seq.tactic_progression
-                }
-                for seq in inference_result.inferred_sequences
-            ],
-            "token_usage": {
-                "prompt_tokens": inference_result.prompt_tokens,
-                "completion_tokens": inference_result.completion_tokens
-            }
-        }
-        
-        # Optionally compare with PTG model
-        if compare_with_ptg:
-            comparison = inferencer.compare_with_ptg(inference_result)
-            response["ptg_comparison"] = comparison
-        
-        return response
-        
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        logger.error(f"Failed to infer sequences for {intrusion_set_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        if 'inferencer' in locals():
-            inferencer.close()
 
 
 @router.get("/report/{intrusion_set_id}",
