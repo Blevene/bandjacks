@@ -14,6 +14,18 @@ Bandjacks is a comprehensive cyber threat intelligence (CTI) system that:
 - Features **94% faster** extraction than earlier versions with LLM response caching
 - Includes a **Next.js frontend** for report review and analytics visualization
 
+## 📚 Documentation
+
+| Guide | Description |
+|-------|-------------|
+| [Quick Start](docs/QUICKSTART.md) | Get running in 5 minutes |
+| [Full Setup](docs/SETUP.md) | Complete environment setup |
+| [CLI Usage](docs/CLI_USAGE.md) | Command-line interface guide |
+| [API Reference](docs/api/README.md) | REST API documentation |
+| [Co-occurrence Analytics](docs/cooccurrence/README.md) | Analytics documentation |
+| [AttackFlow Generation](docs/ATTACKFLOW_GENERATION.md) | Flow generation guide |
+| [Review System](docs/UNIFIED_REVIEW_USER_GUIDE.md) | Human-in-the-loop review |
+
 ## Architecture Highlights
 
 ### TechniqueCache
@@ -1379,9 +1391,10 @@ uv run mypy bandjacks
 
 ## Support
 
-- GitHub Issues: [Report bugs or request features]
-- Documentation: [Link to full docs]
-- Email: support@bandjacks.io
+- **Quick Start**: [docs/QUICKSTART.md](docs/QUICKSTART.md)
+- **Full Setup**: [docs/SETUP.md](docs/SETUP.md)
+- **API Docs**: http://localhost:8000/docs (when running)
+- **GitHub Issues**: [Report bugs or request features]
 
 ## Acknowledgments
 
