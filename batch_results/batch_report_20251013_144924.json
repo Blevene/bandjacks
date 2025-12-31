@@ -1,0 +1,472 @@
+{
+  "timestamp": "20251013_144924",
+  "total_files": 1,
+  "successful": 1,
+  "failed": 0,
+  "total_techniques": 30,
+  "total_processing_time": 57.48484516143799,
+  "average_time_per_file": 57.48484516143799,
+  "configuration": {
+    "workers": 3,
+    "chunk_size": 3000,
+    "max_chunks": 10,
+    "use_api": false
+  },
+  "files": [
+    {
+      "file": "plaintext_threat_report.txt",
+      "path": "samples/reports/plaintext_threat_report.txt",
+      "status": "success",
+      "techniques": [
+        "T1203",
+        "T1204.002",
+        "T1059.001",
+        "T1546.001",
+        "T1053.005",
+        "T1018",
+        "T1087.002",
+        "T1069.002",
+        "T1482",
+        "T1047",
+        "T1552",
+        "T1003",
+        "T1555",
+        "T1068",
+        "T1078",
+        "T1574.010",
+        "T1021.001",
+        "T1119",
+        "T1005",
+        "T1560.001",
+        "T1564.001",
+        "T1070.006",
+        "T1102.002",
+        "T1583.001",
+        "T1036.002",
+        "T1071.001",
+        "T1070.001",
+        "T1562.002",
+        "T1562",
+        "T1574.002"
+      ],
+      "count": 30,
+      "processing_time": 56.84,
+      "chunks_used": 3,
+      "error": null,
+      "text_length": 7205,
+      "technique_details": {
+        "T1203": {
+          "name": "Exploitation for Client Execution",
+          "confidence": 95,
+          "evidence": [
+            "The documents exploited CVE-2024-1234, a recently discovered vulnerability in Microsoft Office, to achieve initial code execution without requiring user interaction beyond opening the document.\n\nUpon successful exploitation, the malware immediately executed PowerShell scripts that were embedded within the document metadata. These scripts established persistence through multiple mechanisms, including registry modifications and scheduled tasks."
+          ],
+          "line_refs": [
+            9,
+            10,
+            11
+          ]
+        },
+        "T1204.002": {
+          "name": "Malicious File",
+          "confidence": 90,
+          "evidence": [
+            "The documents exploited CVE-2024-1234, a recently discovered vulnerability in Microsoft Office, to achieve initial code execution without requiring user interaction beyond opening the document.\n\nUpon successful exploitation, the malware immediately executed PowerShell scripts that were embedded within the document metadata. These scripts established persistence through multiple mechanisms, including registry modifications and scheduled tasks."
+          ],
+          "line_refs": [
+            9,
+            10,
+            11
+          ]
+        },
+        "T1059.001": {
+          "name": "PowerShell",
+          "confidence": 95,
+          "evidence": [
+            "The documents exploited CVE-2024-1234, a recently discovered vulnerability in Microsoft Office, to achieve initial code execution without requiring user interaction beyond opening the document.\n\nUpon successful exploitation, the malware immediately executed PowerShell scripts that were embedded within the document metadata. These scripts established persistence through multiple mechanisms, including registry modifications and scheduled tasks."
+          ],
+          "line_refs": [
+            9,
+            10,
+            11
+          ]
+        },
+        "T1546.001": {
+          "name": "Change Default File Association",
+          "confidence": 95,
+          "evidence": [
+            "The documents exploited CVE-2024-1234, a recently discovered vulnerability in Microsoft Office, to achieve initial code execution without requiring user interaction beyond opening the document.\n\nUpon successful exploitation, the malware immediately executed PowerShell scripts that were embedded within the document metadata. These scripts established persistence through multiple mechanisms, including registry modifications and scheduled tasks."
+          ],
+          "line_refs": [
+            9,
+            10,
+            11
+          ]
+        },
+        "T1053.005": {
+          "name": "Scheduled Task",
+          "confidence": 95,
+          "evidence": [
+            "The documents exploited CVE-2024-1234, a recently discovered vulnerability in Microsoft Office, to achieve initial code execution without requiring user interaction beyond opening the document.\n\nUpon successful exploitation, the malware immediately executed PowerShell scripts that were embedded within the document metadata. These scripts established persistence through multiple mechanisms, including registry modifications and scheduled tasks."
+          ],
+          "line_refs": [
+            9,
+            10,
+            11
+          ]
+        },
+        "T1018": {
+          "name": "Remote System Discovery",
+          "confidence": 85,
+          "evidence": [
+            "The group also deployed custom scripts to enumerate domain controllers, identify high-value servers, and map out the Active Directory structure.\n\nThe attackers showed particular interest in identifying backup systems, security infrastructure, and communication servers. They used WMI queries to gather detailed system information without triggering security alerts, demonstrating deep knowledge of Windows internals and enterprise security monitoring blind spots."
+          ],
+          "line_refs": [
+            15,
+            16,
+            17
+          ]
+        },
+        "T1087.002": {
+          "name": "Domain Account",
+          "confidence": 90,
+          "evidence": [
+            "The group also deployed custom scripts to enumerate domain controllers, identify high-value servers, and map out the Active Directory structure.\n\nThe attackers showed particular interest in identifying backup systems, security infrastructure, and communication servers. They used WMI queries to gather detailed system information without triggering security alerts, demonstrating deep knowledge of Windows internals and enterprise security monitoring blind spots."
+          ],
+          "line_refs": [
+            15,
+            16,
+            17
+          ]
+        },
+        "T1069.002": {
+          "name": "Domain Groups",
+          "confidence": 80,
+          "evidence": [
+            "The group also deployed custom scripts to enumerate domain controllers, identify high-value servers, and map out the Active Directory structure.\n\nThe attackers showed particular interest in identifying backup systems, security infrastructure, and communication servers. They used WMI queries to gather detailed system information without triggering security alerts, demonstrating deep knowledge of Windows internals and enterprise security monitoring blind spots."
+          ],
+          "line_refs": [
+            15,
+            16,
+            17
+          ]
+        },
+        "T1482": {
+          "name": "Domain Trust Discovery",
+          "confidence": 75,
+          "evidence": [
+            "The group also deployed custom scripts to enumerate domain controllers, identify high-value servers, and map out the Active Directory structure.\n\nThe attackers showed particular interest in identifying backup systems, security infrastructure, and communication servers. They used WMI queries to gather detailed system information without triggering security alerts, demonstrating deep knowledge of Windows internals and enterprise security monitoring blind spots."
+          ],
+          "line_refs": [
+            15,
+            16,
+            17
+          ]
+        },
+        "T1047": {
+          "name": "Windows Management Instrumentation",
+          "confidence": 95,
+          "evidence": [
+            "The group also deployed custom scripts to enumerate domain controllers, identify high-value servers, and map out the Active Directory structure.\n\nThe attackers showed particular interest in identifying backup systems, security infrastructure, and communication servers. They used WMI queries to gather detailed system information without triggering security alerts, demonstrating deep knowledge of Windows internals and enterprise security monitoring blind spots."
+          ],
+          "line_refs": [
+            15,
+            16,
+            17
+          ]
+        },
+        "T1552": {
+          "name": "Unsecured Credentials",
+          "confidence": 85,
+          "evidence": [
+            "They used WMI queries to gather detailed system information without triggering security alerts, demonstrating deep knowledge of Windows internals and enterprise security monitoring blind spots.\n\nCredential Access and Privilege Escalation\n\nCredential harvesting was a primary focus of the campaign."
+          ],
+          "line_refs": [
+            17,
+            18,
+            19,
+            20,
+            21
+          ]
+        },
+        "T1003": {
+          "name": "OS Credential Dumping",
+          "confidence": 95,
+          "evidence": [
+            "They used WMI queries to gather detailed system information without triggering security alerts, demonstrating deep knowledge of Windows internals and enterprise security monitoring blind spots.\n\nCredential Access and Privilege Escalation\n\nCredential harvesting was a primary focus of the campaign."
+          ],
+          "line_refs": [
+            17,
+            18,
+            19,
+            20,
+            21
+          ]
+        },
+        "T1555": {
+          "name": "Credentials from Password Stores",
+          "confidence": 80,
+          "evidence": [
+            "They used WMI queries to gather detailed system information without triggering security alerts, demonstrating deep knowledge of Windows internals and enterprise security monitoring blind spots.\n\nCredential Access and Privilege Escalation\n\nCredential harvesting was a primary focus of the campaign."
+          ],
+          "line_refs": [
+            17,
+            18,
+            19,
+            20,
+            21
+          ]
+        },
+        "T1068": {
+          "name": "Exploitation for Privilege Escalation",
+          "confidence": 95,
+          "evidence": [
+            "The group also targeted LSASS memory dumps and utilized procdump.exe, a legitimate Sysinternals tool, to appear as normal administrative activity.\n\nFor privilege escalation, APT29 exploited weak service permissions and unquoted service paths. They also leveraged stolen credentials from service accounts that had been granted excessive privileges, a common misconfiguration in enterprise environments."
+          ],
+          "line_refs": [
+            21,
+            22,
+            23
+          ]
+        },
+        "T1078": {
+          "name": "Valid Accounts",
+          "confidence": 90,
+          "evidence": [
+            "The group also targeted LSASS memory dumps and utilized procdump.exe, a legitimate Sysinternals tool, to appear as normal administrative activity.\n\nFor privilege escalation, APT29 exploited weak service permissions and unquoted service paths. They also leveraged stolen credentials from service accounts that had been granted excessive privileges, a common misconfiguration in enterprise environments."
+          ],
+          "line_refs": [
+            21,
+            22,
+            23
+          ]
+        },
+        "T1574.010": {
+          "name": "Services File Permissions Weakness",
+          "confidence": 95,
+          "evidence": [
+            "[...continued from previous section...]\n weak service permissions and unquoted service paths. They also leveraged stolen credentials from service accounts that had been granted excessive privileges, a common misconfiguration in enterprise environments."
+          ],
+          "line_refs": [
+            1,
+            2
+          ]
+        },
+        "T1021.001": {
+          "name": "Remote Desktop Protocol",
+          "confidence": 95,
+          "evidence": [
+            "Lateral Movement\n\nThe threat actors demonstrated sophisticated lateral movement capabilities, utilizing multiple techniques to spread across the network while maintaining a low profile. They primarily used RDP connections with stolen credentials, making their activity blend in with legitimate administrative tasks."
+          ],
+          "line_refs": [
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "T1119": {
+          "name": "Automated Collection",
+          "confidence": 90,
+          "evidence": [
+            "Data Collection and Staging\n\nAPT29 systematically identified and collected sensitive information from compromised systems. They targeted email archives, strategic planning documents, technical specifications, and personnel records."
+          ],
+          "line_refs": [
+            8,
+            9,
+            10,
+            11,
+            12
+          ]
+        },
+        "T1005": {
+          "name": "Data from Local System",
+          "confidence": 90,
+          "evidence": [
+            "Data Collection and Staging\n\nAPT29 systematically identified and collected sensitive information from compromised systems. They targeted email archives, strategic planning documents, technical specifications, and personnel records."
+          ],
+          "line_refs": [
+            8,
+            9,
+            10,
+            11,
+            12
+          ]
+        },
+        "T1560.001": {
+          "name": "Archive via Utility",
+          "confidence": 95,
+          "evidence": [
+            "The attackers used custom scripts to search for keywords related to their intelligence requirements, demonstrating clear collection priorities aligned with strategic objectives.\n\nData was compressed using 7-zip with password protection and staged in hidden directories on compromised servers. The group was careful to limit file sizes and used timestamp manipulation to make staged data blend in with normal system files."
+          ],
+          "line_refs": [
+            12,
+            13,
+            14
+          ]
+        },
+        "T1564.001": {
+          "name": "Hidden Files and Directories",
+          "confidence": 95,
+          "evidence": [
+            "The attackers used custom scripts to search for keywords related to their intelligence requirements, demonstrating clear collection priorities aligned with strategic objectives.\n\nData was compressed using 7-zip with password protection and staged in hidden directories on compromised servers. The group was careful to limit file sizes and used timestamp manipulation to make staged data blend in with normal system files."
+          ],
+          "line_refs": [
+            12,
+            13,
+            14
+          ]
+        },
+        "T1070.006": {
+          "name": "Timestomp",
+          "confidence": 95,
+          "evidence": [
+            "The attackers used custom scripts to search for keywords related to their intelligence requirements, demonstrating clear collection priorities aligned with strategic objectives.\n\nData was compressed using 7-zip with password protection and staged in hidden directories on compromised servers. The group was careful to limit file sizes and used timestamp manipulation to make staged data blend in with normal system files."
+          ],
+          "line_refs": [
+            12,
+            13,
+            14
+          ]
+        },
+        "T1102.002": {
+          "name": "Bidirectional Communication",
+          "confidence": 90,
+          "evidence": [
+            "Command and Control\n\nThe command and control infrastructure showed significant operational maturity. The attackers used a combination of compromised legitimate websites and custom domains that mimicked trusted services."
+          ],
+          "line_refs": [
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        },
+        "T1583.001": {
+          "name": "Domains",
+          "confidence": 85,
+          "evidence": [
+            "Command and Control\n\nThe command and control infrastructure showed significant operational maturity. The attackers used a combination of compromised legitimate websites and custom domains that mimicked trusted services."
+          ],
+          "line_refs": [
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        },
+        "T1036.002": {
+          "name": "Right-to-Left Override",
+          "confidence": 90,
+          "evidence": [
+            "Command and Control\n\nThe command and control infrastructure showed significant operational maturity. The attackers used a combination of compromised legitimate websites and custom domains that mimicked trusted services."
+          ],
+          "line_refs": [
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        },
+        "T1071.001": {
+          "name": "Web Protocols",
+          "confidence": 80,
+          "evidence": [
+            "Command and Control\n\nThe command and control infrastructure showed significant operational maturity. The attackers used a combination of compromised legitimate websites and custom domains that mimicked trusted services."
+          ],
+          "line_refs": [
+            14,
+            15,
+            16,
+            17,
+            18
+          ]
+        },
+        "T1070.001": {
+          "name": "Clear Windows Event Logs",
+          "confidence": 95,
+          "evidence": [
+            "Defense Evasion\n\nThroughout the campaign, APT29 demonstrated exceptional operational security and defense evasion capabilities. They regularly cleared event logs, disabled security products where possible, and used timestomping to alter file modification dates."
+          ],
+          "line_refs": [
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "T1562.002": {
+          "name": "Disable Windows Event Logging",
+          "confidence": 90,
+          "evidence": [
+            "Defense Evasion\n\nThroughout the campaign, APT29 demonstrated exceptional operational security and defense evasion capabilities. They regularly cleared event logs, disabled security products where possible, and used timestomping to alter file modification dates."
+          ],
+          "line_refs": [
+            2,
+            3,
+            4,
+            5,
+            6
+          ]
+        },
+        "T1562": {
+          "name": "Impair Defenses",
+          "confidence": 90,
+          "evidence": [
+            "Recommendations\n\nOrganizations should implement the following defensive measures:\n- Deploy endpoint detection and response solutions with behavioral analysis capabilities\n- Implement privileged access management and just-in-time administration\n- Enable PowerShell logging and command line auditing\n- Regularly audit service account permissions and Active Directory configurations\n- Implement network segmentation and east-west traffic inspection\n- Deploy deception technologies to detect lateral move"
+          ],
+          "line_refs": [
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24
+          ]
+        },
+        "T1574.002": {
+          "name": "DLL Side-Loading",
+          "confidence": 95,
+          "evidence": [
+            "Recommendations\n\nOrganizations should implement the following defensive measures:\n- Deploy endpoint detection and response solutions with behavioral analysis capabilities\n- Implement privileged access management and just-in-time administration\n- Enable PowerShell logging and command line auditing\n- Regularly audit service account permissions and Active Directory configurations\n- Implement network segmentation and east-west traffic inspection\n- Deploy deception technologies to detect lateral move"
+          ],
+          "line_refs": [
+            12,
+            13,
+            14,
+            15,
+            16,
+            17,
+            18,
+            19,
+            20,
+            21,
+            22,
+            23,
+            24
+          ]
+        }
+      },
+      "average_confidence": 0.9033333333333329,
+      "text_content": "APT29 Campaign Analysis - November 2024\n\nExecutive Summary\n\nThe threat actors known as APT29, also referred to as Cozy Bear, have been observed conducting a sophisticated espionage campaign targeting government and critical infrastructure organizations across Europe and North America. This campaign demonstrates advanced tradecraft and operational security measures consistent with nation-state capabilities.\n\nInitial Access and Delivery\n\nThe campaign began with carefully crafted spearphishing emails sent to high-value targets within the organizations. These emails contained malicious Word documents disguised as legitimate policy updates or security advisories. The documents exploited CVE-2024-1234, a recently discovered vulnerability in Microsoft Office, to achieve initial code execution without requiring user interaction beyond opening the document.\n\nUpon successful exploitation, the malware immediately executed PowerShell scripts that were embedded within the document metadata. These scripts established persistence through multiple mechanisms, including registry modifications and scheduled tasks. The attackers demonstrated considerable sophistication by using fileless techniques, operating entirely in memory to avoid traditional antivirus detection.\n\nDiscovery and Reconnaissance\n\nFollowing initial compromise, the threat actors conducted extensive reconnaissance using built-in Windows commands and legitimate administrative tools. They executed whoami to determine user context, netstat to map network connections, and ipconfig to understand the network topology. The group also deployed custom scripts to enumerate domain controllers, identify high-value servers, and map out the Active Directory structure.\n\nThe attackers showed particular interest in identifying backup systems, security infrastructure, and communication servers. They used WMI queries to gather detailed system information without triggering security alerts, demonstrating deep knowledge of Windows internals and enterprise security monitoring blind spots.\n\nCredential Access and Privilege Escalation\n\nCredential harvesting was a primary focus of the campaign. The attackers deployed a custom variant of Mimikatz that had been modified to evade signature-based detection. They extracted credentials from memory, performed pass-the-hash attacks, and conducted Kerberoasting operations to obtain service account passwords. The group also targeted LSASS memory dumps and utilized procdump.exe, a legitimate Sysinternals tool, to appear as normal administrative activity.\n\nFor privilege escalation, APT29 exploited weak service permissions and unquoted service paths. They also leveraged stolen credentials from service accounts that had been granted excessive privileges, a common misconfiguration in enterprise environments.\n\nLateral Movement\n\nThe threat actors demonstrated sophisticated lateral movement capabilities, utilizing multiple techniques to spread across the network while maintaining a low profile. They primarily used RDP connections with stolen credentials, making their activity blend in with legitimate administrative tasks. When RDP was not available, they employed WMI commands and PowerShell remoting to execute commands on remote systems.\n\nThe group also deployed Cobalt Strike beacons on critical systems, using custom profiles to mimic legitimate HTTPS traffic. They established a mesh network of compromised machines to maintain multiple paths for command and control, ensuring resilience against detection and remediation efforts.\n\nData Collection and Staging\n\nAPT29 systematically identified and collected sensitive information from compromised systems. They targeted email archives, strategic planning documents, technical specifications, and personnel records. The attackers used custom scripts to search for keywords related to their intelligence requirements, demonstrating clear collection priorities aligned with strategic objectives.\n\nData was compressed using 7-zip with password protection and staged in hidden directories on compromised servers. The group was careful to limit file sizes and used timestamp manipulation to make staged data blend in with normal system files.\n\nCommand and Control\n\nThe command and control infrastructure showed significant operational maturity. The attackers used a combination of compromised legitimate websites and custom domains that mimicked trusted services. They implemented domain fronting techniques to hide their true C2 servers and used encrypted channels that appeared as normal HTTPS traffic.\n\nThe C2 communications followed irregular patterns designed to avoid detection by network behavior analysis tools. The attackers also implemented dead drop resolvers and used social media platforms for backup command channels, showing contingency planning for maintaining control even if primary infrastructure was discovered.\n\nExfiltration\n\nData exfiltration was conducted slowly and deliberately to avoid triggering data loss prevention systems. The attackers used legitimate cloud storage services, including OneDrive and Google Drive, to blend their exfiltration with normal business traffic. They limited transfer rates and scheduled exfiltration during peak business hours when network activity was highest.\n\nThe group also employed steganography, hiding stolen data within image files uploaded to compromised web servers. This technique allowed them to retrieve intelligence even after the primary intrusion was discovered and remediated.\n\nDefense Evasion\n\nThroughout the campaign, APT29 demonstrated exceptional operational security and defense evasion capabilities. They regularly cleared event logs, disabled security products where possible, and used timestomping to alter file modification dates. The group employed DLL side-loading techniques with legitimate applications to execute malicious code while appearing benign.\n\nThe attackers also showed awareness of threat hunting methodologies, deliberately creating false leads and decoy activities to misdirect incident response efforts. They maintained operational patience, sometimes waiting weeks between significant actions to avoid correlation by security teams.\n\nImpact and Attribution\n\nThe campaign resulted in the theft of significant amounts of sensitive government and commercial data. The sophisticated tactics, techniques, and procedures observed, combined with infrastructure analysis and code similarities to previous campaigns, strongly suggest attribution to APT29 with high confidence.\n\nRecommendations\n\nOrganizations should implement the following defensive measures:\n- Deploy endpoint detection and response solutions with behavioral analysis capabilities\n- Implement privileged access management and just-in-time administration\n- Enable PowerShell logging and command line auditing\n- Regularly audit service account permissions and Active Directory configurations\n- Implement network segmentation and east-west traffic inspection\n- Deploy deception technologies to detect lateral movement\n- Conduct regular threat hunting exercises focused on living-off-the-land techniques\n- Implement robust backup systems with offline copies to ensure recovery capabilities",
+      "entities": {
+        "entities": [],
+        "extraction_status": "no_entities_found"
+      },
+      "flow": null,
+      "opensearch_report_id": "report--b58d0971-471c-409b-8469-ff8f5a52446c"
+    }
+  ]
+}

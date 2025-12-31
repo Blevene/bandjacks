@@ -70,7 +70,7 @@ LOGGING_CONFIG = {
 }
 
 logging.config.dictConfig(LOGGING_CONFIG)
-from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, sequence, simulate, analyze, entity_review, unified_review, actors, health, ignorelist
+from bandjacks.services.api.routes import catalog, stix_loader, search, mapper, review, query, graph, feedback, review_queue, flows, defense, candidates, simulation, analytics, provenance, drift, attackflow, detections, coverage, compliance, ml_metrics, notifications, sigma, reports, sequence, simulate, analyze, entity_review, unified_review, actors, health, ignorelist, vectors
 from bandjacks.services.api.middleware import TracingMiddleware
 from bandjacks.services.api.middleware.error_handler import ErrorHandlerMiddleware
 from bandjacks.services.api.middleware.auth import JWTAuthMiddleware
@@ -83,6 +83,7 @@ from bandjacks.llm.cache import get_cache_stats, clear_cache
 from bandjacks.monitoring.compliance_metrics import get_compliance_report, get_compliance_metrics
 from bandjacks.services.technique_cache import technique_cache
 from bandjacks.services.actor_cache import actor_cache
+from bandjacks.services.vector_update_initializer import initialize_vector_updates, shutdown_vector_updates
 
 logger = logging.getLogger(__name__)
 logger.info(f"Logging configured: level={LOG_LEVEL}, file={LOG_FILE}")
@@ -165,6 +166,9 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup():
     # ensure infra bits exist
+    if not settings.neo4j_password:
+        print("[startup] WARNING: NEO4J_PASSWORD not set. Neo4j operations will fail.")
+        print("[startup] Please set NEO4J_PASSWORD in your .env file or environment variables.")
     try:
         ensure_ddl(settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password)
     except Exception as e:
@@ -218,6 +222,13 @@ async def startup():
     except Exception as e:
         logger.error(f"Failed to start job processor: {e}")
 
+    # Initialize vector update system
+    try:
+        await initialize_vector_updates()
+        logger.info("Vector update system initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize vector update system: {e}")
+
 @app.on_event("shutdown")
 async def shutdown():
     # Stop the job processor gracefully
@@ -227,6 +238,13 @@ async def shutdown():
         logger.info("Job processor stopped successfully")
     except Exception as e:
         logger.error(f"Failed to stop job processor: {e}")
+
+    # Shutdown vector update system
+    try:
+        await shutdown_vector_updates()
+        logger.info("Vector update system stopped")
+    except Exception as e:
+        logger.error(f"Failed to stop vector update system: {e}")
 
 # Configure API tags for better organization
 tags_metadata = [
@@ -325,6 +343,10 @@ tags_metadata = [
     {
         "name": "reports",
         "description": "Report ingestion with extraction and campaign creation",
+    },
+    {
+        "name": "vectors",
+        "description": "Vector update management and monitoring",
     }
 ]
 
@@ -365,6 +387,7 @@ app.include_router(unified_review.router, prefix=settings.api_prefix)
 app.include_router(sequence.router, prefix=settings.api_prefix)
 app.include_router(actors.router, prefix=settings.api_prefix)
 app.include_router(ignorelist.router, prefix=settings.api_prefix)
+app.include_router(vectors.router, prefix=settings.api_prefix)
 
 # Cache management endpoints
 @app.get("/v1/cache/stats", tags=["monitoring"])

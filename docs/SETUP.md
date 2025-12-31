@@ -68,12 +68,14 @@ docker-compose --version
 ### 1. Create Configuration File
 
 ```bash
-# Copy template
-cp .env.example .env
+# Copy template from infra directory
+cp infra/env.sample .env
 
 # Edit with your settings
 nano .env
 ```
+
+**IMPORTANT:** You must set `NEO4J_PASSWORD` in your `.env` file. The application will not start without it.
 
 ### 2. Required Environment Variables
 
@@ -88,12 +90,15 @@ ATTACK_COLLECTION=enterprise-attack
 ATTACK_VERSION=latest
 
 # === Neo4j Configuration ===
+# REQUIRED: NEO4J_PASSWORD must be set - no default provided
 NEO4J_URI=bolt://localhost:7687
 NEO4J_USER=neo4j
-NEO4J_PASSWORD=your-secure-password-here  # CHANGE THIS!
+NEO4J_PASSWORD=your-actual-neo4j-password-here  # MUST BE SET - application will fail without it
 
 # === OpenSearch Configuration ===
 OPENSEARCH_URL=http://localhost:9200
+OPENSEARCH_USER=admin
+OPENSEARCH_PASSWORD=your-opensearch-password-here  # Optional if security is disabled
 OS_INDEX_NODES=bandjacks_attack_nodes-v1
 
 # === ADM Validation ===
@@ -123,13 +128,21 @@ LITELLM_MAX_TOKENS=800
 **Never commit `.env` to version control!**
 
 ```bash
-# Ensure .env is in .gitignore
-echo ".env" >> .gitignore
+# Ensure .env is in .gitignore (already included)
+# The .gitignore file already excludes .env files
 
 # For production, use environment variables or secrets manager
 export OPENAI_API_KEY="sk-proj-..."
 export NEO4J_PASSWORD="secure-password"
 ```
+
+**Password Validation:** The application validates that `NEO4J_PASSWORD` is set at startup. If it's missing, you'll see:
+```
+[startup] WARNING: NEO4J_PASSWORD not set. Neo4j operations will fail.
+[startup] Please set NEO4J_PASSWORD in your .env file or environment variables.
+```
+
+Connection attempts will also fail with a clear error message if the password is not set.
 
 ## Database Setup
 

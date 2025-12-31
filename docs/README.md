@@ -77,8 +77,9 @@ docs/
 
 2. **Configure Environment**
    ```bash
-   cp .env.example .env
-   # Add your API keys and configuration
+   cp infra/env.sample .env
+   # Edit .env and set NEO4J_PASSWORD (required) and your API keys
+   # The application will not start without NEO4J_PASSWORD
    ```
 
 3. **Start Services**

@@ -52,6 +52,21 @@ python -m bandjacks.cli.batch_extract \
   --skip-entity-extraction \
   --auto-approve \
   ./reports/
+
+# Upsert full attack flows with NEXT edges (for flow-based analytics)
+python -m bandjacks.cli.batch_extract \
+  --store-in-neo4j \
+  --auto-approve \
+  --upsert-flows \
+  ./reports/
+
+# Full integration: Store in both Neo4j and OpenSearch (UI-accessible)
+python -m bandjacks.cli.batch_extract \
+  --store-in-neo4j \
+  --auto-approve \
+  --upsert-flows \
+  --opensearch-url http://localhost:9200 \
+  ./reports/
 ```
 
 ### 3. End-to-End Workflows
@@ -104,14 +119,15 @@ python -m bandjacks.cli.batch_extract \
   ./reports/
 ```
 
-#### Example 2: Fast Bulk Processing
+#### Example 2: Fast Bulk Processing with Flows
 ```bash
-# Skip entities, auto-approve 75%+, use 8 workers
+# Skip entities, auto-approve 75%+, upsert flows, use 8 workers
 python -m bandjacks.cli.batch_extract \
   --store-in-neo4j \
   --skip-entity-extraction \
   --auto-approve \
   --auto-approve-threshold 0.75 \
+  --upsert-flows \
   --workers 8 \
   ./reports/
 ```
@@ -140,10 +156,20 @@ AttackEpisode → CONTAINS → AttackAction → USES → AttackPattern
                             (auto_approved=true)
 ```
 
+**With Auto-Approve + Upsert Flows**:
+```
+AttackEpisode → CONTAINS → AttackAction → USES → AttackPattern
+                ↓           ↓ NEXT (p=0.7)
+                flow_id     AttackAction → USES → AttackPattern
+                            ↓ NEXT (p=0.6)
+                            AttackAction → USES → AttackPattern
+```
+
 Auto-approved data is **immediately available** for:
 - Co-occurrence analysis (`bandjacks analytics global`)
 - Technique bundles (`bandjacks analytics bundles`)
 - Actor profiling (`bandjacks analytics actor`)
+- Attack flow analytics (with `--upsert-flows`)
 
 ## Complete Workflow Example
 
@@ -177,16 +203,17 @@ bandjacks analytics actor intrusion-set--<uuid> \
 ### Or Use Auto-Approve for Faster Processing:
 
 ```bash
-# Auto-approve high-confidence extractions (no manual review)
+# Auto-approve high-confidence extractions with flow upsert (no manual review)
 python -m bandjacks.cli.batch_extract \
   --store-in-neo4j \
   --skip-entity-extraction \
   --auto-approve \
   --auto-approve-threshold 0.80 \
+  --upsert-flows \
   --workers 8 \
   ./threat_reports/
 
-# Immediately run analytics (data is already approved!)
+# Immediately run analytics (data is already approved with flows!)
 bandjacks analytics global --format csv --output results.csv
 ```
 
@@ -285,6 +312,12 @@ python -m bandjacks.cli.batch_extract [PATHS] [OPTIONS]
   --skip-entity-extraction    # Skip entity extraction (techniques only, faster)
   --auto-approve              # Auto-approve high-confidence results
   --auto-approve-threshold    # Confidence threshold for auto-approval (default: 0.80)
+  --upsert-flows              # Upsert full attack flow structure with NEXT edges
+
+  # OpenSearch Storage Flags (NEW)
+  --opensearch-url TEXT       # OpenSearch URL (default: from env OPENSEARCH_URL)
+  --opensearch-user TEXT      # OpenSearch username (optional)
+  --opensearch-password TEXT  # OpenSearch password (optional)
 ```
 
 ### Workflow Commands
@@ -304,6 +337,44 @@ bandjacks workflow bulk-export [OPTIONS]
 
 ---
 
+## OpenSearch Integration (NEW)
+
+### What Gets Stored in OpenSearch
+
+When `--opensearch-url` is provided, batch-extracted reports are stored in OpenSearch with:
+
+- **Full Report Text**: Original document content for search
+- **Text Chunks**: Chunked content with embeddings for semantic search
+- **Extraction Results**: All techniques, entities, and flows
+- **Review Status**: Auto-approved or pending review
+- **UI Accessibility**: Reports visible and searchable in the UI
+
+### Benefits of OpenSearch Storage
+
+1. **UI Integration**: Reports appear in the web UI for viewing and review
+2. **Search Capability**: Full-text and semantic search across reports
+3. **Audit Trail**: Complete record of all batch-processed reports
+4. **Future Review**: Can manually review auto-approved reports if needed
+5. **Analytics**: Reports included in dashboard statistics and metrics
+
+### Example: Full Emulation of UI Path
+
+```bash
+# CLI with OpenSearch = Same as UI upload
+python -m bandjacks.cli.batch_extract \
+  --store-in-neo4j \
+  --auto-approve \
+  --upsert-flows \
+  --opensearch-url http://localhost:9200 \
+  ./reports/
+```
+
+After processing, reports are:
+- ✅ Stored in OpenSearch (searchable, viewable in UI)
+- ✅ Techniques upserted to Neo4j (immediately available for analytics)
+- ✅ Attack flows created in Neo4j (with NEXT edges)
+- ✅ Auto-approved (no manual review needed)
+
 ## Environment Variables
 
 Set these for easier CLI usage:
@@ -313,6 +384,8 @@ export NEO4J_URI=bolt://localhost:7687
 export NEO4J_USER=neo4j
 export NEO4J_PASSWORD=your_password
 export OPENSEARCH_URL=http://localhost:9200
+export OPENSEARCH_USER=admin         # Optional
+export OPENSEARCH_PASSWORD=password  # Optional
 ```
 
 ---

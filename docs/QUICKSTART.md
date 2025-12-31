@@ -23,10 +23,12 @@ pip install uv
 uv sync
 
 # Copy environment template
-cp .env.example .env
+cp infra/env.sample .env
 ```
 
 ### 2. Configure Environment
+
+**IMPORTANT:** You must set `NEO4J_PASSWORD` - the application requires it and will not start without it.
 
 Edit `.env` file with your settings:
 
@@ -36,11 +38,18 @@ OPENAI_API_KEY=sk-...
 # OR
 GOOGLE_API_KEY=...
 
-# Database connections (defaults work with Docker)
+# Database connections (REQUIRED - no defaults provided)
 NEO4J_URI=bolt://localhost:7687
-NEO4J_PASSWORD=your-secure-password
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your-actual-neo4j-password  # MUST BE SET
+
+# OpenSearch (optional password if security is disabled)
 OPENSEARCH_URL=http://localhost:9200
+OPENSEARCH_USER=admin
+OPENSEARCH_PASSWORD=your-opensearch-password  # Optional
 ```
+
+**Note:** If you see an error about `NEO4J_PASSWORD` being required, check that your `.env` file exists and contains the password. The application validates this at startup.
 
 ### 3. Start Services
 

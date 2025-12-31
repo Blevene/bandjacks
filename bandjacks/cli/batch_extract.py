@@ -27,6 +27,14 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Import OpenSearch for report storage
+try:
+    from opensearchpy import OpenSearch
+    from bandjacks.store.opensearch_report_store import OpenSearchReportStore
+    OPENSEARCH_AVAILABLE = True
+except ImportError:
+    OPENSEARCH_AVAILABLE = False
+
 
 def extract_text_from_pdf(pdf_path: str) -> str:
     """Extract text from a PDF file."""
@@ -65,7 +73,11 @@ class BatchExtractor:
         neo4j_password: str = None,
         skip_entity_extraction: bool = False,
         auto_approve: bool = False,
-        auto_approve_threshold: float = 0.80
+        auto_approve_threshold: float = 0.80,
+        upsert_flows: bool = False,
+        opensearch_url: str = None,
+        opensearch_user: str = None,
+        opensearch_password: str = None
     ):
         self.workers = workers
         self.use_api = use_api
@@ -79,6 +91,10 @@ class BatchExtractor:
         self.skip_entity_extraction = skip_entity_extraction
         self.auto_approve = auto_approve
         self.auto_approve_threshold = auto_approve_threshold
+        self.upsert_flows = upsert_flows
+        self.opensearch_url = opensearch_url
+        self.opensearch_user = opensearch_user
+        self.opensearch_password = opensearch_password
         self.results = []
         self.start_time = time.time()
     
@@ -157,12 +173,17 @@ class BatchExtractor:
                 result["average_confidence"] = sum(confidences) / len(confidences)
             else:
                 result["average_confidence"] = 0.0
-            
+
+            # Store full text for OpenSearch
+            result["text_content"] = text
+            result["entities"] = extraction_result.get("entities", {})
+            result["flow"] = extraction_result.get("flow", None)
+
         except Exception as e:
             result["status"] = "error"
             result["error"] = str(e)
             print(f"❌ Error processing {file_path.name}: {e}")
-        
+
         result["processing_time"] = round(time.time() - start_time, 2)
         return result
     
@@ -278,20 +299,26 @@ class BatchExtractor:
                 episode_id = f"attack-episode--{uuid.uuid4()}"
                 episode_name = f"Extracted from {result['file']}"
 
+                # Prepare episode properties
+                episode_props = {
+                    "stix_id": episode_id,
+                    "name": episode_name,
+                    "created": datetime.utcnow().isoformat() + "Z",
+                    "source_file": result['file'],
+                    "extraction_timestamp": datetime.utcnow().isoformat() + "Z",
+                    "auto_approved": is_auto_approved
+                }
+
+                # Add flow metadata if upsert_flows is enabled
+                if self.upsert_flows:
+                    episode_props["flow_id"] = f"flow--{uuid.uuid4()}"
+                    episode_props["flow_type"] = "co-occurrence"  # Sequential flow created from extraction
+                    episode_props["has_flow"] = True
+
                 session.run("""
-                    CREATE (e:AttackEpisode {
-                        stix_id: $episode_id,
-                        name: $name,
-                        created: $created,
-                        source_file: $source_file,
-                        extraction_timestamp: $timestamp,
-                        auto_approved: $auto_approved
-                    })
-                """, episode_id=episode_id, name=episode_name,
-                    created=datetime.utcnow().isoformat() + "Z",
-                    source_file=result['file'],
-                    timestamp=datetime.utcnow().isoformat() + "Z",
-                    auto_approved=is_auto_approved)
+                    CREATE (e:AttackEpisode)
+                    SET e = $props
+                """, props=episode_props)
 
                 # Create AttackAction nodes for each technique
                 action_ids = {}
@@ -359,8 +386,45 @@ class BatchExtractor:
                                         MERGE (e)-[:ATTRIBUTED_TO]->(entity)
                                     """, episode_id=episode_id, entity_id=existing["id"])
 
+                # Create NEXT edges if flow upsert is enabled
+                if self.upsert_flows and len(action_ids) > 1:
+                    # Create list of action IDs in order
+                    techniques_ordered = list(result.get("techniques", []))
+                    action_list = [(techniques_ordered[i], action_ids[techniques_ordered[i]])
+                                   for i in range(len(techniques_ordered)) if techniques_ordered[i] in action_ids]
+
+                    # Create NEXT relationships between sequential actions
+                    for i in range(len(action_list) - 1):
+                        current_tech, current_action_id = action_list[i]
+                        next_tech, next_action_id = action_list[i + 1]
+
+                        # Calculate probability (decay slightly with distance)
+                        probability = 0.7 - (0.1 * i / max(1, len(action_list) - 1))
+
+                        session.run("""
+                            MATCH (a1:AttackAction {stix_id: $current_id})
+                            MATCH (a2:AttackAction {stix_id: $next_id})
+                            MERGE (a1)-[r:NEXT]->(a2)
+                            ON CREATE SET
+                                r.probability = $probability,
+                                r.sequence_delta = 1,
+                                r.created = $created,
+                                r.source = 'batch_extraction'
+                            ON MATCH SET
+                                r.probability = CASE
+                                    WHEN r.probability < $probability
+                                    THEN $probability
+                                    ELSE r.probability
+                                END,
+                                r.modified = $created
+                        """, current_id=current_action_id, next_id=next_action_id,
+                            probability=probability, created=datetime.utcnow().isoformat() + "Z")
+
+                    print(f"  ✓ Created {len(action_list) - 1} NEXT edges for attack flow")
+
                 status_msg = "auto-approved" if is_auto_approved else "pending review"
-                print(f"  ✓ Stored in Neo4j: {episode_id} ({len(result.get('techniques', []))} techniques, {status_msg})")
+                flow_msg = f" + {len(action_ids) - 1} NEXT edges" if self.upsert_flows and len(action_ids) > 1 else ""
+                print(f"  ✓ Stored in Neo4j: {episode_id} ({len(result.get('techniques', []))} techniques, {status_msg}{flow_msg})")
                 result["neo4j_episode_id"] = episode_id
                 result["auto_approved"] = is_auto_approved
                 return True
@@ -373,6 +437,135 @@ class BatchExtractor:
                 driver.close()
             except:
                 pass
+
+    def store_result_in_opensearch(self, result: Dict[str, Any], text_content: str) -> bool:
+        """
+        Store extraction result in OpenSearch for searchability and UI integration.
+
+        Args:
+            result: Extraction result dictionary
+            text_content: Full text content of the report
+
+        Returns:
+            True if successful, False otherwise
+        """
+        if not OPENSEARCH_AVAILABLE:
+            print("  ⚠ OpenSearch not available (missing dependencies)")
+            return False
+
+        if not self.opensearch_url or result["status"] != "success":
+            return False
+
+        try:
+            import uuid
+            from datetime import datetime
+
+            # Create OpenSearch client
+            if self.opensearch_user and self.opensearch_password:
+                os_client = OpenSearch(
+                    hosts=[self.opensearch_url],
+                    http_auth=(self.opensearch_user, self.opensearch_password),
+                    use_ssl=False,
+                    verify_certs=False
+                )
+            else:
+                os_client = OpenSearch(
+                    hosts=[self.opensearch_url],
+                    use_ssl=False,
+                    verify_certs=False
+                )
+
+            os_store = OpenSearchReportStore(os_client)
+
+            # Generate report ID
+            report_id = f"report--{uuid.uuid4()}"
+            job_id = f"batch-job--{uuid.uuid4()}"
+
+            # Prepare report metadata
+            report_data = {
+                "name": f"Batch extraction: {result['file']}",
+                "description": f"Automatically extracted from {result['file']} via CLI batch processing",
+                "created": datetime.utcnow().isoformat() + "Z",
+                "modified": datetime.utcnow().isoformat() + "Z",
+                "published": datetime.utcnow().isoformat() + "Z"
+            }
+
+            # Prepare extraction result
+            techniques = result.get("technique_details", {})
+            claims = []
+            for idx, (tech_id, tech_data) in enumerate(techniques.items()):
+                claims.append({
+                    "external_id": tech_id,
+                    "name": tech_data.get("name", tech_id),
+                    "confidence": tech_data.get("confidence", 50),
+                    "evidence": tech_data.get("evidence", []),
+                    "line_refs": tech_data.get("line_refs", [])
+                })
+
+            extraction_result = {
+                "techniques_count": len(techniques),
+                "claims_count": len(claims),
+                "extraction_claims": claims,
+                "entities": result.get("entities", {}),
+                "bundle_preview": {"objects": []},  # Minimal bundle for compatibility
+                "flow": result.get("flow", None),
+                "extraction_metrics": {
+                    "chunks_used": result.get("chunks_used", 0),
+                    "processing_time": result.get("processing_time", 0),
+                    "average_confidence": result.get("average_confidence", 0)
+                }
+            }
+
+            # Prepare source info
+            source_info = {
+                "type": "file",
+                "filename": result['file'],
+                "path": result.get('path', ''),
+                "size": result.get('text_length', 0),
+                "extraction_method": "cli_batch"
+            }
+
+            # Create text chunks for better searchability (simple chunking)
+            text_chunks = []
+            chunk_size = 1000
+            for i in range(0, len(text_content), chunk_size):
+                chunk_text = text_content[i:i+chunk_size]
+                text_chunks.append({
+                    "chunk_id": i // chunk_size,  # Use numeric ID to match OpenSearch schema
+                    "text": chunk_text,
+                    "start_idx": i,
+                    "end_idx": min(i + chunk_size, len(text_content))
+                })
+
+            # Determine status based on auto-approval
+            is_auto_approved = self.auto_approve and result.get("average_confidence", 0) >= self.auto_approve_threshold
+
+            # Save to OpenSearch
+            os_store.save_report(
+                report_id=report_id,
+                job_id=job_id,
+                report_data=report_data,
+                extraction_result=extraction_result,
+                source_info=source_info,
+                raw_text=text_content,
+                text_chunks=text_chunks
+            )
+
+            # If auto-approved, mark it as such
+            if is_auto_approved:
+                os_store.approve_report(
+                    report_id=report_id,
+                    approver_id="cli_batch_auto",
+                    upserted=self.store_in_neo4j
+                )
+
+            print(f"  ✓ Stored in OpenSearch: {report_id}")
+            result["opensearch_report_id"] = report_id
+            return True
+
+        except Exception as e:
+            print(f"  ⚠ Failed to store in OpenSearch: {e}")
+            return False
 
     def process_files(self, file_paths: List[Path]) -> List[Dict[str, Any]]:
         """Process multiple files with parallel workers."""
@@ -419,6 +612,11 @@ class BatchExtractor:
                         # Store in Neo4j if requested
                         if self.store_in_neo4j and result["status"] == "success":
                             self.store_result_in_neo4j(result)
+
+                        # Store in OpenSearch if requested (with text content)
+                        if self.opensearch_url and result["status"] == "success":
+                            text_content = result.get("text_content", "")
+                            self.store_result_in_opensearch(result, text_content)
 
                         results.append(result)
 
@@ -576,13 +774,21 @@ Examples:
     parser.add_argument("--neo4j-user", default=os.getenv("NEO4J_USER", "neo4j"),
                        help="Neo4j username")
     parser.add_argument("--neo4j-password", default=os.getenv("NEO4J_PASSWORD", ""),
-                       help="Neo4j password")
+                       help="Neo4j password (must be set via environment variable or argument)")
     parser.add_argument("--skip-entity-extraction", action="store_true",
                        help="Skip entity extraction (faster, techniques only)")
     parser.add_argument("--auto-approve", action="store_true",
                        help="Auto-approve high-confidence techniques and flows")
     parser.add_argument("--auto-approve-threshold", type=float, default=0.80,
                        help="Confidence threshold for auto-approval (0.0-1.0, default: 0.80)")
+    parser.add_argument("--upsert-flows", action="store_true",
+                       help="Upsert full attack flow structure to Neo4j (creates NEXT edges)")
+    parser.add_argument("--opensearch-url", default=os.getenv("OPENSEARCH_URL", "http://localhost:9200"),
+                       help="OpenSearch connection URL")
+    parser.add_argument("--opensearch-user", default=os.getenv("OPENSEARCH_USER"),
+                       help="OpenSearch username (optional)")
+    parser.add_argument("--opensearch-password", default=os.getenv("OPENSEARCH_PASSWORD"),
+                       help="OpenSearch password (optional)")
 
     args = parser.parse_args()
     
@@ -625,10 +831,15 @@ Examples:
     if args.store_in_neo4j:
         print(f"   - Neo4j storage: Enabled")
         print(f"   - Neo4j URI: {args.neo4j_uri}")
+    if args.opensearch_url and OPENSEARCH_AVAILABLE:
+        print(f"   - OpenSearch storage: Enabled")
+        print(f"   - OpenSearch URL: {args.opensearch_url}")
     if args.skip_entity_extraction:
         print(f"   - Entity extraction: Skipped (techniques only)")
     if args.auto_approve:
         print(f"   - Auto-approve: Enabled (threshold: {args.auto_approve_threshold})")
+    if args.upsert_flows:
+        print(f"   - Flow upsert: Enabled (creates NEXT edges)")
     print("=" * 60)
 
     # Create batch extractor
@@ -644,7 +855,11 @@ Examples:
         neo4j_password=args.neo4j_password,
         skip_entity_extraction=args.skip_entity_extraction,
         auto_approve=args.auto_approve,
-        auto_approve_threshold=args.auto_approve_threshold
+        auto_approve_threshold=args.auto_approve_threshold,
+        upsert_flows=args.upsert_flows,
+        opensearch_url=args.opensearch_url if OPENSEARCH_AVAILABLE else None,
+        opensearch_user=args.opensearch_user if OPENSEARCH_AVAILABLE else None,
+        opensearch_password=args.opensearch_password if OPENSEARCH_AVAILABLE else None
     )
     
     # Process files

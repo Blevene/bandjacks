@@ -12,6 +12,8 @@ from bandjacks.services.api.deps import get_neo4j_session, get_opensearch_client
 from bandjacks.store.opensearch_report_store import OpenSearchReportStore
 from opensearchpy import OpenSearch
 from bandjacks.llm.entity_ignorelist import get_entity_ignorelist
+from bandjacks.services.vector_update_manager import get_vector_update_manager, UpdateAction
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +276,9 @@ async def submit_unified_review(
                 logger.info(f"Upserting {len(approved_entities)} approved entities to Neo4j")
                 entity_stats = _upsert_entities_to_graph(neo4j_session, approved_entities, report_id)
                 logger.info(f"Entity upsert stats: {entity_stats}")
+
+                # Submit vector update requests for approved entities
+                await _submit_entity_vector_updates(approved_entities)
             else:
                 logger.info("No approved entities to upsert")
 
@@ -295,6 +300,9 @@ async def submit_unified_review(
                 logger.info(f"Creating relationships for {len(approved_techniques)} approved techniques")
                 technique_stats = _create_technique_relationships(neo4j_session, approved_techniques, report_id)
                 logger.info(f"Technique relationship stats: {technique_stats}")
+
+                # Submit vector update requests for approved techniques
+                await _submit_technique_vector_updates(neo4j_session, approved_techniques)
             else:
                 logger.info("No approved techniques to create relationships for")
 
@@ -1478,3 +1486,122 @@ async def get_node_evidence(
             status_code=500,
             detail=f"Failed to retrieve evidence: {str(e)}"
         )
+
+
+async def _submit_entity_vector_updates(entities: List[Dict]) -> None:
+    """
+    Submit vector update requests for approved entities.
+    Uses fire-and-forget pattern to avoid blocking review submission.
+
+    Args:
+        entities: List of approved entity dictionaries
+    """
+    try:
+        manager = get_vector_update_manager()
+
+        if not manager.enabled:
+            logger.debug("Vector update system disabled, skipping entity vector updates")
+            return
+
+        update_count = 0
+
+        for entity in entities:
+            # Get STIX ID for the entity
+            stix_id = entity.get("resolved_stix_id") or entity.get("stix_id")
+            if not stix_id:
+                # Generate the same STIX ID that was used in upsert
+                entity_type = entity.get("entity_type", "unknown")
+                label_map = {
+                    "malware": ("Software", "malware"),
+                    "software": ("Software", "tool"),
+                    "tool": ("Software", "tool"),
+                    "threat_actor": ("IntrusionSet", "intrusion-set"),
+                    "group": ("IntrusionSet", "intrusion-set"),
+                    "intrusion-set": ("IntrusionSet", "intrusion-set"),
+                    "campaign": ("Campaign", "campaign")
+                }
+                label, stix_type = label_map.get(entity_type.lower(), ("Entity", "x-unknown"))
+                stix_id = f"{stix_type}--{uuid.uuid4()}"
+
+            # Map entity type to Neo4j label for vector executor
+            entity_type = entity.get("entity_type", "unknown")
+            neo4j_type_map = {
+                "malware": "Software",
+                "software": "Software",
+                "tool": "Software",
+                "threat_actor": "IntrusionSet",
+                "group": "IntrusionSet",
+                "intrusion-set": "IntrusionSet",
+                "campaign": "Campaign"
+            }
+            neo4j_type = neo4j_type_map.get(entity_type.lower(), "Entity")
+
+            # Submit vector update request
+            await manager.submit_update(
+                entity_id=stix_id,
+                entity_type=neo4j_type,
+                action=UpdateAction.CREATE,
+                priority=5  # Medium priority for review-approved entities
+            )
+            update_count += 1
+
+        if update_count > 0:
+            logger.info(f"Submitted {update_count} entity vector update requests")
+
+    except Exception as e:
+        # Log error but don't fail the review submission
+        logger.error(f"Failed to submit entity vector updates: {e}")
+
+
+async def _submit_technique_vector_updates(session: Session, techniques: List[Dict]) -> None:
+    """
+    Submit vector update requests for approved techniques.
+    Uses fire-and-forget pattern to avoid blocking review submission.
+
+    Args:
+        session: Neo4j session to query technique STIX IDs
+        techniques: List of approved technique dictionaries
+    """
+    try:
+        manager = get_vector_update_manager()
+
+        if not manager.enabled:
+            logger.debug("Vector update system disabled, skipping technique vector updates")
+            return
+
+        # Collect unique technique external IDs
+        external_ids = set()
+        for technique in techniques:
+            ext_id = technique.get("external_id")
+            if ext_id:
+                external_ids.add(ext_id)
+
+        if not external_ids:
+            return
+
+        # Query Neo4j to get STIX IDs for these techniques
+        result = session.run("""
+            UNWIND $external_ids as ext_id
+            MATCH (t:AttackPattern {external_id: ext_id})
+            RETURN t.stix_id as stix_id, t.external_id as external_id
+        """, external_ids=list(external_ids))
+
+        update_count = 0
+        for record in result:
+            stix_id = record["stix_id"]
+            if stix_id:
+                # Submit vector update request for the technique
+                await manager.submit_update(
+                    entity_id=stix_id,
+                    entity_type="AttackPattern",
+                    action=UpdateAction.UPDATE,  # Update since techniques already exist
+                    priority=5  # Medium priority
+                )
+                update_count += 1
+
+        if update_count > 0:
+            logger.info(f"Submitted {update_count} technique vector update requests")
+
+    except Exception as e:
+        # Log error but don't fail the review submission
+        logger.error(f"Failed to submit technique vector updates: {e}")
