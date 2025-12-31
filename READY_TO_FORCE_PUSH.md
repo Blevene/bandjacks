@@ -52,20 +52,33 @@ Make sure all team members have:
 
 ## 🚀 Force Push Commands
 
-Once you've notified your team, you can proceed with the force-push:
+Once you've notified your team, you can proceed. **First, merge sprint14 into main** (recommended):
 
 ```bash
-# Switch to main branch (if not already there)
+# Step 1: Switch to main branch
 git checkout main
 
-# Force push all branches
+# Step 2: Merge sprint14 into main (preserves all work)
+git merge sprint14 -m "Merge sprint14: Security cleanup and open source preparation"
+
+# Step 3: Verify the merge
+git log --oneline --graph -10
+
+# Step 4: Force push all branches
 git push --force --all origin
 
-# Force push all tags
+# Step 5: Force push all tags
 git push --force --tags origin
 ```
 
-**Note:** You're currently on `sprint14` branch. The force-push will update all branches including `main` and `sprint14`.
+**Alternative:** If you want to make sprint14 the new main (overwrites main):
+```bash
+git checkout main
+git reset --hard sprint14
+git push --force --all origin
+```
+
+**See `MERGE_OR_FORCE_PUSH_GUIDE.md` for detailed options and explanations.**
 
 ## 📋 Post-Push Checklist
 
