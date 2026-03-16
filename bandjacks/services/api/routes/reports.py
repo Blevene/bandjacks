@@ -374,7 +374,6 @@ async def ingest_report_upload(
             "skip_verification": skip_verification,
             "auto_generate_flow": True,
         },
-        file_content=content,  # Store content in Redis for cross-worker access
     )
 
     # --- poll until the job finishes -----------------------------------
@@ -509,10 +508,6 @@ async def ingest_file_async(
             detail=f"Failed to save file: {str(e)}"
         )
     
-    # Read file content for Redis storage
-    with open(temp_path, "rb") as f:
-        file_content = f.read()
-    
     # Create job in the persistent job store (queued status)
     job_store = get_redis_job_store()
     job_data = job_store.create_job(
@@ -527,7 +522,6 @@ async def ingest_file_async(
             "auto_generate_flow": auto_generate_flow,
             "webhook_url": webhook_url
         },
-        file_content=file_content  # Pass content to Redis
     )
     
     # FileJobStore is already updated above
