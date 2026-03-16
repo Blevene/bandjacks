@@ -6,9 +6,9 @@ import json
 from typing import Tuple
 from neo4j import GraphDatabase
 from bandjacks.loaders.attack_catalog import fetch_catalog
-from bandjacks.loaders.opensearch_index import upsert_node_embedding
-from bandjacks.loaders.embedder import encode
-from bandjacks.loaders.edge_embeddings import upsert_edge_doc
+from bandjacks.loaders.opensearch_index import bulk_upsert_embeddings
+from bandjacks.loaders.embedder import batch_encode
+from bandjacks.loaders.edge_embeddings import bulk_upsert_edge_docs
 
 # ATT&CK object type constants
 AP = "attack-pattern"
@@ -221,6 +221,7 @@ def upsert_to_graph_and_vectors(
             updated += upd
         # 1) AttackPattern nodes
         aps = [o for o in objs if o.get("type") == AP]
+        ap_embed_queue = []
         for obj in aps:
             stix_id = obj["id"]
             name = obj.get("name","")
@@ -306,29 +307,30 @@ def upsert_to_graph_and_vectors(
                         MERGE (ap)-[:HAS_TACTIC]->(t)
                     """, stix_id=stix_id, short=short)
             
-            # upsert node embedding with real vectors
+            # Collect for batch embedding (moved out of loop)
             txt = _ap_text(obj, tactic_names)
-            try:
-                vec = encode(txt)
-                if vec is not None and len(vec) == 768:  # Ensure we have a valid 768-dim vector
-                    upsert_node_embedding(
-                        os_url=os_url, index=os_index,
-                        doc={
-                            "id": stix_id,
-                            "kb_type": "AttackPattern",
-                            "attack_version": version,
-                            "revoked": revoked,
-                            "external_id": external_id,  # Include T-number for search
-                            "name": name,  # Include name for display
-                            "text": txt,
-                            "embedding": vec
-                        }
-                    )
-                else:
-                    print(f"[embedding] skipping {stix_id}: invalid vector (got {type(vec)} with length {len(vec) if vec else 'None'})")
-            except Exception as e:
-                print(f"[embedding] error generating vector for {stix_id}: {e}")
+            ap_embed_queue.append({
+                "id": stix_id,
+                "kb_type": "AttackPattern",
+                "attack_version": version,
+                "revoked": revoked,
+                "external_id": external_id,
+                "name": name,
+                "text": txt,
+            })
         
+        # Batch embed and bulk index all AttackPatterns
+        if ap_embed_queue:
+            texts = [doc["text"] for doc in ap_embed_queue]
+            vectors = batch_encode(texts)
+            bulk_docs = []
+            for doc, vec in zip(ap_embed_queue, vectors):
+                if vec is not None and len(vec) == 768:
+                    doc["embedding"] = vec
+                    bulk_docs.append(doc)
+            bulk_upsert_embeddings(os_url, os_index, bulk_docs)
+            print(f"[attack-load] Batch embedded {len(bulk_docs)}/{len(ap_embed_queue)} AttackPatterns")
+
         # 2) IntrusionSet nodes (Groups)
         groups = [o for o in objs if o.get("type") == INTRUSION_SET]
         for obj in groups:
