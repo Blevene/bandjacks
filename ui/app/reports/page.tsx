@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
+import { API_BASE_URL } from '@/lib/config';
 import {
   FileText,
   Loader2,
@@ -51,7 +52,7 @@ export default function ReportsPage() {
 
   const fetchReports = async () => {
     try {
-      const response = await fetch("http://localhost:8000/v1/reports/");
+      const response = await fetch(`${API_BASE_URL}/v1/reports/`);
       if (!response.ok) {
         throw new Error("Failed to fetch reports");
       }

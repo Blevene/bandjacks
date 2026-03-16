@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_BASE_URL } from '@/lib/config';
 import {
   Dialog,
   DialogContent,
@@ -71,7 +72,7 @@ export function EvidenceViewer({
 
     try {
       const response = await fetch(
-        `http://localhost:8000/v1/reports/evidence/${nodeId}?node_type=${nodeType}`
+        `${API_BASE_URL}/v1/reports/evidence/${nodeId}?node_type=${nodeType}`
       );
 
       if (!response.ok) {

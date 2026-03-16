@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useToast } from "@/hooks/use-toast";
+import { API_BASE_URL } from '@/lib/config';
 import {
   FileText,
   Loader2,
@@ -118,7 +119,7 @@ export default function ReportDetailPage() {
 
     setSubmitting(true);
     try {
-      const response = await fetch(`http://localhost:8000/v1/reports/${reportId}/unified-review`, {
+      const response = await fetch(`${API_BASE_URL}/v1/reports/${reportId}/unified-review`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -160,7 +161,7 @@ export default function ReportDetailPage() {
   const fetchReport = async () => {
     try {
       // Use the API directly at port 8000
-      const response = await fetch(`http://localhost:8000/v1/reports/${reportId}`);
+      const response = await fetch(`${API_BASE_URL}/v1/reports/${reportId}`);
       if (!response.ok) {
         throw new Error(`Failed to fetch report: ${response.statusText}`);
       }

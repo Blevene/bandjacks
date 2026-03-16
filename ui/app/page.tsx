@@ -2,17 +2,18 @@
 
 import { useState, useEffect } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { 
-  Activity, 
-  AlertTriangle, 
-  CheckCircle2, 
-  Database, 
+import {
+  Activity,
+  AlertTriangle,
+  CheckCircle2,
+  Database,
   FileText,
   Clock,
   Shield,
   TrendingUp,
   Loader2
 } from "lucide-react";
+import { API_BASE_URL } from '@/lib/config';
 import { format } from "date-fns";
 
 interface ReportSummary {
@@ -61,7 +62,7 @@ export default function DashboardPage() {
 
   const fetchReports = async () => {
     try {
-      const response = await fetch("http://localhost:8000/v1/reports/");
+      const response = await fetch(`${API_BASE_URL}/v1/reports/`);
       if (response.ok) {
         const data = await response.json();
         const reportsList = Array.isArray(data) ? data : (data.reports || []);
@@ -74,7 +75,7 @@ export default function DashboardPage() {
 
   const fetchGraphStats = async () => {
     try {
-      const response = await fetch("http://localhost:8000/v1/analytics/statistics");
+      const response = await fetch(`${API_BASE_URL}/v1/analytics/statistics`);
       if (response.ok) {
         const data = await response.json();
         setGraphStats(data);

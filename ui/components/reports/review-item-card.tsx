@@ -8,6 +8,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { API_BASE_URL } from '@/lib/config';
 import {
   Select,
   SelectContent,
@@ -163,7 +164,7 @@ export function ReviewItemCard({
     // If adding to ignorelist, call API immediately
     if (addToIgnorelist && item.type === 'entity') {
       try {
-        const response = await fetch('http://localhost:8000/v1/ignorelist/add', {
+        const response = await fetch(`${API_BASE_URL}/v1/ignorelist/add`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Slider } from "@/components/ui/slider";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { API_BASE_URL } from '@/lib/config';
 import {
   Select,
   SelectContent,
@@ -63,11 +64,6 @@ interface UnifiedReviewProps {
 
 export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedReviewProps) {
   const [state, setState] = useState<UnifiedReviewState>(() => {
-    // Debug: Log the report data to see what we're receiving
-    console.log('UnifiedReview: Initializing state from report:', report);
-    if (report.extraction?.claims) {
-      console.log('Sample claim review_status:', report.extraction.claims[0]?.review_status);
-    }
     const newState = createUnifiedReviewState(report);
 
     // Rebuild decisions from items' existing review_status
@@ -101,7 +97,6 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
 
   // Update state when report changes (e.g., navigating between tabs)
   useEffect(() => {
-    console.log('Report prop changed, reinitializing state');
     const newState = createUnifiedReviewState(report);
 
     // Rebuild decisions from items' existing review_status
@@ -226,8 +221,6 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
   }, [currentItemIndex, filteredItems, readOnly, showFilters]);
 
   const handleReviewAction = async (itemId: string, action: 'approve' | 'reject' | 'edit', addToIgnorelist?: boolean) => {
-    console.log(`handleReviewAction called: itemId=${itemId}, action=${action}`);
-
     const decision: UnifiedReviewDecision = {
       item_id: itemId,
       action,
@@ -250,9 +243,8 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
     });
 
     // Save the decision to the backend immediately
-    console.log(`Sending PATCH request for ${itemId} with action=${action}`);
     try {
-      const response = await fetch(`http://localhost:8000/v1/reports/${report.report_id}/review-decision`, {
+      const response = await fetch(`${API_BASE_URL}/v1/reports/${report.report_id}/review-decision`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -270,8 +262,6 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
       if (!response.ok) {
         const errorText = await response.text();
         console.error('Failed to save review decision:', errorText);
-      } else {
-        console.log(`Successfully saved ${action} decision for ${itemId}`);
       }
     } catch (error) {
       console.error('Error saving review decision:', error);
@@ -303,7 +293,7 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
 
     // Save the edit decision to the backend immediately
     try {
-      const response = await fetch(`http://localhost:8000/v1/reports/${report.report_id}/review-decision`, {
+      const response = await fetch(`${API_BASE_URL}/v1/reports/${report.report_id}/review-decision`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -365,7 +355,7 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
 
       while (retries > 0 && !saved) {
         try {
-          const response = await fetch(`http://localhost:8000/v1/reports/${report.report_id}/review-decision`, {
+          const response = await fetch(`${API_BASE_URL}/v1/reports/${report.report_id}/review-decision`, {
             method: 'PATCH',
             headers: {
               'Content-Type': 'application/json',
