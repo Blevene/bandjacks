@@ -391,10 +391,10 @@ async def submit_unified_review(
         )
         
     except Exception as e:
-        logger.error(f"Failed to submit unified review for {report_id}: {e}")
+        logger.exception(f"Failed to submit unified review for {report_id}: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to save unified review: {str(e)}"
+            detail="Internal server error"
         )
 
 
@@ -561,10 +561,10 @@ async def update_review_decision(
         )
 
     except Exception as e:
-        logger.error(f"Failed to update review decision for {report_id}: {e}")
+        logger.exception(f"Failed to update review decision for {report_id}: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to save review decision: {str(e)}"
+            detail="Internal server error"
         )
 
 
@@ -1481,10 +1481,10 @@ async def get_node_evidence(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to retrieve evidence for {node_id}: {e}")
+        logger.exception(f"Failed to retrieve evidence for {node_id}: {e}")
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to retrieve evidence: {str(e)}"
+            detail="Internal server error"
         )
 
 
