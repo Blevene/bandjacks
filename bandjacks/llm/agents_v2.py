@@ -456,6 +456,17 @@ class MapperAgent:
                 if 1 <= ref <= len(mem.line_index):
                     evidence_lines.append(f"Line {ref}: {mem.line_index[ref-1]}")
             
+            # Include keyword hints if available
+            keyword_hint_text = ""
+            if span.get("keyword_hints"):
+                hint_ids = set()
+                for kh in span["keyword_hints"]:
+                    hint_ids.update(kh["technique_ids"])
+                if hint_ids:
+                    keyword_hint_text = f"\nKeyword-matched candidates: {', '.join(sorted(hint_ids))}"
+
+            span_text = span["text"][:800] + keyword_hint_text
+
             messages = [
                 {
                     "role": "system",
@@ -477,11 +488,11 @@ class MapperAgent:
                     "role": "user",
                     "content": json.dumps(
                         {
-                            "span": span["text"][:800],  # Increased limit for sentence-based spans
+                            "span": span_text,
                             "line_refs": span["line_refs"][:10],  # More line refs for sentence context
                             "evidence_lines": evidence_lines,
                             "candidates": [
-                                {"external_id": c["external_id"], "name": c.get("name", ""), "score": c.get("score", 0)} 
+                                {"external_id": c["external_id"], "name": c.get("name", ""), "score": c.get("score", 0)}
                                 for c in cands[:5]  # Limit candidates to top 5
                             ],
                         }
