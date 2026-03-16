@@ -508,6 +508,37 @@ def upsert_node_embedding(os_url: str, index: str, doc: Dict[str, Any]):
     )
 
 
+def bulk_upsert_embeddings(os_url: str, index: str, docs: list[dict]):
+    """Bulk upsert documents with embeddings to OpenSearch.
+
+    Args:
+        os_url: OpenSearch URL
+        index: Target index name
+        docs: List of dicts, each with at minimum 'id' and 'embedding' keys
+    """
+    if not docs:
+        return
+
+    client = OpenSearch(
+        hosts=[os_url],
+        use_ssl=False,
+        verify_certs=False,
+        timeout=60
+    )
+
+    body = []
+    for doc in docs:
+        body.append({"index": {"_index": index, "_id": doc.get("id")}})
+        body.append(doc)
+
+    resp = client.bulk(body=body)
+    if resp.get("errors"):
+        failed = [item for item in resp["items"] if item.get("index", {}).get("error")]
+        print(f"[bulk-embed] {len(failed)}/{len(docs)} failed: {failed[:3]}")
+    else:
+        print(f"[bulk-embed] indexed {len(docs)} docs to {index}")
+
+
 def ensure_attack_flows_index(opensearch_url: str):
     """Ensure the attack flows index exists in OpenSearch."""
     client = OpenSearch(

@@ -6,9 +6,9 @@ import json
 from typing import Tuple
 from neo4j import GraphDatabase
 from bandjacks.loaders.attack_catalog import fetch_catalog
-from bandjacks.loaders.opensearch_index import upsert_node_embedding
-from bandjacks.loaders.embedder import encode
-from bandjacks.loaders.edge_embeddings import upsert_edge_doc
+from bandjacks.loaders.opensearch_index import bulk_upsert_embeddings
+from bandjacks.loaders.embedder import batch_encode
+from bandjacks.loaders.edge_embeddings import bulk_upsert_edge_docs
 
 # ATT&CK object type constants
 AP = "attack-pattern"
@@ -221,6 +221,7 @@ def upsert_to_graph_and_vectors(
             updated += upd
         # 1) AttackPattern nodes
         aps = [o for o in objs if o.get("type") == AP]
+        ap_embed_queue = []
         for obj in aps:
             stix_id = obj["id"]
             name = obj.get("name","")
@@ -306,31 +307,33 @@ def upsert_to_graph_and_vectors(
                         MERGE (ap)-[:HAS_TACTIC]->(t)
                     """, stix_id=stix_id, short=short)
             
-            # upsert node embedding with real vectors
+            # Collect for batch embedding (moved out of loop)
             txt = _ap_text(obj, tactic_names)
-            try:
-                vec = encode(txt)
-                if vec is not None and len(vec) == 768:  # Ensure we have a valid 768-dim vector
-                    upsert_node_embedding(
-                        os_url=os_url, index=os_index,
-                        doc={
-                            "id": stix_id,
-                            "kb_type": "AttackPattern",
-                            "attack_version": version,
-                            "revoked": revoked,
-                            "external_id": external_id,  # Include T-number for search
-                            "name": name,  # Include name for display
-                            "text": txt,
-                            "embedding": vec
-                        }
-                    )
-                else:
-                    print(f"[embedding] skipping {stix_id}: invalid vector (got {type(vec)} with length {len(vec) if vec else 'None'})")
-            except Exception as e:
-                print(f"[embedding] error generating vector for {stix_id}: {e}")
+            ap_embed_queue.append({
+                "id": stix_id,
+                "kb_type": "AttackPattern",
+                "attack_version": version,
+                "revoked": revoked,
+                "external_id": external_id,
+                "name": name,
+                "text": txt,
+            })
         
+        # Batch embed and bulk index all AttackPatterns
+        if ap_embed_queue:
+            texts = [doc["text"] for doc in ap_embed_queue]
+            vectors = batch_encode(texts)
+            bulk_docs = []
+            for doc, vec in zip(ap_embed_queue, vectors):
+                if vec is not None and len(vec) == 768:
+                    doc["embedding"] = vec
+                    bulk_docs.append(doc)
+            bulk_upsert_embeddings(os_url, os_index, bulk_docs)
+            print(f"[attack-load] Batch embedded {len(bulk_docs)}/{len(ap_embed_queue)} AttackPatterns")
+
         # 2) IntrusionSet nodes (Groups)
         groups = [o for o in objs if o.get("type") == INTRUSION_SET]
+        group_embed_queue = []
         for obj in groups:
             res = s.run(
                 """
@@ -346,21 +349,29 @@ def upsert_to_graph_and_vectors(
             ins, upd = _count_from_summary(res.consume())
             inserted += ins
             updated += upd
-            
-            # Add embeddings for IntrusionSet
+
+            # Collect for batch embedding (moved out of loop)
             txt = f"{obj.get('name','')}\n{obj.get('description','')}"
-            try:
-                vec = encode(txt)
+            group_embed_queue.append({
+                "id": obj["id"], "kb_type": "IntrusionSet", "attack_version": version,
+                "revoked": obj.get("revoked", False), "text": txt,
+            })
+
+        # Batch embed and bulk index all IntrusionSets
+        if group_embed_queue:
+            texts = [doc["text"] for doc in group_embed_queue]
+            vectors = batch_encode(texts)
+            bulk_docs = []
+            for doc, vec in zip(group_embed_queue, vectors):
                 if vec is not None and len(vec) == 768:
-                    upsert_node_embedding(os_url=os_url, index=os_index, doc={
-                        "id": obj["id"], "kb_type": "IntrusionSet", "attack_version": version,
-                        "revoked": obj.get("revoked", False), "text": txt, "embedding": vec
-                    })
-            except Exception as e:
-                print(f"[embedding] group embed fail {obj['id']}: {e}")
-        
+                    doc["embedding"] = vec
+                    bulk_docs.append(doc)
+            bulk_upsert_embeddings(os_url, os_index, bulk_docs)
+            print(f"[attack-load] Batch embedded {len(bulk_docs)}/{len(group_embed_queue)} IntrusionSets")
+
         # 3) Software (Tool/Malware/Software umbrella)
         software = [o for o in objs if o.get("type") in SOFTWARE_TYPES]
+        sw_embed_queue = []
         for obj in software:
             res = s.run(
                 """
@@ -376,18 +387,25 @@ def upsert_to_graph_and_vectors(
             ins, upd = _count_from_summary(res.consume())
             inserted += ins
             updated += upd
-            
-            # Add embeddings for Software
+
+            # Collect for batch embedding (moved out of loop)
             txt = f"{obj.get('name','')}\n{obj.get('description','')}"
-            try:
-                vec = encode(txt)
+            sw_embed_queue.append({
+                "id": obj["id"], "kb_type": "Software", "attack_version": version,
+                "revoked": obj.get("revoked", False), "text": txt,
+            })
+
+        # Batch embed and bulk index all Software
+        if sw_embed_queue:
+            texts = [doc["text"] for doc in sw_embed_queue]
+            vectors = batch_encode(texts)
+            bulk_docs = []
+            for doc, vec in zip(sw_embed_queue, vectors):
                 if vec is not None and len(vec) == 768:
-                    upsert_node_embedding(os_url=os_url, index=os_index, doc={
-                        "id": obj["id"], "kb_type": "Software", "attack_version": version,
-                        "revoked": obj.get("revoked", False), "text": txt, "embedding": vec
-                    })
-            except Exception as e:
-                print(f"[embedding] software embed fail {obj['id']}: {e}")
+                    doc["embedding"] = vec
+                    bulk_docs.append(doc)
+            bulk_upsert_embeddings(os_url, os_index, bulk_docs)
+            print(f"[attack-load] Batch embedded {len(bulk_docs)}/{len(sw_embed_queue)} Software")
         
         # 4) Mitigations (course-of-action)
         mitigs = [o for o in objs if o.get("type") == MITIGATION]
@@ -418,13 +436,14 @@ def upsert_to_graph_and_vectors(
         
         # Relationships (USES, MITIGATES, IMPLIES)
         rels = [o for o in objs if o.get("type") == RELATIONSHIP]
+        edge_embed_queue = []
         for r in rels:
             rtype = r.get("relationship_type")
             src = r.get("source_ref")
             tgt = r.get("target_ref")
             if not (rtype and src and tgt):
                 continue
-            
+
             if rtype == "uses":
                 s.run(
                     """
@@ -434,25 +453,19 @@ def upsert_to_graph_and_vectors(
                     """,
                     src=src, tgt=tgt
                 )
-                # Add edge embedding
+                # Collect for batch embedding (moved out of loop)
                 s_name = by_id.get(src, {}).get("name", src)
                 t_name = by_id.get(tgt, {}).get("name", tgt)
                 txt = f"{s_name} uses {t_name}"
-                try:
-                    vec = encode(txt)
-                    if vec and len(vec) == 768:
-                        upsert_edge_doc(os_url, "bandjacks_attack_edges-v1", {
-                            "id": r.get("id", f"{src}-uses-{tgt}"),
-                            "edge_type": "USES",
-                            "source_id": src,
-                            "target_id": tgt,
-                            "attack_version": version,
-                            "text": txt,
-                            "embedding": vec
-                        })
-                except Exception as e:
-                    print(f"[edge-embed] {r.get('id')} fail: {e}")
-            
+                edge_embed_queue.append({
+                    "id": r.get("id", f"{src}-uses-{tgt}"),
+                    "edge_type": "USES",
+                    "source_id": src,
+                    "target_id": tgt,
+                    "attack_version": version,
+                    "text": txt,
+                })
+
             elif rtype == "mitigates":
                 s.run(
                     """
@@ -462,28 +475,34 @@ def upsert_to_graph_and_vectors(
                     """,
                     src=src, tgt=tgt
                 )
-                # Add edge embedding
+                # Collect for batch embedding (moved out of loop)
                 s_name = by_id.get(src, {}).get("name", src)
                 t_name = by_id.get(tgt, {}).get("name", tgt)
                 txt = f"{s_name} mitigates {t_name}"
-                try:
-                    vec = encode(txt)
-                    if vec and len(vec) == 768:
-                        upsert_edge_doc(os_url, "bandjacks_attack_edges-v1", {
-                            "id": r.get("id", f"{src}-mitigates-{tgt}"),
-                            "edge_type": "MITIGATES",
-                            "source_id": src,
-                            "target_id": tgt,
-                            "attack_version": version,
-                            "text": txt,
-                            "embedding": vec
-                        })
-                except Exception as e:
-                    print(f"[edge-embed] {r.get('id')} fail: {e}")
-            
+                edge_embed_queue.append({
+                    "id": r.get("id", f"{src}-mitigates-{tgt}"),
+                    "edge_type": "MITIGATES",
+                    "source_id": src,
+                    "target_id": tgt,
+                    "attack_version": version,
+                    "text": txt,
+                })
+
             # IMPLIES_TECHNIQUE is our derived edge from Software→Technique (optional)
             elif rtype in ("uses-against", "delivers", "drops"):  # rare; keep for future
                 pass
+
+        # Batch embed and bulk index all relationship edges
+        if edge_embed_queue:
+            texts = [doc["text"] for doc in edge_embed_queue]
+            vectors = batch_encode(texts)
+            bulk_docs = []
+            for doc, vec in zip(edge_embed_queue, vectors):
+                if vec is not None and len(vec) == 768:
+                    doc["embedding"] = vec
+                    bulk_docs.append(doc)
+            bulk_upsert_edge_docs(os_url, "bandjacks_attack_edges-v1", bulk_docs)
+            print(f"[attack-load] Batch embedded {len(bulk_docs)}/{len(edge_embed_queue)} relationship edges")
 
     driver.close()
     return inserted, updated
