@@ -83,10 +83,9 @@ class RedisJobStore:
         file_ext: str,
         file_size: int,
         config: Dict[str, Any],
-        file_content: Optional[bytes] = None
     ) -> Dict[str, Any]:
         """Create a new job and add to queue.
-        
+
         Args:
             job_id: Unique job identifier
             file_path: Path to the saved file
@@ -94,19 +93,10 @@ class RedisJobStore:
             file_ext: File extension
             file_size: Size of the file in bytes
             config: Processing configuration
-            file_content: Optional file content to store in Redis
-            
+
         Returns:
             The created job data
         """
-        # Store file content in Redis if provided
-        if file_content:
-            content_key = f"job:content:{job_id}"
-            self.redis.set(content_key, file_content, ex=3600)  # Expire after 1 hour
-            logger.info(f"Stored file content in Redis for job {job_id} ({len(file_content)} bytes)")
-            # Use Redis key instead of file path
-            file_path = f"redis://{content_key}"
-        
         job_data = {
             "job_id": job_id,
             "status": "queued",
