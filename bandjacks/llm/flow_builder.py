@@ -19,6 +19,14 @@ from bandjacks.llm.attack_flow_validator import AttackFlowValidator
 from bandjacks.llm.batch_neo4j import BatchNeo4jHelper
 from bandjacks.loaders.embedder import encode
 
+# Flow builder constants
+DEFAULT_CONFIDENCE = 50.0
+HIGH_CONFIDENCE = 60.0
+MEDIUM_CONFIDENCE = 55.0
+DEFAULT_PROBABILITY = 0.3
+LOW_PROBABILITY = 0.25
+HIGH_PROBABILITY = 0.4
+
 
 class FlowBuilder:
     """Consolidated attack flow builder with all generation capabilities."""
@@ -159,7 +167,7 @@ class FlowBuilder:
                         "technique_id": tech["technique_id"],
                         "name": tech["name"] or "Unknown",
                         "description": tech["description"] or "",
-                        "confidence": tech["confidence"] or 50.0
+                        "confidence": tech["confidence"] or DEFAULT_CONFIDENCE
                     })
                 
                 if not steps:
@@ -230,7 +238,7 @@ class FlowBuilder:
                 "technique_id": tech["technique_id"],
                 "name": tech["name"] or "Unknown",
                 "description": tech["description"][:200] if tech["description"] else "",
-                "confidence": 60.0,
+                "confidence": HIGH_CONFIDENCE,
                 "tactics": tech["tactics"]
             })
         
@@ -277,7 +285,7 @@ class FlowBuilder:
                     "technique_id": stix_id,
                     "name": tech_name or "Unknown",
                     "description": (desc or "")[:200],
-                    "confidence": 55.0
+                    "confidence": MEDIUM_CONFIDENCE
                 })
 
         if not steps:
@@ -297,24 +305,72 @@ class FlowBuilder:
     def build_from_campaign(self, campaign_id: str, mode: str = "sequential") -> Dict[str, Any]:
         """
         Build a flow from a Campaign's observed behaviors.
-        
+
         mode:
           - "sequential": order by temporal hints and tactic order
           - "cooccurrence": treat as unordered; create weak NEXT edges
         """
+        query = """
+            MATCH (c:Campaign {stix_id: $entity_id})
+            OPTIONAL MATCH (c)-[:USES]->(ap:AttackPattern)
+            RETURN collect(DISTINCT ap) as techniques, c.name as entity_name
+        """
+        return self._build_from_graph_entity(
+            query=query,
+            entity_id=campaign_id,
+            mode=mode,
+            confidence=MEDIUM_CONFIDENCE,
+            cooccurrence_probability=DEFAULT_PROBABILITY,
+            entity_label="campaign"
+        )
+
+    def build_from_report(self, report_id: str, mode: str = "sequential") -> Dict[str, Any]:
+        """
+        Build a flow from a Report's described techniques (sequential or cooccurrence).
+        Uses any described AttackPatterns linked via DESCRIBES.
+        """
+        query = """
+            MATCH (r:Report {stix_id: $entity_id})-[:DESCRIBES]->(ap:AttackPattern)
+            RETURN collect(DISTINCT ap) as techniques, r.name as entity_name
+        """
+        return self._build_from_graph_entity(
+            query=query,
+            entity_id=report_id,
+            mode=mode,
+            confidence=DEFAULT_CONFIDENCE,
+            cooccurrence_probability=LOW_PROBABILITY,
+            entity_label="report"
+        )
+
+    def _build_from_graph_entity(
+        self,
+        query: str,
+        entity_id: str,
+        mode: str,
+        confidence: float,
+        cooccurrence_probability: float,
+        entity_label: str
+    ) -> Dict[str, Any]:
+        """
+        Shared helper for building flows from graph entities (campaigns, reports, etc.).
+
+        Args:
+            query: Cypher query that returns ``techniques`` and ``entity_name`` columns.
+                   Must accept an ``$entity_id`` parameter.
+            entity_id: STIX ID of the source entity.
+            mode: "sequential" or "cooccurrence".
+            confidence: Default confidence score for extracted steps.
+            cooccurrence_probability: Edge probability used in co-occurrence mode.
+            entity_label: Human-readable label for error messages (e.g. "campaign").
+
+        Returns:
+            Flow data with episode and actions.
+        """
         with self.driver.session() as session:
-            # Fetch techniques used by the campaign
-            result = session.run(
-                """
-                MATCH (c:Campaign {stix_id: $cid})
-                OPTIONAL MATCH (c)-[:USES]->(ap:AttackPattern)
-                RETURN collect(DISTINCT ap) as techniques, c.name as cname
-                """,
-                cid=campaign_id
-            )
+            result = session.run(query, entity_id=entity_id)
             rec = result.single()
             ap_nodes = rec["techniques"] if rec else []
-            campaign_name = rec["cname"] if rec else None
+            entity_name = rec["entity_name"] if rec else None
 
         steps: List[Dict[str, Any]] = []
         for ap in ap_nodes or []:
@@ -325,11 +381,11 @@ class FlowBuilder:
                 "technique_id": apd.get("stix_id"),
                 "name": apd.get("name", "Unknown"),
                 "description": (apd.get("description", "") or "")[:200],
-                "confidence": 55.0
+                "confidence": confidence
             })
 
         if not steps:
-            raise ValueError(f"No techniques found for campaign {campaign_id}")
+            raise ValueError(f"No techniques found for {entity_label} {entity_id}")
 
         if mode == "sequential":
             ordered_steps = self._order_steps(steps)
@@ -348,76 +404,15 @@ class FlowBuilder:
                     edges.append({
                         "source": ordered_steps[i]["action_id"],
                         "target": ordered_steps[j]["action_id"],
-                        "probability": 0.3,
+                        "probability": cooccurrence_probability,
                         "rationale": "co-occurrence"
                     })
 
         episode = self._create_episode(
-            name=(campaign_name or f"Flow from {campaign_id}"),
+            name=(entity_name or f"Flow from {entity_id}"),
             steps=ordered_steps,
             edges=edges,
-            source_id=campaign_id,
-            llm_synthesized=False
-        )
-        return episode
-
-    def build_from_report(self, report_id: str, mode: str = "sequential") -> Dict[str, Any]:
-        """
-        Stub: Build a flow from a Report's described techniques (sequential or cooccurrence).
-        Uses any described AttackPatterns linked via DESCRIBES.
-        """
-        with self.driver.session() as session:
-            result = session.run(
-                """
-                MATCH (r:Report {stix_id: $rid})-[:DESCRIBES]->(ap:AttackPattern)
-                RETURN collect(DISTINCT ap) as techniques, r.name as rname
-                """,
-                rid=report_id
-            )
-            rec = result.single()
-            ap_nodes = rec["techniques"] if rec else []
-            report_name = rec["rname"] if rec else None
-
-        steps: List[Dict[str, Any]] = []
-        for ap in ap_nodes or []:
-            if not ap:
-                continue
-            apd = dict(ap)
-            steps.append({
-                "technique_id": apd.get("stix_id"),
-                "name": apd.get("name", "Unknown"),
-                "description": (apd.get("description", "") or "")[:200],
-                "confidence": 50.0
-            })
-
-        if not steps:
-            raise ValueError(f"No techniques found for report {report_id}")
-
-        if mode == "sequential":
-            ordered_steps = self._order_steps(steps)
-            edges = self._compute_next_edges(ordered_steps)
-        else:
-            ordered_steps = []
-            for i, s in enumerate(steps):
-                s_copy = dict(s)
-                s_copy["order"] = i + 1
-                s_copy["action_id"] = f"action--{uuid.uuid4()}"
-                ordered_steps.append(s_copy)
-            edges: List[Dict[str, Any]] = []
-            for i in range(len(ordered_steps)):
-                for j in range(i + 1, len(ordered_steps)):
-                    edges.append({
-                        "source": ordered_steps[i]["action_id"],
-                        "target": ordered_steps[j]["action_id"],
-                        "probability": 0.25,
-                        "rationale": "co-occurrence"
-                    })
-
-        episode = self._create_episode(
-            name=(report_name or f"Flow from {report_id}"),
-            steps=ordered_steps,
-            edges=edges,
-            source_id=report_id,
+            source_id=entity_id,
             llm_synthesized=False
         )
         return episode
@@ -509,9 +504,33 @@ class FlowBuilder:
         
         # Convert steps to actions (support 'steps', 'attack_steps', or 'attack_flow')
         actions = []
-        steps = (llm_flow.get("steps") or 
-                llm_flow.get("attack_steps") or 
+        steps = (llm_flow.get("steps") or
+                llm_flow.get("attack_steps") or
                 llm_flow.get("attack_flow", []))
+
+        # Batch-fetch all T-number technique IDs in one query (N+1 fix)
+        t_number_ids = []
+        for step in steps:
+            entity = step.get("entity", {})
+            tid = entity.get("pk") or entity.get("id", "")
+            if isinstance(tid, str) and tid.startswith("T") and not tid.startswith("attack-pattern--"):
+                t_number_ids.append(tid)
+
+        technique_lookup: Dict[str, Dict[str, Any]] = {}
+        if t_number_ids:
+            with self.driver.session() as session:
+                result = session.run(
+                    "UNWIND $ext_ids AS ext_id "
+                    "MATCH (t:AttackPattern) WHERE t.external_id = ext_id "
+                    "RETURN t.external_id AS ext_id, t.stix_id AS stix_id, t.name AS name",
+                    ext_ids=list(set(t_number_ids))
+                )
+                for rec in result:
+                    technique_lookup[rec["ext_id"]] = {
+                        "stix_id": rec["stix_id"],
+                        "name": rec["name"]
+                    }
+
         for step in steps:
             action_id = f"action--{uuid.uuid4()}"
             
@@ -522,19 +541,13 @@ class FlowBuilder:
             
             # Try to get full STIX ID if it's just a technique number
             if technique_id.startswith("T") and not technique_id.startswith("attack-pattern--"):
-                # Query Neo4j for full STIX ID
-                with self.driver.session() as session:
-                    result = session.run(
-                        "MATCH (t:AttackPattern) WHERE t.external_id = $ext_id "
-                        "RETURN t.stix_id as stix_id, t.name as name LIMIT 1",
-                        ext_id=technique_id
-                    )
-                    record = result.single()
-                    if record:
-                        technique_id = record["stix_id"]
-                        technique_name = record["name"]
-                    else:
-                        technique_name = entity.get("label", "Unknown")
+                # Use batch-fetched lookup dict instead of per-step query
+                if technique_id in technique_lookup:
+                    info = technique_lookup[technique_id]
+                    technique_id = info["stix_id"]
+                    technique_name = info["name"]
+                else:
+                    technique_name = entity.get("label", "Unknown")
             else:
                 technique_name = entity.get("label", "Unknown")
             
@@ -608,7 +621,7 @@ class FlowBuilder:
                                     "technique_id": tech_id,
                                     "name": mapping.get("name", "Unknown"),
                                     "description": claim.get("span", {}).get("text", ""),
-                                    "confidence": mapping.get("confidence", 50.0),
+                                    "confidence": mapping.get("confidence", DEFAULT_CONFIDENCE),
                                     "evidence": [claim.get("span", {})]
                                 })
                                 seen_techniques.add(tech_id)
@@ -620,7 +633,7 @@ class FlowBuilder:
                                 "technique_id": tech_id,
                                 "name": claim.get("name", tech_id),
                                 "description": " ".join(claim.get("quotes", [])),
-                                "confidence": claim.get("confidence", 50.0),
+                                "confidence": claim.get("confidence", DEFAULT_CONFIDENCE),
                                 "evidence": [{"text": " ".join(claim.get("quotes", [])), "line_refs": claim.get("line_refs", [])}]
                             })
                             seen_techniques.add(tech_id)
@@ -634,7 +647,7 @@ class FlowBuilder:
                         "technique_id": tech_id,
                         "name": tech_data.get("name", tech_id),
                         "description": tech_data.get("description", ""),
-                        "confidence": tech_data.get("confidence", 50.0),
+                        "confidence": tech_data.get("confidence", DEFAULT_CONFIDENCE),
                         "evidence": self._normalize_evidence(tech_data.get("evidence", []))
                     })
                     seen_techniques.add(tech_id)
@@ -663,7 +676,7 @@ class FlowBuilder:
                     "technique_id": obj["id"],
                     "name": obj.get("name", "Unknown"),
                     "description": obj.get("description", "")[:200],
-                    "confidence": obj.get("x_bj_confidence", 50.0)
+                    "confidence": obj.get("x_bj_confidence", DEFAULT_CONFIDENCE)
                 })
         
         return steps
@@ -757,7 +770,7 @@ class FlowBuilder:
                         edges.append({
                             "source": action1["action_id"],
                             "target": action2["action_id"],
-                            "probability": 0.3,
+                            "probability": DEFAULT_PROBABILITY,
                             "rationale": f"co-occurrence within {tactic}",
                             "edge_type": "co-occurrence"
                         })
@@ -769,7 +782,7 @@ class FlowBuilder:
                     edges.append({
                         "source": hub["action_id"],
                         "target": action["action_id"],
-                        "probability": 0.25,
+                        "probability": LOW_PROBABILITY,
                         "rationale": f"co-occurrence within {tactic}",
                         "edge_type": "co-occurrence"
                     })
@@ -790,7 +803,7 @@ class FlowBuilder:
                 edges.append({
                     "source": source["action_id"],
                     "target": target["action_id"],
-                    "probability": 0.4,
+                    "probability": HIGH_PROBABILITY,
                     "rationale": f"cross-tactic pattern: {tactic1} → {tactic2}",
                     "edge_type": "co-occurrence"
                 })
@@ -997,7 +1010,7 @@ class FlowBuilder:
                 "attack_pattern_ref": step.get("technique_id", "unknown"),
                 "name": step.get("name", "Unknown"),
                 "description": step.get("description", ""),
-                "confidence": step.get("confidence", 50.0),
+                "confidence": step.get("confidence", DEFAULT_CONFIDENCE),
                 "evidence": self._normalize_evidence(step.get("evidence", [])),
                 "reason": step.get("reason", "")
             })

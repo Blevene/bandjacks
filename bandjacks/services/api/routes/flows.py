@@ -257,7 +257,7 @@ async def get_flow(
             if action_record["evidence"]:
                 try:
                     evidence = json.loads(action_record["evidence"])
-                except:
+                except Exception:
                     evidence = []
             
             steps.append(FlowStep(

@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { RefreshCw, CheckCircle, XCircle, AlertCircle, Activity, Database, Search, Server, HardDrive, Cpu, Clock } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { API_BASE_URL } from '@/lib/config';
 
 interface ComponentHealth {
   status: 'healthy' | 'degraded' | 'unhealthy' | 'unknown';
@@ -107,7 +108,7 @@ export default function HealthStatusPage() {
     try {
       setLoading(true);
       setError(null);
-      const response = await fetch('http://localhost:8000/health/ready');
+      const response = await fetch(`${API_BASE_URL}/health/ready`);
 
       if (!response.ok && response.status !== 503) {
         throw new Error(`Failed to fetch health status: ${response.statusText}`);

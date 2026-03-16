@@ -324,7 +324,7 @@ class EntityIgnorelist:
                     import shutil
                     shutil.copy2(backup_path, self.config_path)
                     logger.info("Restored from backup after save failure")
-                except:
+                except Exception:
                     pass
             return False
 

@@ -188,7 +188,7 @@ async def ingest_report(request: IngestRequest):
         
         # Check content size and redirect to async if too large
         if len(text_content) > 5000:
-            return HTTPException(
+            raise HTTPException(
                 status_code=400,
                 detail="Content too large for synchronous processing. Use /ingest_async endpoint."
             )
@@ -272,8 +272,8 @@ async def ingest_report(request: IngestRequest):
         )
         
     except Exception as e:
-        logger.error(f"Report ingestion failed ({trace_id}): {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception(f"Report ingestion failed ({trace_id}): {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post(
@@ -1034,8 +1034,8 @@ async def approve_report(
                 report_store.close()
                 
         except Exception as e:
-            logger.error(f"Failed to upsert: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.exception(f"Failed to upsert: {e}")
+            raise HTTPException(status_code=500, detail="Internal server error")
     
     return result
 
@@ -1174,8 +1174,8 @@ async def update_attribution(
             "malware": len(attribution.malware)
         }
     except Exception as e:
-        logger.error(f"Failed to update attribution: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception(f"Failed to update attribution: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post(
@@ -1293,8 +1293,8 @@ async def generate_flow_for_report(
             }
             
     except Exception as e:
-        logger.error(f"Failed to generate flow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception(f"Failed to generate flow: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post(

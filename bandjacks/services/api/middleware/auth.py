@@ -182,10 +182,20 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         return jwks
     
     def _jwk_to_pem(self, jwk: Dict[str, Any]) -> str:
-        """Convert JWK to PEM format."""
-        # This is a simplified version - production would use cryptography library
-        # For now, return a placeholder
-        return "RSA_PUBLIC_KEY_PEM"
+        """Convert JWK to PEM format for RS256 verification."""
+        import base64
+        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+        from cryptography.hazmat.backends import default_backend
+
+        def _b64url_decode(data: str) -> bytes:
+            padding = 4 - len(data) % 4
+            return base64.urlsafe_b64decode(data + "=" * padding)
+
+        n = int.from_bytes(_b64url_decode(jwk["n"]), "big")
+        e = int.from_bytes(_b64url_decode(jwk["e"]), "big")
+        public_key = RSAPublicNumbers(e, n).public_key(default_backend())
+        return public_key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode("utf-8")
     
     def _check_write_permission(self, user: Dict[str, Any], path: str):
         """Check if user has permission for write operations."""

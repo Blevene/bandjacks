@@ -586,7 +586,7 @@ Text: {doc_text[:2000]}"""
                         result = json.loads(json_match.group(0))
                         if isinstance(result, dict) and "entities" in result:
                             return result["entities"]
-                    except:
+                    except Exception:
                         pass
                 return []
                 

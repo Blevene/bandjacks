@@ -5,6 +5,7 @@ import logging
 import logging.config
 import logging.handlers
 import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -75,6 +76,7 @@ from bandjacks.services.api.middleware import TracingMiddleware
 from bandjacks.services.api.middleware.error_handler import ErrorHandlerMiddleware
 from bandjacks.services.api.middleware.auth import JWTAuthMiddleware
 from bandjacks.services.api.middleware.rate_limit import RateLimitMiddleware
+from bandjacks.services.api.deps import close_connections
 from bandjacks.services.api.job_processor import get_job_processor
 from bandjacks.loaders.neo4j_ddl import ensure_ddl
 from bandjacks.loaders.opensearch_index import ensure_attack_nodes_index, ensure_attack_flows_index, OpenSearchIndexManager
@@ -88,39 +90,109 @@ from bandjacks.services.vector_update_initializer import initialize_vector_updat
 logger = logging.getLogger(__name__)
 logger.info(f"Logging configured: level={LOG_LEVEL}, file={LOG_FILE}")
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # === Startup ===
+    if not settings.neo4j_password:
+        print("[startup] WARNING: NEO4J_PASSWORD not set. Neo4j operations will fail.")
+        print("[startup] Please set NEO4J_PASSWORD in your .env file or environment variables.")
+    try:
+        ensure_ddl(settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password)
+    except Exception as e:
+        print(f"[startup] Neo4j DDL ensure failed: {e}")
+
+    # Load technique cache after Neo4j is ready
+    try:
+        techniques_loaded = technique_cache.load_from_neo4j(
+            settings.neo4j_uri,
+            settings.neo4j_user,
+            settings.neo4j_password
+        )
+        logger.info(f"TechniqueCache initialized with {techniques_loaded} techniques")
+    except Exception as e:
+        logger.error(f"Failed to load technique cache: {e}")
+        # Continue startup even if cache fails - will fall back to direct queries
+    # Load actor cache for lookups/search
+    try:
+        actors_loaded = actor_cache.load_from_neo4j(
+            settings.neo4j_uri,
+            settings.neo4j_user,
+            settings.neo4j_password,
+        )
+        logger.info(f"ActorCache initialized with {actors_loaded} actors")
+    except Exception as e:
+        logger.error(f"Failed to load actor cache: {e}")
+
+    try:
+        ensure_attack_nodes_index(settings.opensearch_url, settings.os_index_nodes)
+        ensure_attack_edges_index(settings.opensearch_url)
+        ensure_attack_flows_index(settings.opensearch_url)
+
+        # Initialize reports index
+        from opensearchpy import OpenSearch
+        os_client = OpenSearch(
+            hosts=[settings.opensearch_url],
+            http_auth=(settings.opensearch_user, settings.opensearch_password),
+            use_ssl=False,
+            verify_certs=False
+        )
+        index_manager = OpenSearchIndexManager(os_client)
+        index_manager.create_reports_index()
+    except Exception as e:
+        print(f"[startup] OpenSearch index ensure failed: {e}")
+
+    # Start the job processor for async report processing
+    try:
+        job_processor = get_job_processor()
+        await job_processor.start()
+        logger.info("Job processor started successfully")
+    except Exception as e:
+        logger.error(f"Failed to start job processor: {e}")
+
+    # Initialize vector update system
+    try:
+        await initialize_vector_updates()
+        logger.info("Vector update system initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize vector update system: {e}")
+
+    yield
+
+    # === Shutdown ===
+    # Stop the job processor gracefully
+    try:
+        job_processor = get_job_processor()
+        await job_processor.stop()
+        logger.info("Job processor stopped successfully")
+    except Exception as e:
+        logger.error(f"Failed to stop job processor: {e}")
+
+    # Shutdown vector update system
+    try:
+        await shutdown_vector_updates()
+        logger.info("Vector update system stopped")
+    except Exception as e:
+        logger.error(f"Failed to stop vector update system: {e}")
+
+    # Close shared database connections
+    try:
+        close_connections()
+    except Exception as e:
+        logger.error(f"Failed to close database connections: {e}")
+
+
 app = FastAPI(
     title="Bandjacks API",
-    description="""
-    ## Cyber Threat Defense World Modeling API
-    
-    Bandjacks provides comprehensive cyber threat intelligence operations including:
-    
-    - **ATT&CK Data Management**: Load and manage MITRE ATT&CK releases
-    - **Natural Language Search**: Hybrid vector and graph search for CTI
-    - **Graph Exploration**: Traverse and analyze threat relationships
-    - **Document Extraction**: Extract CTI entities from documents using LLMs
-    - **Review Workflows**: Human-in-the-loop validation and feedback
-    - **Defense Recommendations**: D3FEND integration (coming in Sprint 4)
-    
-    ### Key Features
-    
-    - STIX 2.1 compliant data model
-    - ADM (ATT&CK Data Model) validation
-    - Hybrid search with vector embeddings and graph patterns
-    - LLM-powered extraction with evidence grounding
-    - Review queue for candidate validation
-    - Performance optimized with caching and connection pooling
-    
-    ### Authentication
-    
-    Currently no authentication required (development mode).
-    Production deployments should implement appropriate authentication.
-    
-    ### Rate Limiting
-    
-    No rate limiting currently implemented.
-    Production deployments should add rate limiting.
-    """,
+    description="""Bandjacks Cyber Threat Defense World Modeling API.
+
+Provides endpoints for threat intelligence ingestion, knowledge graph
+management, attack flow modeling, defense analysis, and analytics.
+
+Authentication: JWT/OIDC supported (configurable via ENABLE_AUTH env var).
+Rate limiting: Redis-backed sliding window per client endpoint.
+Tracing: Correlation ID propagation via X-Request-ID header.
+""",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
@@ -128,7 +200,8 @@ app = FastAPI(
     servers=[
         {"url": "http://localhost:8000", "description": "Development server"},
         {"url": "https://api.bandjacks.io", "description": "Production server (future)"}
-    ]
+    ],
+    lifespan=lifespan,
 )
 
 # Add middleware (order matters - error handler should be first to catch all errors)
@@ -147,104 +220,19 @@ if settings.enable_auth:
 # Add tracing (should be after auth to capture user info)
 app.add_middleware(TracingMiddleware)
 
-# Add CORS middleware for frontend development (outermost to ensure headers on all responses/preflights)
+# Add CORS middleware (outermost to ensure headers on all responses/preflights)
+cors_origins = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3000,http://localhost:3001,http://localhost:3002,http://127.0.0.1:3000,http://127.0.0.1:3001,http://127.0.0.1:3002"
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://localhost:3001",
-        "http://localhost:3002",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:3001",
-        "http://127.0.0.1:3002",
-    ],
+    allow_origins=[o.strip() for o in cors_origins],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID", "Accept"],
 )
-
-@app.on_event("startup")
-async def startup():
-    # ensure infra bits exist
-    if not settings.neo4j_password:
-        print("[startup] WARNING: NEO4J_PASSWORD not set. Neo4j operations will fail.")
-        print("[startup] Please set NEO4J_PASSWORD in your .env file or environment variables.")
-    try:
-        ensure_ddl(settings.neo4j_uri, settings.neo4j_user, settings.neo4j_password)
-    except Exception as e:
-        print(f"[startup] Neo4j DDL ensure failed: {e}")
-    
-    # Load technique cache after Neo4j is ready
-    try:
-        techniques_loaded = technique_cache.load_from_neo4j(
-            settings.neo4j_uri, 
-            settings.neo4j_user, 
-            settings.neo4j_password
-        )
-        logger.info(f"TechniqueCache initialized with {techniques_loaded} techniques")
-    except Exception as e:
-        logger.error(f"Failed to load technique cache: {e}")
-        # Continue startup even if cache fails - will fall back to direct queries
-    # Load actor cache for lookups/search
-    try:
-        actors_loaded = actor_cache.load_from_neo4j(
-            settings.neo4j_uri,
-            settings.neo4j_user,
-            settings.neo4j_password,
-        )
-        logger.info(f"ActorCache initialized with {actors_loaded} actors")
-    except Exception as e:
-        logger.error(f"Failed to load actor cache: {e}")
-    
-    try:
-        ensure_attack_nodes_index(settings.opensearch_url, settings.os_index_nodes)
-        ensure_attack_edges_index(settings.opensearch_url)
-        ensure_attack_flows_index(settings.opensearch_url)
-        
-        # Initialize reports index
-        from opensearchpy import OpenSearch
-        os_client = OpenSearch(
-            hosts=[settings.opensearch_url],
-            http_auth=(settings.opensearch_user, settings.opensearch_password),
-            use_ssl=False,
-            verify_certs=False
-        )
-        index_manager = OpenSearchIndexManager(os_client)
-        index_manager.create_reports_index()
-    except Exception as e:
-        print(f"[startup] OpenSearch index ensure failed: {e}")
-    
-    # Start the job processor for async report processing
-    try:
-        job_processor = get_job_processor()
-        await job_processor.start()
-        logger.info("Job processor started successfully")
-    except Exception as e:
-        logger.error(f"Failed to start job processor: {e}")
-
-    # Initialize vector update system
-    try:
-        await initialize_vector_updates()
-        logger.info("Vector update system initialized")
-    except Exception as e:
-        logger.error(f"Failed to initialize vector update system: {e}")
-
-@app.on_event("shutdown")
-async def shutdown():
-    # Stop the job processor gracefully
-    try:
-        job_processor = get_job_processor()
-        await job_processor.stop()
-        logger.info("Job processor stopped successfully")
-    except Exception as e:
-        logger.error(f"Failed to stop job processor: {e}")
-
-    # Shutdown vector update system
-    try:
-        await shutdown_vector_updates()
-        logger.info("Vector update system stopped")
-    except Exception as e:
-        logger.error(f"Failed to stop vector update system: {e}")
 
 # Configure API tags for better organization
 tags_metadata = [

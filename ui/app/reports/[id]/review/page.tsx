@@ -13,6 +13,7 @@ import {
 import type { Report, UnifiedReviewDecision } from "@/lib/report-types";
 import { isExtractionComplete } from "@/lib/report-types";
 import { UnifiedReview } from "@/components/reports/unified-review";
+import { API_BASE_URL } from '@/lib/config';
 
 export default function ReportReviewPage() {
   const params = useParams();
@@ -30,7 +31,7 @@ export default function ReportReviewPage() {
 
   const fetchReport = async () => {
     try {
-      const response = await fetch(`http://localhost:8000/v1/reports/${reportId}`);
+      const response = await fetch(`${API_BASE_URL}/v1/reports/${reportId}`);
       if (!response.ok) {
         throw new Error(`Failed to fetch report: ${response.statusText}`);
       }
@@ -55,7 +56,7 @@ export default function ReportReviewPage() {
 
   const handleSubmitReview = async (decisions: UnifiedReviewDecision[], globalNotes: string) => {
     try {
-      const response = await fetch(`http://localhost:8000/v1/reports/${reportId}/unified-review`, {
+      const response = await fetch(`${API_BASE_URL}/v1/reports/${reportId}/unified-review`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

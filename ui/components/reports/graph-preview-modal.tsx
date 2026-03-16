@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { API_BASE_URL } from '@/lib/config';
 import {
   Dialog,
   DialogContent,
@@ -87,7 +88,7 @@ export function GraphPreviewModal({
 
     try {
       const response = await fetch(
-        `http://localhost:8000/v1/reports/${reportId}/graph-simulation`,
+        `${API_BASE_URL}/v1/reports/${reportId}/graph-simulation`,
         {
           method: 'POST',
           headers: {
