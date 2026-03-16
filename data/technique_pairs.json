@@ -1,0 +1,49 @@
+{
+  "technique_pairs": [
+    {"if_found": "T1566", "check_for": ["T1204"], "reason": "Spearphishing usually requires User Execution"},
+    {"if_found": "T1566.001", "check_for": ["T1204.002"], "reason": "Spearphishing Attachment requires User Execution: Malicious File"},
+    {"if_found": "T1566.002", "check_for": ["T1204.001"], "reason": "Spearphishing Link requires User Execution: Malicious Link"},
+    {"if_found": "T1027", "check_for": ["T1140"], "reason": "Obfuscated files are deobfuscated at runtime"},
+    {"if_found": "T1053", "check_for": ["T1059"], "reason": "Scheduled Tasks typically invoke command interpreters"},
+    {"if_found": "T1021.001", "check_for": ["T1115", "T1039", "T1557"], "reason": "RDP enables clipboard, shared drive, and MitM attacks"},
+    {"if_found": "T1059.001", "check_for": ["T1564.003"], "reason": "PowerShell often uses hidden windows"}
+  ],
+  "red_flag_phrases": [
+    {"phrase": "downloads and executes", "techniques": ["T1105", "T1059"], "reason": "Ingress Tool Transfer + Execution"},
+    {"phrase": "downloads and runs", "techniques": ["T1105", "T1059"], "reason": "Ingress Tool Transfer + Execution"},
+    {"phrase": "fetches and executes", "techniques": ["T1105", "T1059"], "reason": "Ingress Tool Transfer + Execution"},
+    {"phrase": "persistence via task", "techniques": ["T1053", "T1059"], "reason": "Scheduled Task + Interpreter"},
+    {"phrase": "persistence via scheduled", "techniques": ["T1053", "T1059"], "reason": "Scheduled Task + Interpreter"},
+    {"phrase": "c2 over https", "techniques": ["T1071.001", "T1573.002"], "reason": "Web Protocols + Asymmetric Crypto"},
+    {"phrase": "c2 over http", "techniques": ["T1071.001"], "reason": "Web Protocols"},
+    {"phrase": "command and control over https", "techniques": ["T1071.001", "T1573.002"], "reason": "Web Protocols + Asymmetric Crypto"},
+    {"phrase": "compromised infrastructure", "techniques": ["T1584.004"], "reason": "Compromised Server"},
+    {"phrase": "compromised server", "techniques": ["T1584.004"], "reason": "Compromised Server"},
+    {"phrase": "redirects traffic", "techniques": ["T1572", "T1090"], "reason": "Protocol Tunneling or Proxy"},
+    {"phrase": "harvests credentials via fake", "techniques": ["T1598.003"], "reason": "Credential harvesting for Recon"},
+    {"phrase": "credential harvesting", "techniques": ["T1598.003"], "reason": "Credential harvesting for Recon"},
+    {"phrase": "fake login page", "techniques": ["T1598.003"], "reason": "Spearphishing Link for Recon"},
+    {"phrase": "encoded command", "techniques": ["T1027.010", "T1059.001"], "reason": "Command Obfuscation + PowerShell"},
+    {"phrase": "base64 encoded", "techniques": ["T1027.010", "T1140"], "reason": "Command Obfuscation + Deobfuscation"},
+    {"phrase": "hidden window", "techniques": ["T1564.003"], "reason": "Hidden Window"},
+    {"phrase": "dynamic dns", "techniques": ["T1568.002", "T1583.006"], "reason": "DGA + Web Services"},
+    {"phrase": "typosquat", "techniques": ["T1583.001"], "reason": "Domains"},
+    {"phrase": "lookalike domain", "techniques": ["T1583.001"], "reason": "Domains"},
+    {"phrase": "ssh tunnel", "techniques": ["T1572"], "reason": "Protocol Tunneling"},
+    {"phrase": "port forward", "techniques": ["T1572"], "reason": "Protocol Tunneling"},
+    {"phrase": "impersonated", "techniques": ["T1656"], "reason": "Impersonation"},
+    {"phrase": "posed as", "techniques": ["T1656"], "reason": "Impersonation"},
+    {"phrase": "masqueraded", "techniques": ["T1036.005"], "reason": "Match Legitimate Name"}
+  ],
+  "commonly_missed": {
+    "-windowstyle hidden": ["T1564.003"],
+    "-w hidden": ["T1564.003"],
+    "-encodedcommand": ["T1027.010"],
+    "-enc ": ["T1027.010"],
+    "-noprofile": ["T1059.001"],
+    "-ep bypass": ["T1059.001"],
+    ".rdp": ["T1021.001"],
+    "clipboard redirect": ["T1115"],
+    "drive mapping": ["T1039"]
+  }
+}
