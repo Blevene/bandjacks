@@ -188,7 +188,7 @@ async def ingest_report(request: IngestRequest):
         
         # Check content size and redirect to async if too large
         if len(text_content) > 5000:
-            return HTTPException(
+            raise HTTPException(
                 status_code=400,
                 detail="Content too large for synchronous processing. Use /ingest_async endpoint."
             )
