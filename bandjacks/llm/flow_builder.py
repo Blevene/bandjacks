@@ -305,24 +305,72 @@ class FlowBuilder:
     def build_from_campaign(self, campaign_id: str, mode: str = "sequential") -> Dict[str, Any]:
         """
         Build a flow from a Campaign's observed behaviors.
-        
+
         mode:
           - "sequential": order by temporal hints and tactic order
           - "cooccurrence": treat as unordered; create weak NEXT edges
         """
+        query = """
+            MATCH (c:Campaign {stix_id: $entity_id})
+            OPTIONAL MATCH (c)-[:USES]->(ap:AttackPattern)
+            RETURN collect(DISTINCT ap) as techniques, c.name as entity_name
+        """
+        return self._build_from_graph_entity(
+            query=query,
+            entity_id=campaign_id,
+            mode=mode,
+            confidence=MEDIUM_CONFIDENCE,
+            cooccurrence_probability=DEFAULT_PROBABILITY,
+            entity_label="campaign"
+        )
+
+    def build_from_report(self, report_id: str, mode: str = "sequential") -> Dict[str, Any]:
+        """
+        Build a flow from a Report's described techniques (sequential or cooccurrence).
+        Uses any described AttackPatterns linked via DESCRIBES.
+        """
+        query = """
+            MATCH (r:Report {stix_id: $entity_id})-[:DESCRIBES]->(ap:AttackPattern)
+            RETURN collect(DISTINCT ap) as techniques, r.name as entity_name
+        """
+        return self._build_from_graph_entity(
+            query=query,
+            entity_id=report_id,
+            mode=mode,
+            confidence=DEFAULT_CONFIDENCE,
+            cooccurrence_probability=LOW_PROBABILITY,
+            entity_label="report"
+        )
+
+    def _build_from_graph_entity(
+        self,
+        query: str,
+        entity_id: str,
+        mode: str,
+        confidence: float,
+        cooccurrence_probability: float,
+        entity_label: str
+    ) -> Dict[str, Any]:
+        """
+        Shared helper for building flows from graph entities (campaigns, reports, etc.).
+
+        Args:
+            query: Cypher query that returns ``techniques`` and ``entity_name`` columns.
+                   Must accept an ``$entity_id`` parameter.
+            entity_id: STIX ID of the source entity.
+            mode: "sequential" or "cooccurrence".
+            confidence: Default confidence score for extracted steps.
+            cooccurrence_probability: Edge probability used in co-occurrence mode.
+            entity_label: Human-readable label for error messages (e.g. "campaign").
+
+        Returns:
+            Flow data with episode and actions.
+        """
         with self.driver.session() as session:
-            # Fetch techniques used by the campaign
-            result = session.run(
-                """
-                MATCH (c:Campaign {stix_id: $cid})
-                OPTIONAL MATCH (c)-[:USES]->(ap:AttackPattern)
-                RETURN collect(DISTINCT ap) as techniques, c.name as cname
-                """,
-                cid=campaign_id
-            )
+            result = session.run(query, entity_id=entity_id)
             rec = result.single()
             ap_nodes = rec["techniques"] if rec else []
-            campaign_name = rec["cname"] if rec else None
+            entity_name = rec["entity_name"] if rec else None
 
         steps: List[Dict[str, Any]] = []
         for ap in ap_nodes or []:
@@ -333,11 +381,11 @@ class FlowBuilder:
                 "technique_id": apd.get("stix_id"),
                 "name": apd.get("name", "Unknown"),
                 "description": (apd.get("description", "") or "")[:200],
-                "confidence": MEDIUM_CONFIDENCE
+                "confidence": confidence
             })
 
         if not steps:
-            raise ValueError(f"No techniques found for campaign {campaign_id}")
+            raise ValueError(f"No techniques found for {entity_label} {entity_id}")
 
         if mode == "sequential":
             ordered_steps = self._order_steps(steps)
@@ -356,76 +404,15 @@ class FlowBuilder:
                     edges.append({
                         "source": ordered_steps[i]["action_id"],
                         "target": ordered_steps[j]["action_id"],
-                        "probability": DEFAULT_PROBABILITY,
+                        "probability": cooccurrence_probability,
                         "rationale": "co-occurrence"
                     })
 
         episode = self._create_episode(
-            name=(campaign_name or f"Flow from {campaign_id}"),
+            name=(entity_name or f"Flow from {entity_id}"),
             steps=ordered_steps,
             edges=edges,
-            source_id=campaign_id,
-            llm_synthesized=False
-        )
-        return episode
-
-    def build_from_report(self, report_id: str, mode: str = "sequential") -> Dict[str, Any]:
-        """
-        Stub: Build a flow from a Report's described techniques (sequential or cooccurrence).
-        Uses any described AttackPatterns linked via DESCRIBES.
-        """
-        with self.driver.session() as session:
-            result = session.run(
-                """
-                MATCH (r:Report {stix_id: $rid})-[:DESCRIBES]->(ap:AttackPattern)
-                RETURN collect(DISTINCT ap) as techniques, r.name as rname
-                """,
-                rid=report_id
-            )
-            rec = result.single()
-            ap_nodes = rec["techniques"] if rec else []
-            report_name = rec["rname"] if rec else None
-
-        steps: List[Dict[str, Any]] = []
-        for ap in ap_nodes or []:
-            if not ap:
-                continue
-            apd = dict(ap)
-            steps.append({
-                "technique_id": apd.get("stix_id"),
-                "name": apd.get("name", "Unknown"),
-                "description": (apd.get("description", "") or "")[:200],
-                "confidence": DEFAULT_CONFIDENCE
-            })
-
-        if not steps:
-            raise ValueError(f"No techniques found for report {report_id}")
-
-        if mode == "sequential":
-            ordered_steps = self._order_steps(steps)
-            edges = self._compute_next_edges(ordered_steps)
-        else:
-            ordered_steps = []
-            for i, s in enumerate(steps):
-                s_copy = dict(s)
-                s_copy["order"] = i + 1
-                s_copy["action_id"] = f"action--{uuid.uuid4()}"
-                ordered_steps.append(s_copy)
-            edges: List[Dict[str, Any]] = []
-            for i in range(len(ordered_steps)):
-                for j in range(i + 1, len(ordered_steps)):
-                    edges.append({
-                        "source": ordered_steps[i]["action_id"],
-                        "target": ordered_steps[j]["action_id"],
-                        "probability": LOW_PROBABILITY,
-                        "rationale": "co-occurrence"
-                    })
-
-        episode = self._create_episode(
-            name=(report_name or f"Flow from {report_id}"),
-            steps=ordered_steps,
-            edges=edges,
-            source_id=report_id,
+            source_id=entity_id,
             llm_synthesized=False
         )
         return episode
