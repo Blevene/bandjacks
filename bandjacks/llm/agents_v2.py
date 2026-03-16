@@ -902,6 +902,45 @@ class ConsolidatorAgent(ConsolidatorBase):
         
         logger.info(f"ConsolidatorAgent: Consolidated into {len(mem.techniques)} techniques")
 
+        # Post-consolidation: check for missing technique pairs
+        try:
+            pair_validator = TechniquePairValidator()
+            found_ids = set(mem.techniques.keys())
+            suggestions = pair_validator.suggest_missing(found_ids)
+
+            # Also check red flags and commonly missed in original text
+            if mem.document_text:
+                for rf in pair_validator.match_red_flags(mem.document_text):
+                    for tid in rf["techniques"]:
+                        if tid not in found_ids and not any(t.startswith(tid) for t in found_ids):
+                            suggestions.append({
+                                "technique_id": tid,
+                                "reason": f"Red flag: '{rf['phrase']}' — {rf['reason']}",
+                                "triggered_by": "red-flag",
+                            })
+
+                for cm in pair_validator.match_commonly_missed(mem.document_text):
+                    for tid in cm["techniques"]:
+                        if tid not in found_ids:
+                            suggestions.append({
+                                "technique_id": tid,
+                                "reason": f"Commonly missed: '{cm['indicator']}'",
+                                "triggered_by": "commonly-missed",
+                            })
+
+            # Deduplicate suggestions
+            if suggestions:
+                seen = set()
+                unique = []
+                for s in suggestions:
+                    if s["technique_id"] not in seen:
+                        seen.add(s["technique_id"])
+                        unique.append(s)
+                logger.info(f"Pair validator suggests {len(unique)} potentially missing techniques")
+                mem.metadata["pair_suggestions"] = unique
+        except Exception as e:
+            logger.warning(f"Technique pair validation failed: {e}")
+
 
 class KillChainSuggestionsAgent:
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
