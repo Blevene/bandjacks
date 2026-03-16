@@ -91,37 +91,15 @@ logger.info(f"Logging configured: level={LOG_LEVEL}, file={LOG_FILE}")
 
 app = FastAPI(
     title="Bandjacks API",
-    description="""
-    ## Cyber Threat Defense World Modeling API
-    
-    Bandjacks provides comprehensive cyber threat intelligence operations including:
-    
-    - **ATT&CK Data Management**: Load and manage MITRE ATT&CK releases
-    - **Natural Language Search**: Hybrid vector and graph search for CTI
-    - **Graph Exploration**: Traverse and analyze threat relationships
-    - **Document Extraction**: Extract CTI entities from documents using LLMs
-    - **Review Workflows**: Human-in-the-loop validation and feedback
-    - **Defense Recommendations**: D3FEND integration (coming in Sprint 4)
-    
-    ### Key Features
-    
-    - STIX 2.1 compliant data model
-    - ADM (ATT&CK Data Model) validation
-    - Hybrid search with vector embeddings and graph patterns
-    - LLM-powered extraction with evidence grounding
-    - Review queue for candidate validation
-    - Performance optimized with caching and connection pooling
-    
-    ### Authentication
-    
-    Currently no authentication required (development mode).
-    Production deployments should implement appropriate authentication.
-    
-    ### Rate Limiting
-    
-    No rate limiting currently implemented.
-    Production deployments should add rate limiting.
-    """,
+    description="""Bandjacks Cyber Threat Defense World Modeling API.
+
+Provides endpoints for threat intelligence ingestion, knowledge graph
+management, attack flow modeling, defense analysis, and analytics.
+
+Authentication: JWT/OIDC supported (configurable via ENABLE_AUTH env var).
+Rate limiting: Redis-backed sliding window per client endpoint.
+Tracing: Correlation ID propagation via X-Request-ID header.
+""",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
