@@ -139,119 +139,124 @@ class RedisJobStore:
     
     def claim_and_get_next_job(self, worker_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Atomically claim the next available job.
-        
+
         This method uses Redis atomic operations to ensure only one worker
         can claim a job. It also checks for abandoned jobs to reclaim.
-        
+
         Args:
             worker_id: Worker identifier (uses self.worker_id if not provided)
-            
+
         Returns:
             Job data if claimed successfully, None if no jobs available
         """
         worker_id = worker_id or self.worker_id
-        
+
         # First, try to reclaim abandoned jobs
         self._reclaim_abandoned_jobs()
-        
-        # Use Redis transaction to atomically claim a job
-        pipeline = self.redis.pipeline()
-        
-        # Pop from queue
-        pipeline.lpop(self.QUEUE_KEY)
-        result = pipeline.execute()
-        
-        job_id = result[0]
-        if not job_id:
-            return None
-        
-        # Handle bytes if not decoded
-        if isinstance(job_id, bytes):
-            job_id = job_id.decode('utf-8')
-        
-        # Try to acquire lock on this job
-        lock_key = f"{self.LOCK_PREFIX}{job_id}"
-        lock = Lock(self.redis, lock_key, timeout=self.lock_timeout, thread_local=False)
-        
-        if not lock.acquire(blocking=False):
-            # Another worker got the lock, re-queue the job
-            self.redis.rpush(self.QUEUE_KEY, job_id)
-            logger.debug(f"Failed to acquire lock for job {job_id}")
-            return None
-        
-        try:
-            # Get job data
-            job_key = f"{self.JOB_PREFIX}{job_id}"
-            job_data = self.redis.get(job_key)
-            
-            if not job_data:
-                logger.warning(f"Job {job_id} not found after claiming")
+
+        max_attempts = 50  # Safety limit to avoid infinite loop
+        for _ in range(max_attempts):
+            # Use Redis transaction to atomically claim a job
+            pipeline = self.redis.pipeline()
+
+            # Pop from queue
+            pipeline.lpop(self.QUEUE_KEY)
+            result = pipeline.execute()
+
+            job_id = result[0]
+            if not job_id:
                 return None
-            
-            # Parse job data
-            if isinstance(job_data, bytes):
-                job_data = job_data.decode('utf-8')
-            job = json.loads(job_data)
-            
-            # Check if job is already completed
-            if job.get("status") == "completed":
-                logger.warning(f"✅ Job {job_id} is already completed, skipping claim")
-                # Release lock and don't process
-                lock.release()
-                # Clean up if it's in processing set
-                self.redis.srem(self.PROCESSING_SET, job_id)
-                # Try next job
-                return self.claim_and_get_next_job(worker_id)
-            
-            # Check if job is failed (might want to skip these too)
-            if job.get("status") == "failed":
-                logger.warning(f"Job {job_id} is failed, skipping")
-                lock.release()
-                # Try next job
-                return self.claim_and_get_next_job(worker_id)
-            
-            # Check if job is in retry state (waiting to retry)
-            if job.get("status") == "retrying":
-                # Check if it's owned by current worker
-                if job.get("worker_id") == worker_id:
-                    logger.info(f"⚡ Job {job_id} is owned by this worker and in retry state - reclaiming for retry")
-                    # This worker owns it - allow reclaim for retry
-                else:
-                    logger.info(f"⏳ Job {job_id} is in retry state by worker {job.get('worker_id')}, skipping")
+
+            # Handle bytes if not decoded
+            if isinstance(job_id, bytes):
+                job_id = job_id.decode('utf-8')
+
+            # Try to acquire lock on this job
+            lock_key = f"{self.LOCK_PREFIX}{job_id}"
+            lock = Lock(self.redis, lock_key, timeout=self.lock_timeout, thread_local=False)
+
+            if not lock.acquire(blocking=False):
+                # Another worker got the lock, re-queue the job
+                self.redis.rpush(self.QUEUE_KEY, job_id)
+                logger.debug(f"Failed to acquire lock for job {job_id}")
+                return None
+
+            try:
+                # Get job data
+                job_key = f"{self.JOB_PREFIX}{job_id}"
+                job_data = self.redis.get(job_key)
+
+                if not job_data:
+                    logger.warning(f"Job {job_id} not found after claiming")
+                    return None
+
+                # Parse job data
+                if isinstance(job_data, bytes):
+                    job_data = job_data.decode('utf-8')
+                job = json.loads(job_data)
+
+                # Check if job is already completed
+                if job.get("status") == "completed":
+                    logger.warning(f"Job {job_id} is already completed, skipping claim")
+                    # Release lock and don't process
                     lock.release()
-                    # Put it back in queue for later
-                    self.redis.rpush(self.QUEUE_KEY, job_id)
+                    # Clean up if it's in processing set
+                    self.redis.srem(self.PROCESSING_SET, job_id)
                     # Try next job
-                    return self.claim_and_get_next_job(worker_id)
-            
-            # Update job with claim information
-            job.update({
-                "status": "processing",
-                "worker_id": worker_id,
-                "claimed_at": datetime.utcnow().isoformat() + "Z",
-                "started_at": datetime.utcnow().isoformat() + "Z",
-                "message": f"Processing by worker {worker_id}"
-            })
-            
-            # Save updated job
-            self.redis.set(job_key, json.dumps(job))
-            
-            # Add to processing set
-            self.redis.sadd(self.PROCESSING_SET, job_id)
-            
-            # Set initial heartbeat
-            self._update_heartbeat(job_id, worker_id)
-            
-            logger.info(f"Worker {worker_id} claimed job {job_id}")
-            return job
-            
-        except Exception as e:
-            # Release lock on error
-            lock.release()
-            # Re-queue the job
-            self.redis.rpush(self.QUEUE_KEY, job_id)
-            logger.error(f"Error claiming job {job_id}: {e}")
-            return None
+                    continue
+
+                # Check if job is failed (might want to skip these too)
+                if job.get("status") == "failed":
+                    logger.warning(f"Job {job_id} is failed, skipping")
+                    lock.release()
+                    # Try next job
+                    continue
+
+                # Check if job is in retry state (waiting to retry)
+                if job.get("status") == "retrying":
+                    # Check if it's owned by current worker
+                    if job.get("worker_id") == worker_id:
+                        logger.info(f"Job {job_id} is owned by this worker and in retry state - reclaiming for retry")
+                        # This worker owns it - allow reclaim for retry
+                    else:
+                        logger.info(f"Job {job_id} is in retry state by worker {job.get('worker_id')}, skipping")
+                        lock.release()
+                        # Put it back in queue for later
+                        self.redis.rpush(self.QUEUE_KEY, job_id)
+                        # Try next job
+                        continue
+
+                # Update job with claim information
+                job.update({
+                    "status": "processing",
+                    "worker_id": worker_id,
+                    "claimed_at": datetime.utcnow().isoformat() + "Z",
+                    "started_at": datetime.utcnow().isoformat() + "Z",
+                    "message": f"Processing by worker {worker_id}"
+                })
+
+                # Save updated job
+                self.redis.set(job_key, json.dumps(job))
+
+                # Add to processing set
+                self.redis.sadd(self.PROCESSING_SET, job_id)
+
+                # Set initial heartbeat
+                self._update_heartbeat(job_id, worker_id)
+
+                logger.info(f"Worker {worker_id} claimed job {job_id}")
+                return job
+
+            except Exception as e:
+                # Release lock on error
+                lock.release()
+                # Re-queue the job
+                self.redis.rpush(self.QUEUE_KEY, job_id)
+                logger.error(f"Error claiming job {job_id}: {e}")
+                return None
+
+        logger.warning(f"Worker {worker_id} exhausted {max_attempts} claim attempts without finding a processable job")
+        return None
     
     def update_heartbeat(self, job_id: str, worker_id: Optional[str] = None) -> bool:
         """Update worker heartbeat for a job.
