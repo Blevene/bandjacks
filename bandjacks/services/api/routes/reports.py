@@ -160,6 +160,99 @@ class ReportsListResponse(BaseModel):
 
 
 # ============================================================================
+# INTERNAL HELPERS FOR SYNC INGESTION
+# ============================================================================
+
+
+async def _wait_for_job(
+    job_store,
+    job_id: str,
+    timeout: float = 180.0,
+    poll_interval: float = 1.0,
+) -> Dict[str, Any]:
+    """Poll Redis until *job_id* reaches a terminal state.
+
+    Yields the event loop between polls so other requests are not
+    blocked.  Returns the full job dict on success.
+
+    Raises:
+        HTTPException 408 on timeout, 500 on job failure or
+        if the job vanishes from the store.
+    """
+    elapsed = 0.0
+    while elapsed < timeout:
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+
+        job_data = job_store.get(job_id)
+        if not job_data:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Job {job_id} disappeared from store",
+            )
+
+        if job_data["status"] == "completed":
+            return job_data
+        if job_data["status"] == "failed":
+            error_msg = job_data.get("error", "Unknown error")
+            logger.error(f"Job {job_id} failed: {error_msg}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Extraction failed: {error_msg}",
+            )
+
+    raise HTTPException(
+        status_code=408,
+        detail=f"Job {job_id} timed out after {timeout}s",
+    )
+
+
+def _build_ingest_response(job_data: Dict[str, Any], job_id: str) -> IngestResponse:
+    """Construct an ``IngestResponse`` from a completed job dict.
+
+    Fetches the full report document from OpenSearch so that
+    entities, claims, and rubric information are included in the
+    response.
+    """
+    result = job_data.get("result", {})
+    report_id = result.get("report_id", f"report--{job_id}")
+    techniques_count = result.get("techniques_count", 0)
+
+    # Fetch full report data from OpenSearch for response fields
+    os_client = get_opensearch_client()
+    os_store = OpenSearchReportStore(os_client)
+    report_doc = os_store.get_report(report_id)
+
+    if report_doc:
+        extraction = report_doc.get("extraction_result", {})
+        claims = extraction.get("extraction_claims", [])
+        entities = extraction.get("entities", {})
+    else:
+        claims = []
+        entities = {}
+
+    # Evaluate rubric from the extraction summary
+    extraction_summary = {"techniques_count": techniques_count}
+    rubric = evaluate_rubric(extraction_summary)
+    rubric_evidence = generate_rubric_evidence(extraction_summary, rubric)
+
+    return IngestResponse(
+        report_id=report_id,
+        provisional=rubric.criteria_met < 2,
+        rubric={"criteria_met": rubric.criteria_met},
+        rubric_evidence=rubric_evidence,
+        entities=entities,
+        claims=claims,
+        trace_id=job_id,
+        extraction_metrics={
+            "techniques_count": techniques_count,
+            "claims_count": result.get("claims_count", len(claims)),
+            "flow_generated": result.get("flow_generated", False),
+        },
+    )
+
+
+# ============================================================================
 # SECTION 1: INGESTION ENDPOINTS (SYNC & ASYNC)
 # ============================================================================
 
@@ -217,64 +310,10 @@ async def ingest_report(request: IngestRequest):
     )
 
     # --- poll until the job finishes -----------------------------------
-    max_wait = 180  # seconds
-    elapsed = 0.0
-    poll_interval = 1.0
-
-    while elapsed < max_wait:
-        await asyncio.sleep(poll_interval)
-        elapsed += poll_interval
-
-        job_data = job_store.get(job_id)
-        if not job_data:
-            raise HTTPException(status_code=500, detail=f"Job {job_id} disappeared from store")
-
-        if job_data["status"] == "completed":
-            break
-        if job_data["status"] == "failed":
-            error_msg = job_data.get("error", "Unknown error")
-            logger.error(f"Job {job_id} failed: {error_msg}")
-            raise HTTPException(status_code=500, detail=f"Extraction failed: {error_msg}")
-    else:
-        raise HTTPException(status_code=408, detail=f"Job {job_id} timed out after {max_wait}s")
+    job_data = await _wait_for_job(job_store, job_id)
 
     # --- build IngestResponse from completed job result ----------------
-    result = job_data.get("result", {})
-    report_id = result.get("report_id", f"report--{job_id}")
-    techniques_count = result.get("techniques_count", 0)
-
-    # Fetch full report data from OpenSearch for response fields
-    os_client = get_opensearch_client()
-    os_store = OpenSearchReportStore(os_client)
-    report_doc = os_store.get_report(report_id)
-
-    if report_doc:
-        extraction = report_doc.get("extraction_result", {})
-        claims = extraction.get("extraction_claims", [])
-        entities = extraction.get("entities", {})
-    else:
-        claims = []
-        entities = {}
-
-    # Evaluate rubric from the extraction summary
-    extraction_summary = {"techniques_count": techniques_count}
-    rubric = evaluate_rubric(extraction_summary)
-    rubric_evidence = generate_rubric_evidence(extraction_summary, rubric)
-
-    return IngestResponse(
-        report_id=report_id,
-        provisional=rubric.criteria_met < 2,
-        rubric={"criteria_met": rubric.criteria_met},
-        rubric_evidence=rubric_evidence,
-        entities=entities,
-        claims=claims,
-        trace_id=job_id,
-        extraction_metrics={
-            "techniques_count": techniques_count,
-            "claims_count": result.get("claims_count", len(claims)),
-            "flow_generated": result.get("flow_generated", False),
-        },
-    )
+    return _build_ingest_response(job_data, job_id)
 
 
 @router.post(
@@ -289,47 +328,60 @@ async def ingest_report_upload(
     use_batch_mapper: bool = Form(True),
     skip_verification: bool = Form(False)
 ):
-    """Synchronous report ingestion from file upload."""
-    
-    # Validate file type
+    """Synchronous report ingestion from file upload.
+
+    Saves the uploaded file, queues the extraction job via Redis,
+    and polls until the job completes.
+    """
+
+    # --- validate file type --------------------------------------------
     allowed_types = {".pdf", ".txt", ".md", ".markdown"}
     file_ext = Path(file.filename).suffix.lower()
     if file_ext not in allowed_types:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {file_ext}"
+            detail=f"Unsupported file type: {file_ext}",
         )
-    
-    # Process file
+
+    job_id = f"job-{uuid.uuid4().hex[:8]}"
+
+    # --- save uploaded file to disk ------------------------------------
     content = await file.read()
-    
-    if file_ext == ".pdf":
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
-        try:
-            text_content = load_pdf_text(tmp_path)
-        finally:
-            os.unlink(tmp_path)
-    else:
-        text_content = content.decode("utf-8", errors="ignore")
-    
-    # Check size and redirect if needed
-    if len(text_content) > 5000:
+    temp_dir = tempfile.gettempdir()
+    temp_path = os.path.join(temp_dir, f"{job_id}{file_ext}")
+
+    try:
+        with open(temp_path, "wb") as buffer:
+            buffer.write(content)
+        file_size = os.path.getsize(temp_path)
+    except Exception as e:
+        logger.error(f"Failed to save uploaded file: {e}")
         raise HTTPException(
-            status_code=400,
-            detail="File too large for synchronous processing. Use /ingest_file_async endpoint."
+            status_code=500,
+            detail=f"Failed to save file: {str(e)}",
         )
-    
-    # Use the main ingest function
-    request = IngestRequest(
-        text=text_content,
-        name=file.filename,
-        use_batch_mapper=use_batch_mapper,
-        skip_verification=skip_verification
+
+    # --- enqueue job in Redis ------------------------------------------
+    job_store = get_redis_job_store()
+    job_store.create_job(
+        job_id=job_id,
+        file_path=temp_path,
+        file_name=file.filename,
+        file_ext=file_ext,
+        file_size=file_size,
+        config={
+            "use_batch_mapper": use_batch_mapper,
+            "skip_verification": skip_verification,
+            "auto_generate_flow": True,
+        },
+        file_content=content,  # Store content in Redis for cross-worker access
     )
-    
-    return await ingest_report(request)
+
+    # --- poll until the job finishes -----------------------------------
+    job_data = await _wait_for_job(job_store, job_id)
+
+    # --- build IngestResponse from completed job result ----------------
+    return _build_ingest_response(job_data, job_id)
 
 
 @router.post(
