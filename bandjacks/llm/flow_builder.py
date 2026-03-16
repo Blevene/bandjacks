@@ -509,9 +509,33 @@ class FlowBuilder:
         
         # Convert steps to actions (support 'steps', 'attack_steps', or 'attack_flow')
         actions = []
-        steps = (llm_flow.get("steps") or 
-                llm_flow.get("attack_steps") or 
+        steps = (llm_flow.get("steps") or
+                llm_flow.get("attack_steps") or
                 llm_flow.get("attack_flow", []))
+
+        # Batch-fetch all T-number technique IDs in one query (N+1 fix)
+        t_number_ids = []
+        for step in steps:
+            entity = step.get("entity", {})
+            tid = entity.get("pk") or entity.get("id", "")
+            if isinstance(tid, str) and tid.startswith("T") and not tid.startswith("attack-pattern--"):
+                t_number_ids.append(tid)
+
+        technique_lookup: Dict[str, Dict[str, Any]] = {}
+        if t_number_ids:
+            with self.driver.session() as session:
+                result = session.run(
+                    "UNWIND $ext_ids AS ext_id "
+                    "MATCH (t:AttackPattern) WHERE t.external_id = ext_id "
+                    "RETURN t.external_id AS ext_id, t.stix_id AS stix_id, t.name AS name",
+                    ext_ids=list(set(t_number_ids))
+                )
+                for rec in result:
+                    technique_lookup[rec["ext_id"]] = {
+                        "stix_id": rec["stix_id"],
+                        "name": rec["name"]
+                    }
+
         for step in steps:
             action_id = f"action--{uuid.uuid4()}"
             
@@ -522,19 +546,13 @@ class FlowBuilder:
             
             # Try to get full STIX ID if it's just a technique number
             if technique_id.startswith("T") and not technique_id.startswith("attack-pattern--"):
-                # Query Neo4j for full STIX ID
-                with self.driver.session() as session:
-                    result = session.run(
-                        "MATCH (t:AttackPattern) WHERE t.external_id = $ext_id "
-                        "RETURN t.stix_id as stix_id, t.name as name LIMIT 1",
-                        ext_id=technique_id
-                    )
-                    record = result.single()
-                    if record:
-                        technique_id = record["stix_id"]
-                        technique_name = record["name"]
-                    else:
-                        technique_name = entity.get("label", "Unknown")
+                # Use batch-fetched lookup dict instead of per-step query
+                if technique_id in technique_lookup:
+                    info = technique_lookup[technique_id]
+                    technique_id = info["stix_id"]
+                    technique_name = info["name"]
+                else:
+                    technique_name = entity.get("label", "Unknown")
             else:
                 technique_name = entity.get("label", "Unknown")
             
