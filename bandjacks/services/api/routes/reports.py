@@ -171,109 +171,110 @@ class ReportsListResponse(BaseModel):
     description="Ingest a threat intelligence report from text or URL (synchronous)."
 )
 async def ingest_report(request: IngestRequest):
-    """Synchronous report ingestion from text or URL."""
-    
-    trace_id = str(uuid.uuid4())[:8]
-    
+    """Synchronous report ingestion from text or URL.
+
+    Queues the extraction job via Redis and polls until complete,
+    releasing the event loop between polls so other requests can
+    be served concurrently.
+    """
+
+    # --- validate input ------------------------------------------------
+    if request.text:
+        text_content = request.text
+    elif request.url:
+        raise HTTPException(status_code=400, detail="URL ingestion not currently implemented")
+    else:
+        raise HTTPException(status_code=400, detail="Either text or url must be provided")
+
+    job_id = f"job-{uuid.uuid4().hex[:8]}"
+
+    # --- save text to a temp file (same as ingest_report_async) --------
+    temp_dir = tempfile.gettempdir()
+    temp_path = os.path.join(temp_dir, f"{job_id}.txt")
+
     try:
-        # Get text content
-        if request.text:
-            text_content = request.text
-            source_info = {"type": "inline"}
-        elif request.url:
-            # URL ingestion not currently supported
-            raise HTTPException(status_code=400, detail="URL ingestion not currently implemented")
-        else:
-            raise HTTPException(status_code=400, detail="Either text or url must be provided")
-        
-        # Check content size and redirect to async if too large
-        if len(text_content) > 5000:
-            raise HTTPException(
-                status_code=400,
-                detail="Content too large for synchronous processing. Use /ingest_async endpoint."
-            )
-        
-        # Extract techniques using unified pipeline
-        from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
-        config = {
-            "use_batch_mapper": request.use_batch_mapper,
-            "use_batch_retriever": True,  # Always use batch retriever for performance
-            "skip_verification": request.skip_verification,
-            "max_spans": 20,
-            "disable_discovery": False,
-            "disable_targeted_extraction": True
-        }
-        
-        # Run extraction pipeline
-        pipeline_results = run_extraction_pipeline(
-            report_text=text_content,
-            config=config,
-            source_id=f"report--{uuid.uuid4()}"
-        )
-        
-        # Extract results in expected format
-        extraction_results = {
-            "techniques": pipeline_results.get("techniques", {}),
-            "techniques_count": pipeline_results.get("techniques_count", pipeline_results.get("technique_count", 0)),
-            "claims": pipeline_results.get("claims", []),
-            "entities": pipeline_results.get("entities", {}),
-            "metrics": pipeline_results.get("metrics", {}),
-            "flow": pipeline_results.get("flow")  # Include flow from pipeline results
-        }
-        
-        # Create report SDO
-        report_name = request.name or f"Report {datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
-        report_sdo = {
-            "type": "report",
-            "id": f"report--{uuid.uuid4()}",
-            "name": report_name,
-            "description": text_content[:500],
-            "published": datetime.utcnow().isoformat() + "Z",
-            "object_refs": []
-        }
-        
-        # Evaluate rubric
-        rubric = evaluate_rubric(extraction_results)
-        rubric_evidence = generate_rubric_evidence(extraction_results, rubric)
-        
-        # Create bundle
-        bundle = create_stix_bundle(report_sdo, extraction_results, rubric, rubric_evidence)
-        
-        # Save to OpenSearch
-        os_client = get_opensearch_client()
-        os_store = OpenSearchReportStore(os_client)
-        
-        os_store.save_report(
-            report_id=report_sdo["id"],
-            job_id=trace_id,
-            report_data=report_sdo,
-            extraction_result={
-                "techniques_count": extraction_results.get("techniques_count", 0),
-                "claims_count": len(extraction_results.get("claims", [])),
-                "bundle_preview": bundle,
-                "extraction_claims": extraction_results.get("claims", []),
-                "entities": extraction_results.get("entities", {}),
-                "flow": extraction_results.get("flow")  # Add flow to the extraction result
-            },
-            source_info=source_info,
-            raw_text=text_content,
-            text_chunks=create_text_chunks(text_content)
-        )
-        
-        return IngestResponse(
-            report_id=report_sdo["id"],
-            provisional=rubric.criteria_met < 2,
-            rubric={"criteria_met": rubric.criteria_met},
-            rubric_evidence=rubric_evidence,
-            entities=extraction_results.get("entities", {}),
-            claims=extraction_results.get("claims", []),
-            trace_id=trace_id,
-            extraction_metrics=extraction_results.get("metrics", {})
-        )
-        
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            f.write(text_content)
+        file_size = os.path.getsize(temp_path)
     except Exception as e:
-        logger.exception(f"Report ingestion failed ({trace_id}): {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Failed to save text content: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save content: {str(e)}")
+
+    # --- enqueue job in Redis ------------------------------------------
+    job_store = get_redis_job_store()
+    job_store.create_job(
+        job_id=job_id,
+        file_path=temp_path,
+        file_name=request.name or "inline_text",
+        file_ext=".txt",
+        file_size=file_size,
+        config={
+            "use_batch_mapper": request.use_batch_mapper,
+            "skip_verification": request.skip_verification,
+            "auto_generate_flow": True,
+            "webhook_url": request.webhook_url,
+        },
+    )
+
+    # --- poll until the job finishes -----------------------------------
+    max_wait = 180  # seconds
+    elapsed = 0.0
+    poll_interval = 1.0
+
+    while elapsed < max_wait:
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+
+        job_data = job_store.get(job_id)
+        if not job_data:
+            raise HTTPException(status_code=500, detail=f"Job {job_id} disappeared from store")
+
+        if job_data["status"] == "completed":
+            break
+        if job_data["status"] == "failed":
+            error_msg = job_data.get("error", "Unknown error")
+            logger.error(f"Job {job_id} failed: {error_msg}")
+            raise HTTPException(status_code=500, detail=f"Extraction failed: {error_msg}")
+    else:
+        raise HTTPException(status_code=408, detail=f"Job {job_id} timed out after {max_wait}s")
+
+    # --- build IngestResponse from completed job result ----------------
+    result = job_data.get("result", {})
+    report_id = result.get("report_id", f"report--{job_id}")
+    techniques_count = result.get("techniques_count", 0)
+
+    # Fetch full report data from OpenSearch for response fields
+    os_client = get_opensearch_client()
+    os_store = OpenSearchReportStore(os_client)
+    report_doc = os_store.get_report(report_id)
+
+    if report_doc:
+        extraction = report_doc.get("extraction_result", {})
+        claims = extraction.get("extraction_claims", [])
+        entities = extraction.get("entities", {})
+    else:
+        claims = []
+        entities = {}
+
+    # Evaluate rubric from the extraction summary
+    extraction_summary = {"techniques_count": techniques_count}
+    rubric = evaluate_rubric(extraction_summary)
+    rubric_evidence = generate_rubric_evidence(extraction_summary, rubric)
+
+    return IngestResponse(
+        report_id=report_id,
+        provisional=rubric.criteria_met < 2,
+        rubric={"criteria_met": rubric.criteria_met},
+        rubric_evidence=rubric_evidence,
+        entities=entities,
+        claims=claims,
+        trace_id=job_id,
+        extraction_metrics={
+            "techniques_count": techniques_count,
+            "claims_count": result.get("claims_count", len(claims)),
+            "flow_generated": result.get("flow_generated", False),
+        },
+    )
 
 
 @router.post(
