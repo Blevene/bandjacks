@@ -23,6 +23,8 @@ from bandjacks.llm.client import execute_tool_loop
 from bandjacks.llm.stix_builder import STIXBuilder
 from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.llm.consolidator_base import ConsolidatorBase
+from bandjacks.llm.keyword_index import KeywordIndex
+from bandjacks.llm.technique_pairs import TechniquePairValidator
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +142,14 @@ class SpanFinderAgent:
             (self.exfil, "exfiltration", 0.85),
             (self.impact, "impact", 0.95)
         ]
-    
+
+        # Keyword index for direct keyword→technique matching
+        try:
+            self.keyword_index = KeywordIndex()
+        except FileNotFoundError:
+            self.keyword_index = None
+            logger.warning("Keyword index not available — running without keyword hints")
+
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
         """Find behavioral spans with sentence-based context extraction."""
         
@@ -165,7 +174,17 @@ class SpanFinderAgent:
                 if pattern.search(line):
                     score += weight
                     tactics.append(tactic)
-            
+
+            # Keyword index matching — direct keyword→technique hints
+            keyword_hints = []
+            if self.keyword_index:
+                kw_matches = self.keyword_index.match_text(line, max_matches=10)
+                if kw_matches:
+                    keyword_hints = kw_matches
+                    kw_boost = min(len(kw_matches) * 0.3, 1.0)
+                    score += kw_boost
+                    tactics.append("keyword-match")
+
             # Add span if score threshold met
             if score >= 0.6:
                 # Use sentence-based extraction instead of single line
@@ -184,7 +203,8 @@ class SpanFinderAgent:
                         "score": min(score, 1.0),
                         "tactics": tactics,
                         "prior": _section_weight(line),
-                        "type": "sentence_based"
+                        "type": "sentence_based",
+                        "keyword_hints": keyword_hints,
                     })
         
         # Multi-line context aggregation for complex behaviors

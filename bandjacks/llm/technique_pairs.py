@@ -115,3 +115,22 @@ def match_commonly_missed(text: str) -> List[Dict[str, Any]]:
                 }
             )
     return matches
+
+
+class TechniquePairValidator:
+    """Thin OO wrapper so callers can hold an instance reference."""
+
+    def __init__(self) -> None:
+        _load()
+
+    @staticmethod
+    def suggest_missing(found_techniques: Set[str]) -> List[Dict[str, str]]:
+        return suggest_missing(found_techniques)
+
+    @staticmethod
+    def match_red_flags(text: str) -> List[Dict[str, Any]]:
+        return match_red_flags(text)
+
+    @staticmethod
+    def match_commonly_missed(text: str) -> List[Dict[str, Any]]:
+        return match_commonly_missed(text)

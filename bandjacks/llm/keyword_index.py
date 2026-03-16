@@ -130,3 +130,24 @@ def match_text(text: str, *, max_matches: int = 50) -> List[Dict]:
 def entry_count() -> int:
     """Return the number of entries in the loaded index."""
     return len(_ensure_loaded())
+
+
+class KeywordIndex:
+    """Thin OO wrapper so callers can hold an instance reference."""
+
+    def __init__(self) -> None:
+        _ensure_loaded()
+        if not _DATA_PATH.exists():
+            raise FileNotFoundError(f"Keyword index not found: {_DATA_PATH}")
+
+    @staticmethod
+    def match_text(text: str, *, max_matches: int = 50) -> List[Dict]:
+        return match_text(text, max_matches=max_matches)
+
+    @staticmethod
+    def lookup(keyword: str) -> Set[str]:
+        return lookup(keyword)
+
+    @staticmethod
+    def entry_count() -> int:
+        return entry_count()
