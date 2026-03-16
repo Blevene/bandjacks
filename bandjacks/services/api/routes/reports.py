@@ -160,6 +160,99 @@ class ReportsListResponse(BaseModel):
 
 
 # ============================================================================
+# INTERNAL HELPERS FOR SYNC INGESTION
+# ============================================================================
+
+
+async def _wait_for_job(
+    job_store,
+    job_id: str,
+    timeout: float = 180.0,
+    poll_interval: float = 1.0,
+) -> Dict[str, Any]:
+    """Poll Redis until *job_id* reaches a terminal state.
+
+    Yields the event loop between polls so other requests are not
+    blocked.  Returns the full job dict on success.
+
+    Raises:
+        HTTPException 408 on timeout, 500 on job failure or
+        if the job vanishes from the store.
+    """
+    elapsed = 0.0
+    while elapsed < timeout:
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+
+        job_data = job_store.get(job_id)
+        if not job_data:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Job {job_id} disappeared from store",
+            )
+
+        if job_data["status"] == "completed":
+            return job_data
+        if job_data["status"] == "failed":
+            error_msg = job_data.get("error", "Unknown error")
+            logger.error(f"Job {job_id} failed: {error_msg}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Extraction failed: {error_msg}",
+            )
+
+    raise HTTPException(
+        status_code=408,
+        detail=f"Job {job_id} timed out after {timeout}s",
+    )
+
+
+def _build_ingest_response(job_data: Dict[str, Any], job_id: str) -> IngestResponse:
+    """Construct an ``IngestResponse`` from a completed job dict.
+
+    Fetches the full report document from OpenSearch so that
+    entities, claims, and rubric information are included in the
+    response.
+    """
+    result = job_data.get("result", {})
+    report_id = result.get("report_id", f"report--{job_id}")
+    techniques_count = result.get("techniques_count", 0)
+
+    # Fetch full report data from OpenSearch for response fields
+    os_client = get_opensearch_client()
+    os_store = OpenSearchReportStore(os_client)
+    report_doc = os_store.get_report(report_id)
+
+    if report_doc:
+        extraction = report_doc.get("extraction_result", {})
+        claims = extraction.get("extraction_claims", [])
+        entities = extraction.get("entities", {})
+    else:
+        claims = []
+        entities = {}
+
+    # Evaluate rubric from the extraction summary
+    extraction_summary = {"techniques_count": techniques_count}
+    rubric = evaluate_rubric(extraction_summary)
+    rubric_evidence = generate_rubric_evidence(extraction_summary, rubric)
+
+    return IngestResponse(
+        report_id=report_id,
+        provisional=rubric.criteria_met < 2,
+        rubric={"criteria_met": rubric.criteria_met},
+        rubric_evidence=rubric_evidence,
+        entities=entities,
+        claims=claims,
+        trace_id=job_id,
+        extraction_metrics={
+            "techniques_count": techniques_count,
+            "claims_count": result.get("claims_count", len(claims)),
+            "flow_generated": result.get("flow_generated", False),
+        },
+    )
+
+
+# ============================================================================
 # SECTION 1: INGESTION ENDPOINTS (SYNC & ASYNC)
 # ============================================================================
 
@@ -171,109 +264,56 @@ class ReportsListResponse(BaseModel):
     description="Ingest a threat intelligence report from text or URL (synchronous)."
 )
 async def ingest_report(request: IngestRequest):
-    """Synchronous report ingestion from text or URL."""
-    
-    trace_id = str(uuid.uuid4())[:8]
-    
+    """Synchronous report ingestion from text or URL.
+
+    Queues the extraction job via Redis and polls until complete,
+    releasing the event loop between polls so other requests can
+    be served concurrently.
+    """
+
+    # --- validate input ------------------------------------------------
+    if request.text:
+        text_content = request.text
+    elif request.url:
+        raise HTTPException(status_code=400, detail="URL ingestion not currently implemented")
+    else:
+        raise HTTPException(status_code=400, detail="Either text or url must be provided")
+
+    job_id = f"job-{uuid.uuid4().hex[:8]}"
+
+    # --- save text to a temp file (same as ingest_report_async) --------
+    temp_dir = tempfile.gettempdir()
+    temp_path = os.path.join(temp_dir, f"{job_id}.txt")
+
     try:
-        # Get text content
-        if request.text:
-            text_content = request.text
-            source_info = {"type": "inline"}
-        elif request.url:
-            # URL ingestion not currently supported
-            raise HTTPException(status_code=400, detail="URL ingestion not currently implemented")
-        else:
-            raise HTTPException(status_code=400, detail="Either text or url must be provided")
-        
-        # Check content size and redirect to async if too large
-        if len(text_content) > 5000:
-            raise HTTPException(
-                status_code=400,
-                detail="Content too large for synchronous processing. Use /ingest_async endpoint."
-            )
-        
-        # Extract techniques using unified pipeline
-        from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
-        config = {
-            "use_batch_mapper": request.use_batch_mapper,
-            "use_batch_retriever": True,  # Always use batch retriever for performance
-            "skip_verification": request.skip_verification,
-            "max_spans": 20,
-            "disable_discovery": False,
-            "disable_targeted_extraction": True
-        }
-        
-        # Run extraction pipeline
-        pipeline_results = run_extraction_pipeline(
-            report_text=text_content,
-            config=config,
-            source_id=f"report--{uuid.uuid4()}"
-        )
-        
-        # Extract results in expected format
-        extraction_results = {
-            "techniques": pipeline_results.get("techniques", {}),
-            "techniques_count": pipeline_results.get("techniques_count", pipeline_results.get("technique_count", 0)),
-            "claims": pipeline_results.get("claims", []),
-            "entities": pipeline_results.get("entities", {}),
-            "metrics": pipeline_results.get("metrics", {}),
-            "flow": pipeline_results.get("flow")  # Include flow from pipeline results
-        }
-        
-        # Create report SDO
-        report_name = request.name or f"Report {datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
-        report_sdo = {
-            "type": "report",
-            "id": f"report--{uuid.uuid4()}",
-            "name": report_name,
-            "description": text_content[:500],
-            "published": datetime.utcnow().isoformat() + "Z",
-            "object_refs": []
-        }
-        
-        # Evaluate rubric
-        rubric = evaluate_rubric(extraction_results)
-        rubric_evidence = generate_rubric_evidence(extraction_results, rubric)
-        
-        # Create bundle
-        bundle = create_stix_bundle(report_sdo, extraction_results, rubric, rubric_evidence)
-        
-        # Save to OpenSearch
-        os_client = get_opensearch_client()
-        os_store = OpenSearchReportStore(os_client)
-        
-        os_store.save_report(
-            report_id=report_sdo["id"],
-            job_id=trace_id,
-            report_data=report_sdo,
-            extraction_result={
-                "techniques_count": extraction_results.get("techniques_count", 0),
-                "claims_count": len(extraction_results.get("claims", [])),
-                "bundle_preview": bundle,
-                "extraction_claims": extraction_results.get("claims", []),
-                "entities": extraction_results.get("entities", {}),
-                "flow": extraction_results.get("flow")  # Add flow to the extraction result
-            },
-            source_info=source_info,
-            raw_text=text_content,
-            text_chunks=create_text_chunks(text_content)
-        )
-        
-        return IngestResponse(
-            report_id=report_sdo["id"],
-            provisional=rubric.criteria_met < 2,
-            rubric={"criteria_met": rubric.criteria_met},
-            rubric_evidence=rubric_evidence,
-            entities=extraction_results.get("entities", {}),
-            claims=extraction_results.get("claims", []),
-            trace_id=trace_id,
-            extraction_metrics=extraction_results.get("metrics", {})
-        )
-        
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            f.write(text_content)
+        file_size = os.path.getsize(temp_path)
     except Exception as e:
-        logger.exception(f"Report ingestion failed ({trace_id}): {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.error(f"Failed to save text content: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to save content: {str(e)}")
+
+    # --- enqueue job in Redis ------------------------------------------
+    job_store = get_redis_job_store()
+    job_store.create_job(
+        job_id=job_id,
+        file_path=temp_path,
+        file_name=request.name or "inline_text",
+        file_ext=".txt",
+        file_size=file_size,
+        config={
+            "use_batch_mapper": request.use_batch_mapper,
+            "skip_verification": request.skip_verification,
+            "auto_generate_flow": True,
+            "webhook_url": request.webhook_url,
+        },
+    )
+
+    # --- poll until the job finishes -----------------------------------
+    job_data = await _wait_for_job(job_store, job_id)
+
+    # --- build IngestResponse from completed job result ----------------
+    return _build_ingest_response(job_data, job_id)
 
 
 @router.post(
@@ -288,47 +328,59 @@ async def ingest_report_upload(
     use_batch_mapper: bool = Form(True),
     skip_verification: bool = Form(False)
 ):
-    """Synchronous report ingestion from file upload."""
-    
-    # Validate file type
+    """Synchronous report ingestion from file upload.
+
+    Saves the uploaded file, queues the extraction job via Redis,
+    and polls until the job completes.
+    """
+
+    # --- validate file type --------------------------------------------
     allowed_types = {".pdf", ".txt", ".md", ".markdown"}
     file_ext = Path(file.filename).suffix.lower()
     if file_ext not in allowed_types:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {file_ext}"
+            detail=f"Unsupported file type: {file_ext}",
         )
-    
-    # Process file
+
+    job_id = f"job-{uuid.uuid4().hex[:8]}"
+
+    # --- save uploaded file to disk ------------------------------------
     content = await file.read()
-    
-    if file_ext == ".pdf":
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
-        try:
-            text_content = load_pdf_text(tmp_path)
-        finally:
-            os.unlink(tmp_path)
-    else:
-        text_content = content.decode("utf-8", errors="ignore")
-    
-    # Check size and redirect if needed
-    if len(text_content) > 5000:
+    temp_dir = tempfile.gettempdir()
+    temp_path = os.path.join(temp_dir, f"{job_id}{file_ext}")
+
+    try:
+        with open(temp_path, "wb") as buffer:
+            buffer.write(content)
+        file_size = os.path.getsize(temp_path)
+    except Exception as e:
+        logger.error(f"Failed to save uploaded file: {e}")
         raise HTTPException(
-            status_code=400,
-            detail="File too large for synchronous processing. Use /ingest_file_async endpoint."
+            status_code=500,
+            detail=f"Failed to save file: {str(e)}",
         )
-    
-    # Use the main ingest function
-    request = IngestRequest(
-        text=text_content,
-        name=file.filename,
-        use_batch_mapper=use_batch_mapper,
-        skip_verification=skip_verification
+
+    # --- enqueue job in Redis ------------------------------------------
+    job_store = get_redis_job_store()
+    job_store.create_job(
+        job_id=job_id,
+        file_path=temp_path,
+        file_name=file.filename,
+        file_ext=file_ext,
+        file_size=file_size,
+        config={
+            "use_batch_mapper": use_batch_mapper,
+            "skip_verification": skip_verification,
+            "auto_generate_flow": True,
+        },
     )
-    
-    return await ingest_report(request)
+
+    # --- poll until the job finishes -----------------------------------
+    job_data = await _wait_for_job(job_store, job_id)
+
+    # --- build IngestResponse from completed job result ----------------
+    return _build_ingest_response(job_data, job_id)
 
 
 @router.post(
@@ -456,10 +508,6 @@ async def ingest_file_async(
             detail=f"Failed to save file: {str(e)}"
         )
     
-    # Read file content for Redis storage
-    with open(temp_path, "rb") as f:
-        file_content = f.read()
-    
     # Create job in the persistent job store (queued status)
     job_store = get_redis_job_store()
     job_data = job_store.create_job(
@@ -474,7 +522,6 @@ async def ingest_file_async(
             "auto_generate_flow": auto_generate_flow,
             "webhook_url": webhook_url
         },
-        file_content=file_content  # Pass content to Redis
     )
     
     # FileJobStore is already updated above

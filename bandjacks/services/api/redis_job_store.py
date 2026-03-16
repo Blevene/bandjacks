@@ -38,7 +38,7 @@ class RedisJobStore:
         port: int = 6379,
         db: int = 0,
         password: Optional[str] = None,
-        lock_timeout: int = 600,  # 10 minutes
+        lock_timeout: int = 300,  # 5 minutes
         heartbeat_ttl: int = 60,  # 1 minute
         decode_responses: bool = False
     ):
@@ -551,8 +551,8 @@ class RedisJobStore:
                             claimed_time = datetime.fromisoformat(claimed_at)
                             elapsed = (datetime.utcnow() - claimed_time).total_seconds()
                             
-                            # Reclaim if older than heartbeat TTL * 3 (more tolerance)
-                            if elapsed > self.heartbeat_ttl * 3:
+                            # Reclaim if older than heartbeat TTL * 2
+                            if elapsed > self.heartbeat_ttl * 2:
                                 logger.info(f"Reclaiming abandoned job {job_id} (elapsed: {elapsed}s)")
                                 
                                 # Reset job status
