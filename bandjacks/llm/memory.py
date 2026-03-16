@@ -59,6 +59,9 @@ class WorkingMemory:
     # Notes/metrics for observability
     notes: List[str] = field(default_factory=list)
 
+    # Extensible metadata for pipeline enhancements (pair suggestions, etc.)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "entities": self.entities,

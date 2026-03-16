@@ -23,6 +23,8 @@ from bandjacks.llm.client import execute_tool_loop
 from bandjacks.llm.stix_builder import STIXBuilder
 from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.llm.consolidator_base import ConsolidatorBase
+from bandjacks.llm.keyword_index import KeywordIndex
+from bandjacks.llm.technique_pairs import TechniquePairValidator
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +142,14 @@ class SpanFinderAgent:
             (self.exfil, "exfiltration", 0.85),
             (self.impact, "impact", 0.95)
         ]
-    
+
+        # Keyword index for direct keyword→technique matching
+        try:
+            self.keyword_index = KeywordIndex()
+        except FileNotFoundError:
+            self.keyword_index = None
+            logger.warning("Keyword index not available — running without keyword hints")
+
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
         """Find behavioral spans with sentence-based context extraction."""
         
@@ -165,7 +174,17 @@ class SpanFinderAgent:
                 if pattern.search(line):
                     score += weight
                     tactics.append(tactic)
-            
+
+            # Keyword index matching — direct keyword→technique hints
+            keyword_hints = []
+            if self.keyword_index:
+                kw_matches = self.keyword_index.match_text(line, max_matches=10)
+                if kw_matches:
+                    keyword_hints = kw_matches
+                    kw_boost = min(len(kw_matches) * 0.3, 1.0)
+                    score += kw_boost
+                    tactics.append("keyword-match")
+
             # Add span if score threshold met
             if score >= 0.6:
                 # Use sentence-based extraction instead of single line
@@ -184,7 +203,8 @@ class SpanFinderAgent:
                         "score": min(score, 1.0),
                         "tactics": tactics,
                         "prior": _section_weight(line),
-                        "type": "sentence_based"
+                        "type": "sentence_based",
+                        "keyword_hints": keyword_hints,
                     })
         
         # Multi-line context aggregation for complex behaviors
@@ -436,6 +456,17 @@ class MapperAgent:
                 if 1 <= ref <= len(mem.line_index):
                     evidence_lines.append(f"Line {ref}: {mem.line_index[ref-1]}")
             
+            # Include keyword hints if available
+            keyword_hint_text = ""
+            if span.get("keyword_hints"):
+                hint_ids = set()
+                for kh in span["keyword_hints"]:
+                    hint_ids.update(kh["technique_ids"])
+                if hint_ids:
+                    keyword_hint_text = f"\nKeyword-matched candidates: {', '.join(sorted(hint_ids))}"
+
+            span_text = span["text"][:800] + keyword_hint_text
+
             messages = [
                 {
                     "role": "system",
@@ -457,11 +488,11 @@ class MapperAgent:
                     "role": "user",
                     "content": json.dumps(
                         {
-                            "span": span["text"][:800],  # Increased limit for sentence-based spans
+                            "span": span_text,
                             "line_refs": span["line_refs"][:10],  # More line refs for sentence context
                             "evidence_lines": evidence_lines,
                             "candidates": [
-                                {"external_id": c["external_id"], "name": c.get("name", ""), "score": c.get("score", 0)} 
+                                {"external_id": c["external_id"], "name": c.get("name", ""), "score": c.get("score", 0)}
                                 for c in cands[:5]  # Limit candidates to top 5
                             ],
                         }
@@ -871,6 +902,45 @@ class ConsolidatorAgent(ConsolidatorBase):
         
         logger.info(f"ConsolidatorAgent: Consolidated into {len(mem.techniques)} techniques")
 
+        # Post-consolidation: check for missing technique pairs
+        try:
+            pair_validator = TechniquePairValidator()
+            found_ids = set(mem.techniques.keys())
+            suggestions = pair_validator.suggest_missing(found_ids)
+
+            # Also check red flags and commonly missed in original text
+            if mem.document_text:
+                for rf in pair_validator.match_red_flags(mem.document_text):
+                    for tid in rf["techniques"]:
+                        if tid not in found_ids and not any(t.startswith(tid) for t in found_ids):
+                            suggestions.append({
+                                "technique_id": tid,
+                                "reason": f"Red flag: '{rf['phrase']}' — {rf['reason']}",
+                                "triggered_by": "red-flag",
+                            })
+
+                for cm in pair_validator.match_commonly_missed(mem.document_text):
+                    for tid in cm["techniques"]:
+                        if tid not in found_ids:
+                            suggestions.append({
+                                "technique_id": tid,
+                                "reason": f"Commonly missed: '{cm['indicator']}'",
+                                "triggered_by": "commonly-missed",
+                            })
+
+            # Deduplicate suggestions
+            if suggestions:
+                seen = set()
+                unique = []
+                for s in suggestions:
+                    if s["technique_id"] not in seen:
+                        seen.add(s["technique_id"])
+                        unique.append(s)
+                logger.info(f"Pair validator suggests {len(unique)} potentially missing techniques")
+                mem.metadata["pair_suggestions"] = unique
+        except Exception as e:
+            logger.warning(f"Technique pair validation failed: {e}")
+
 
 class KillChainSuggestionsAgent:
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
@@ -993,11 +1063,17 @@ class AssemblerAgent:
         else:
             flow = {}
         
-        return {
+        result = {
             "bundle": bundle,
             "flow": flow,
             "techniques": mem.techniques,
             "notes": mem.notes
         }
+
+        # Include technique pair suggestions if available
+        if mem.metadata.get("pair_suggestions"):
+            result["pair_suggestions"] = mem.metadata["pair_suggestions"]
+
+        return result
 
 
