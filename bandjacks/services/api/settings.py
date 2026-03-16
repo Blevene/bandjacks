@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     # Job processing settings
     job_claim_ttl: int = 1800  # 30 minutes to process a job before it's reclaimed (increased for large PDFs)
     job_heartbeat_ttl: int = 60  # Heartbeat expires after 60s (2x reclaim at 120s)
+    sync_ingest_timeout: int = 180  # Max seconds for sync /ingest to wait
     worker_id_prefix: str = "worker"  # Prefix for worker IDs
     
     # Rate limiting settings

@@ -42,7 +42,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
-# Job store is now handled by FileJobStore for persistence across workers
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+ALLOWED_FILE_TYPES = {".pdf", ".txt", ".md", ".markdown"}
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50MB
 
 
 # ============================================================================
@@ -168,7 +172,7 @@ class ReportsListResponse(BaseModel):
 async def _wait_for_job(
     job_store,
     job_id: str,
-    timeout: float = 180.0,
+    timeout: float = None,
     poll_interval: float = 1.0,
 ) -> Dict[str, Any]:
     """Poll Redis until *job_id* reaches a terminal state.
@@ -180,6 +184,8 @@ async def _wait_for_job(
         HTTPException 408 on timeout, 500 on job failure or
         if the job vanishes from the store.
     """
+    if timeout is None:
+        timeout = float(settings.sync_ingest_timeout)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         await asyncio.sleep(poll_interval)
@@ -345,9 +351,8 @@ async def ingest_report_upload(
     """
 
     # --- validate file type --------------------------------------------
-    allowed_types = {".pdf", ".txt", ".md", ".markdown"}
     file_ext = Path(file.filename).suffix.lower()
-    if file_ext not in allowed_types:
+    if file_ext not in ALLOWED_FILE_TYPES:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type: {file_ext}",
@@ -357,6 +362,11 @@ async def ingest_report_upload(
 
     # --- save uploaded file to disk ------------------------------------
     content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024*1024)}MB",
+        )
     temp_dir = tempfile.gettempdir()
     temp_path = os.path.join(temp_dir, f"{job_id}{file_ext}")
 
@@ -455,8 +465,6 @@ async def ingest_report_async(request: IngestRequest):
         }
     )
     
-    # FileJobStore is already updated above
-    
     return JobStatusResponse(
         job_id=job_id,
         status="queued",
@@ -489,27 +497,33 @@ async def ingest_file_async(
     """
     
     # Validate file type
-    allowed_types = {".pdf", ".txt", ".md", ".markdown"}
     file_ext = Path(file.filename).suffix.lower()
-    if file_ext not in allowed_types:
+    if file_ext not in ALLOWED_FILE_TYPES:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type: {file_ext}"
         )
-    
+
     job_id = f"job-{uuid.uuid4().hex[:8]}"
-    
+
     # Create temp file path
     temp_dir = tempfile.gettempdir()
     temp_path = os.path.join(temp_dir, f"{job_id}{file_ext}")
-    
+
     # Save file to disk (blocking but fast)
     try:
         # Use shutil to copy efficiently without loading entire file into memory
         with open(temp_path, 'wb') as buffer:
             shutil.copyfileobj(file.file, buffer)
-        
+
         file_size = os.path.getsize(temp_path)
+
+        if file_size > MAX_UPLOAD_SIZE:
+            os.unlink(temp_path)
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024*1024)}MB",
+            )
         
     except Exception as e:
         logger.error(f"Failed to save uploaded file: {e}")
