@@ -436,13 +436,14 @@ def upsert_to_graph_and_vectors(
         
         # Relationships (USES, MITIGATES, IMPLIES)
         rels = [o for o in objs if o.get("type") == RELATIONSHIP]
+        edge_embed_queue = []
         for r in rels:
             rtype = r.get("relationship_type")
             src = r.get("source_ref")
             tgt = r.get("target_ref")
             if not (rtype and src and tgt):
                 continue
-            
+
             if rtype == "uses":
                 s.run(
                     """
@@ -452,25 +453,19 @@ def upsert_to_graph_and_vectors(
                     """,
                     src=src, tgt=tgt
                 )
-                # Add edge embedding
+                # Collect for batch embedding (moved out of loop)
                 s_name = by_id.get(src, {}).get("name", src)
                 t_name = by_id.get(tgt, {}).get("name", tgt)
                 txt = f"{s_name} uses {t_name}"
-                try:
-                    vec = encode(txt)
-                    if vec and len(vec) == 768:
-                        upsert_edge_doc(os_url, "bandjacks_attack_edges-v1", {
-                            "id": r.get("id", f"{src}-uses-{tgt}"),
-                            "edge_type": "USES",
-                            "source_id": src,
-                            "target_id": tgt,
-                            "attack_version": version,
-                            "text": txt,
-                            "embedding": vec
-                        })
-                except Exception as e:
-                    print(f"[edge-embed] {r.get('id')} fail: {e}")
-            
+                edge_embed_queue.append({
+                    "id": r.get("id", f"{src}-uses-{tgt}"),
+                    "edge_type": "USES",
+                    "source_id": src,
+                    "target_id": tgt,
+                    "attack_version": version,
+                    "text": txt,
+                })
+
             elif rtype == "mitigates":
                 s.run(
                     """
@@ -480,28 +475,34 @@ def upsert_to_graph_and_vectors(
                     """,
                     src=src, tgt=tgt
                 )
-                # Add edge embedding
+                # Collect for batch embedding (moved out of loop)
                 s_name = by_id.get(src, {}).get("name", src)
                 t_name = by_id.get(tgt, {}).get("name", tgt)
                 txt = f"{s_name} mitigates {t_name}"
-                try:
-                    vec = encode(txt)
-                    if vec and len(vec) == 768:
-                        upsert_edge_doc(os_url, "bandjacks_attack_edges-v1", {
-                            "id": r.get("id", f"{src}-mitigates-{tgt}"),
-                            "edge_type": "MITIGATES",
-                            "source_id": src,
-                            "target_id": tgt,
-                            "attack_version": version,
-                            "text": txt,
-                            "embedding": vec
-                        })
-                except Exception as e:
-                    print(f"[edge-embed] {r.get('id')} fail: {e}")
-            
+                edge_embed_queue.append({
+                    "id": r.get("id", f"{src}-mitigates-{tgt}"),
+                    "edge_type": "MITIGATES",
+                    "source_id": src,
+                    "target_id": tgt,
+                    "attack_version": version,
+                    "text": txt,
+                })
+
             # IMPLIES_TECHNIQUE is our derived edge from Software→Technique (optional)
             elif rtype in ("uses-against", "delivers", "drops"):  # rare; keep for future
                 pass
+
+        # Batch embed and bulk index all relationship edges
+        if edge_embed_queue:
+            texts = [doc["text"] for doc in edge_embed_queue]
+            vectors = batch_encode(texts)
+            bulk_docs = []
+            for doc, vec in zip(edge_embed_queue, vectors):
+                if vec is not None and len(vec) == 768:
+                    doc["embedding"] = vec
+                    bulk_docs.append(doc)
+            bulk_upsert_edge_docs(os_url, "bandjacks_attack_edges-v1", bulk_docs)
+            print(f"[attack-load] Batch embedded {len(bulk_docs)}/{len(edge_embed_queue)} relationship edges")
 
     driver.close()
     return inserted, updated
