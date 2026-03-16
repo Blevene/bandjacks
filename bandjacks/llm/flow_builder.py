@@ -19,6 +19,14 @@ from bandjacks.llm.attack_flow_validator import AttackFlowValidator
 from bandjacks.llm.batch_neo4j import BatchNeo4jHelper
 from bandjacks.loaders.embedder import encode
 
+# Flow builder constants
+DEFAULT_CONFIDENCE = 50.0
+HIGH_CONFIDENCE = 60.0
+MEDIUM_CONFIDENCE = 55.0
+DEFAULT_PROBABILITY = 0.3
+LOW_PROBABILITY = 0.25
+HIGH_PROBABILITY = 0.4
+
 
 class FlowBuilder:
     """Consolidated attack flow builder with all generation capabilities."""
@@ -159,7 +167,7 @@ class FlowBuilder:
                         "technique_id": tech["technique_id"],
                         "name": tech["name"] or "Unknown",
                         "description": tech["description"] or "",
-                        "confidence": tech["confidence"] or 50.0
+                        "confidence": tech["confidence"] or DEFAULT_CONFIDENCE
                     })
                 
                 if not steps:
@@ -230,7 +238,7 @@ class FlowBuilder:
                 "technique_id": tech["technique_id"],
                 "name": tech["name"] or "Unknown",
                 "description": tech["description"][:200] if tech["description"] else "",
-                "confidence": 60.0,
+                "confidence": HIGH_CONFIDENCE,
                 "tactics": tech["tactics"]
             })
         
@@ -277,7 +285,7 @@ class FlowBuilder:
                     "technique_id": stix_id,
                     "name": tech_name or "Unknown",
                     "description": (desc or "")[:200],
-                    "confidence": 55.0
+                    "confidence": MEDIUM_CONFIDENCE
                 })
 
         if not steps:
@@ -325,7 +333,7 @@ class FlowBuilder:
                 "technique_id": apd.get("stix_id"),
                 "name": apd.get("name", "Unknown"),
                 "description": (apd.get("description", "") or "")[:200],
-                "confidence": 55.0
+                "confidence": MEDIUM_CONFIDENCE
             })
 
         if not steps:
@@ -348,7 +356,7 @@ class FlowBuilder:
                     edges.append({
                         "source": ordered_steps[i]["action_id"],
                         "target": ordered_steps[j]["action_id"],
-                        "probability": 0.3,
+                        "probability": DEFAULT_PROBABILITY,
                         "rationale": "co-occurrence"
                     })
 
@@ -387,7 +395,7 @@ class FlowBuilder:
                 "technique_id": apd.get("stix_id"),
                 "name": apd.get("name", "Unknown"),
                 "description": (apd.get("description", "") or "")[:200],
-                "confidence": 50.0
+                "confidence": DEFAULT_CONFIDENCE
             })
 
         if not steps:
@@ -409,7 +417,7 @@ class FlowBuilder:
                     edges.append({
                         "source": ordered_steps[i]["action_id"],
                         "target": ordered_steps[j]["action_id"],
-                        "probability": 0.25,
+                        "probability": LOW_PROBABILITY,
                         "rationale": "co-occurrence"
                     })
 
@@ -626,7 +634,7 @@ class FlowBuilder:
                                     "technique_id": tech_id,
                                     "name": mapping.get("name", "Unknown"),
                                     "description": claim.get("span", {}).get("text", ""),
-                                    "confidence": mapping.get("confidence", 50.0),
+                                    "confidence": mapping.get("confidence", DEFAULT_CONFIDENCE),
                                     "evidence": [claim.get("span", {})]
                                 })
                                 seen_techniques.add(tech_id)
@@ -638,7 +646,7 @@ class FlowBuilder:
                                 "technique_id": tech_id,
                                 "name": claim.get("name", tech_id),
                                 "description": " ".join(claim.get("quotes", [])),
-                                "confidence": claim.get("confidence", 50.0),
+                                "confidence": claim.get("confidence", DEFAULT_CONFIDENCE),
                                 "evidence": [{"text": " ".join(claim.get("quotes", [])), "line_refs": claim.get("line_refs", [])}]
                             })
                             seen_techniques.add(tech_id)
@@ -652,7 +660,7 @@ class FlowBuilder:
                         "technique_id": tech_id,
                         "name": tech_data.get("name", tech_id),
                         "description": tech_data.get("description", ""),
-                        "confidence": tech_data.get("confidence", 50.0),
+                        "confidence": tech_data.get("confidence", DEFAULT_CONFIDENCE),
                         "evidence": self._normalize_evidence(tech_data.get("evidence", []))
                     })
                     seen_techniques.add(tech_id)
@@ -681,7 +689,7 @@ class FlowBuilder:
                     "technique_id": obj["id"],
                     "name": obj.get("name", "Unknown"),
                     "description": obj.get("description", "")[:200],
-                    "confidence": obj.get("x_bj_confidence", 50.0)
+                    "confidence": obj.get("x_bj_confidence", DEFAULT_CONFIDENCE)
                 })
         
         return steps
@@ -775,7 +783,7 @@ class FlowBuilder:
                         edges.append({
                             "source": action1["action_id"],
                             "target": action2["action_id"],
-                            "probability": 0.3,
+                            "probability": DEFAULT_PROBABILITY,
                             "rationale": f"co-occurrence within {tactic}",
                             "edge_type": "co-occurrence"
                         })
@@ -787,7 +795,7 @@ class FlowBuilder:
                     edges.append({
                         "source": hub["action_id"],
                         "target": action["action_id"],
-                        "probability": 0.25,
+                        "probability": LOW_PROBABILITY,
                         "rationale": f"co-occurrence within {tactic}",
                         "edge_type": "co-occurrence"
                     })
@@ -808,7 +816,7 @@ class FlowBuilder:
                 edges.append({
                     "source": source["action_id"],
                     "target": target["action_id"],
-                    "probability": 0.4,
+                    "probability": HIGH_PROBABILITY,
                     "rationale": f"cross-tactic pattern: {tactic1} → {tactic2}",
                     "edge_type": "co-occurrence"
                 })
@@ -1015,7 +1023,7 @@ class FlowBuilder:
                 "attack_pattern_ref": step.get("technique_id", "unknown"),
                 "name": step.get("name", "Unknown"),
                 "description": step.get("description", ""),
-                "confidence": step.get("confidence", 50.0),
+                "confidence": step.get("confidence", DEFAULT_CONFIDENCE),
                 "evidence": self._normalize_evidence(step.get("evidence", [])),
                 "reason": step.get("reason", "")
             })
