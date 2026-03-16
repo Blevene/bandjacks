@@ -322,28 +322,52 @@ class LLMClient:
             if self._should_retry(e) and retry_count < len(self.fallback_models):
                 fallback_model = self.fallback_models[retry_count]
                 logger.info(f"Retrying with fallback model: {fallback_model}")
-                
-                # Temporarily switch to fallback model
-                original_model = self.model
-                self.model = fallback_model
-                
+
                 try:
-                    # Recursive call with incremented retry count
-                    result = self.call(
-                        messages=messages,
-                        tools=tools,
-                        tool_choice=tool_choice,
-                        use_cache=False,  # Don't use cache for retries
-                        retry_count=retry_count + 1,
-                        response_format=response_format,
-                        max_tokens=max_tokens
-                    )
-                    # Restore original model on success
-                    self.model = original_model
-                    return result
+                    # Build fallback params with explicit model override
+                    fallback_params = {
+                        "model": fallback_model,
+                        "messages": messages,
+                        "temperature": self.temperature,
+                        "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
+                        "timeout": self.timeout
+                    }
+
+                    if tools:
+                        fallback_params["tools"] = tools
+                        fallback_params["tool_choice"] = tool_choice
+
+                    if response_format:
+                        fallback_params["response_format"] = response_format
+
+                    fallback_response = completion(**fallback_params)
+
+                    # Record success with circuit breaker
+                    circuit_breaker.record_success(fallback_model)
+
+                    # Extract response data
+                    choice = fallback_response.choices[0]
+                    content = choice.message.content or ""
+
+                    fallback_result = {
+                        "content": content,
+                        "tool_calls": []
+                    }
+
+                    if hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
+                        for tool_call in choice.message.tool_calls:
+                            fallback_result["tool_calls"].append({
+                                "id": tool_call.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tool_call.function.name,
+                                    "arguments": tool_call.function.arguments
+                                }
+                            })
+
+                    logger.info(f"[{request_id}] Fallback model {fallback_model} succeeded")
+                    return fallback_result
                 except Exception as fallback_error:
-                    # Restore original model
-                    self.model = original_model
                     logger.error(f"Fallback model {fallback_model} also failed: {fallback_error}")
             
             # If all retries exhausted, raise the error
