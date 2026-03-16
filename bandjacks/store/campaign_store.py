@@ -53,7 +53,7 @@ class CampaignStore:
                 import json
                 try:
                     campaign["x_bj_provenance"] = json.loads(campaign["x_bj_provenance"])
-                except:
+                except Exception:
                     pass
             
             return {

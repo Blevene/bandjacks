@@ -369,7 +369,7 @@ class RedisJobStore:
         lock = Lock(self.redis, lock_key, timeout=self.lock_timeout, thread_local=False)
         try:
             lock.release()
-        except:
+        except Exception:
             pass  # Lock may have expired
 
         # Remove heartbeat
@@ -436,9 +436,9 @@ class RedisJobStore:
         lock = Lock(self.redis, lock_key, timeout=self.lock_timeout, thread_local=False)
         try:
             lock.release()
-        except:
+        except Exception:
             pass  # Lock may have expired
-        
+
         # Remove heartbeat
         heartbeat_key = f"{self.HEARTBEAT_PREFIX}{job_id}"
         self.redis.delete(heartbeat_key)

@@ -138,7 +138,7 @@ class DetectionValidator:
             if field in obj:
                 try:
                     datetime.fromisoformat(obj[field].replace('Z', '+00:00'))
-                except:
+                except Exception:
                     self.warnings.append(f"Object {obj_id}: Invalid {field} timestamp format")
         
         return True

@@ -435,7 +435,7 @@ class BatchExtractor:
         finally:
             try:
                 driver.close()
-            except:
+            except Exception:
                 pass
 
     def store_result_in_opensearch(self, result: Dict[str, Any], text_content: str) -> bool:

@@ -150,15 +150,15 @@ class CandidateStore:
                 if candidate.get("stix_object"):
                     try:
                         candidate["stix_object"] = json.loads(candidate["stix_object"])
-                    except:
+                    except Exception:
                         pass
-                
+
                 if candidate.get("provenance"):
                     try:
                         candidate["provenance"] = json.loads(candidate["provenance"])
-                    except:
+                    except Exception:
                         pass
-                
+
                 candidates.append(candidate)
             
             return candidates
@@ -189,15 +189,15 @@ class CandidateStore:
                 if candidate.get("stix_object"):
                     try:
                         candidate["stix_object"] = json.loads(candidate["stix_object"])
-                    except:
+                    except Exception:
                         pass
-                
+
                 if candidate.get("provenance"):
                     try:
                         candidate["provenance"] = json.loads(candidate["provenance"])
-                    except:
+                    except Exception:
                         pass
-                
+
                 return candidate
             
             return None
