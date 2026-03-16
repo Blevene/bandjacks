@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     redis_port: int = 6379
     redis_db: int = 0
     redis_password: str = ""
-    redis_lock_timeout: int = 1800  # 30 minutes max lock time (increased from 10 min)
+    redis_lock_timeout: int = 300  # 5 minutes max lock time
     redis_heartbeat_interval: int = 30  # Worker heartbeat every 30s
     
     # Job processing settings
