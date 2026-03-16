@@ -75,6 +75,7 @@ from bandjacks.services.api.middleware import TracingMiddleware
 from bandjacks.services.api.middleware.error_handler import ErrorHandlerMiddleware
 from bandjacks.services.api.middleware.auth import JWTAuthMiddleware
 from bandjacks.services.api.middleware.rate_limit import RateLimitMiddleware
+from bandjacks.services.api.deps import close_connections
 from bandjacks.services.api.job_processor import get_job_processor
 from bandjacks.loaders.neo4j_ddl import ensure_ddl
 from bandjacks.loaders.opensearch_index import ensure_attack_nodes_index, ensure_attack_flows_index, OpenSearchIndexManager
@@ -245,6 +246,12 @@ async def shutdown():
         logger.info("Vector update system stopped")
     except Exception as e:
         logger.error(f"Failed to stop vector update system: {e}")
+
+    # Close shared database connections
+    try:
+        close_connections()
+    except Exception as e:
+        logger.error(f"Failed to close database connections: {e}")
 
 # Configure API tags for better organization
 tags_metadata = [
