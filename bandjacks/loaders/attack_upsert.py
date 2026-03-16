@@ -333,6 +333,7 @@ def upsert_to_graph_and_vectors(
 
         # 2) IntrusionSet nodes (Groups)
         groups = [o for o in objs if o.get("type") == INTRUSION_SET]
+        group_embed_queue = []
         for obj in groups:
             res = s.run(
                 """
@@ -348,21 +349,29 @@ def upsert_to_graph_and_vectors(
             ins, upd = _count_from_summary(res.consume())
             inserted += ins
             updated += upd
-            
-            # Add embeddings for IntrusionSet
+
+            # Collect for batch embedding (moved out of loop)
             txt = f"{obj.get('name','')}\n{obj.get('description','')}"
-            try:
-                vec = encode(txt)
+            group_embed_queue.append({
+                "id": obj["id"], "kb_type": "IntrusionSet", "attack_version": version,
+                "revoked": obj.get("revoked", False), "text": txt,
+            })
+
+        # Batch embed and bulk index all IntrusionSets
+        if group_embed_queue:
+            texts = [doc["text"] for doc in group_embed_queue]
+            vectors = batch_encode(texts)
+            bulk_docs = []
+            for doc, vec in zip(group_embed_queue, vectors):
                 if vec is not None and len(vec) == 768:
-                    upsert_node_embedding(os_url=os_url, index=os_index, doc={
-                        "id": obj["id"], "kb_type": "IntrusionSet", "attack_version": version,
-                        "revoked": obj.get("revoked", False), "text": txt, "embedding": vec
-                    })
-            except Exception as e:
-                print(f"[embedding] group embed fail {obj['id']}: {e}")
-        
+                    doc["embedding"] = vec
+                    bulk_docs.append(doc)
+            bulk_upsert_embeddings(os_url, os_index, bulk_docs)
+            print(f"[attack-load] Batch embedded {len(bulk_docs)}/{len(group_embed_queue)} IntrusionSets")
+
         # 3) Software (Tool/Malware/Software umbrella)
         software = [o for o in objs if o.get("type") in SOFTWARE_TYPES]
+        sw_embed_queue = []
         for obj in software:
             res = s.run(
                 """
@@ -378,18 +387,25 @@ def upsert_to_graph_and_vectors(
             ins, upd = _count_from_summary(res.consume())
             inserted += ins
             updated += upd
-            
-            # Add embeddings for Software
+
+            # Collect for batch embedding (moved out of loop)
             txt = f"{obj.get('name','')}\n{obj.get('description','')}"
-            try:
-                vec = encode(txt)
+            sw_embed_queue.append({
+                "id": obj["id"], "kb_type": "Software", "attack_version": version,
+                "revoked": obj.get("revoked", False), "text": txt,
+            })
+
+        # Batch embed and bulk index all Software
+        if sw_embed_queue:
+            texts = [doc["text"] for doc in sw_embed_queue]
+            vectors = batch_encode(texts)
+            bulk_docs = []
+            for doc, vec in zip(sw_embed_queue, vectors):
                 if vec is not None and len(vec) == 768:
-                    upsert_node_embedding(os_url=os_url, index=os_index, doc={
-                        "id": obj["id"], "kb_type": "Software", "attack_version": version,
-                        "revoked": obj.get("revoked", False), "text": txt, "embedding": vec
-                    })
-            except Exception as e:
-                print(f"[embedding] software embed fail {obj['id']}: {e}")
+                    doc["embedding"] = vec
+                    bulk_docs.append(doc)
+            bulk_upsert_embeddings(os_url, os_index, bulk_docs)
+            print(f"[attack-load] Batch embedded {len(bulk_docs)}/{len(sw_embed_queue)} Software")
         
         # 4) Mitigations (course-of-action)
         mitigs = [o for o in objs if o.get("type") == MITIGATION]
