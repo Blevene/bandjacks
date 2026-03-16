@@ -1063,11 +1063,17 @@ class AssemblerAgent:
         else:
             flow = {}
         
-        return {
+        result = {
             "bundle": bundle,
             "flow": flow,
             "techniques": mem.techniques,
             "notes": mem.notes
         }
+
+        # Include technique pair suggestions if available
+        if mem.metadata.get("pair_suggestions"):
+            result["pair_suggestions"] = mem.metadata["pair_suggestions"]
+
+        return result
 
 
