@@ -10,6 +10,7 @@ This module combines all report-related functionality:
 """
 
 import os
+import time
 import uuid
 import json
 import asyncio
@@ -179,12 +180,17 @@ async def _wait_for_job(
         HTTPException 408 on timeout, 500 on job failure or
         if the job vanishes from the store.
     """
-    elapsed = 0.0
-    while elapsed < timeout:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
         await asyncio.sleep(poll_interval)
-        elapsed += poll_interval
 
-        job_data = job_store.get(job_id)
+        try:
+            job_data = job_store.get(job_id)
+        except Exception as e:
+            logger.warning(f"Redis error during job poll: {e}")
+            # Continue polling — Redis might recover
+            continue
+
         if not job_data:
             raise HTTPException(
                 status_code=500,
@@ -219,9 +225,13 @@ def _build_ingest_response(job_data: Dict[str, Any], job_id: str) -> IngestRespo
     techniques_count = result.get("techniques_count", 0)
 
     # Fetch full report data from OpenSearch for response fields
-    os_client = get_opensearch_client()
-    os_store = OpenSearchReportStore(os_client)
-    report_doc = os_store.get_report(report_id)
+    try:
+        os_client = get_opensearch_client()
+        os_store = OpenSearchReportStore(os_client)
+        report_doc = os_store.get_report(report_id)
+    except Exception as e:
+        logger.warning(f"Failed to fetch report from OpenSearch: {e}")
+        report_doc = None
 
     if report_doc:
         extraction = report_doc.get("extraction_result", {})
