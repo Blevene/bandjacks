@@ -364,11 +364,10 @@ class RedisJobStore:
         pipe.sadd(self.COMPLETED_SET, job_id)
         pipe.execute()
 
-        # Release lock
+        # Release lock by deleting the key directly (we are the worker that processed it)
         lock_key = f"{self.LOCK_PREFIX}{job_id}"
-        lock = Lock(self.redis, lock_key, timeout=self.lock_timeout, thread_local=False)
         try:
-            lock.release()
+            self.redis.delete(lock_key)
         except Exception:
             pass  # Lock may have expired
 
@@ -431,18 +430,17 @@ class RedisJobStore:
         pipe.sadd(self.COMPLETED_SET, job_id)
         pipe.execute()
         
-        # Release lock
+        # Release lock by deleting the key directly (we are the worker that processed it)
         lock_key = f"{self.LOCK_PREFIX}{job_id}"
-        lock = Lock(self.redis, lock_key, timeout=self.lock_timeout, thread_local=False)
         try:
-            lock.release()
+            self.redis.delete(lock_key)
         except Exception:
             pass  # Lock may have expired
 
         # Remove heartbeat
         heartbeat_key = f"{self.HEARTBEAT_PREFIX}{job_id}"
         self.redis.delete(heartbeat_key)
-        
+
         logger.info(f"Job {job_id} failed by worker {worker_id}: {error[:100]}")
         return True
     
