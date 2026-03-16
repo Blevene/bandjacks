@@ -244,7 +244,9 @@ class JobProcessor:
                 file_ext = job.get("file_ext", ".txt")
                 config = job.get("config", {})
                 
-                # Check if file is in Redis
+                # Backward compatibility: handle jobs created before file_content
+                # was removed from create_job (those jobs stored content in Redis
+                # with a redis:// file_path prefix).
                 if file_path and file_path.startswith("redis://"):
                     # Extract Redis key from path
                     redis_key = file_path.replace("redis://", "")
