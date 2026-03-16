@@ -6,6 +6,7 @@ import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { API_BASE_URL } from "@/lib/config";
 import {
   Loader2,
   CheckCircle,
@@ -87,10 +88,7 @@ export function JobStatusStream({
 
     const connectSSE = () => {
       // Construct the SSE URL
-      const baseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-      const sseUrl = `${baseUrl}/v1/reports/jobs/${jobId}/stream`;
-
-      console.log(`Connecting to SSE: ${sseUrl}`);
+      const sseUrl = `${API_BASE_URL}/v1/reports/jobs/${jobId}/stream`;
 
       // Create EventSource connection
       const eventSource = new EventSource(sseUrl);
