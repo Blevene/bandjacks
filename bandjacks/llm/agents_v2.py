@@ -339,106 +339,135 @@ class RetrieverAgent:
 
 class DiscoveryAgent:
     """Use LLM to discover techniques not found by retrieval."""
-    
+
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
         logger.debug(f"DiscoveryAgent: Processing {len(mem.spans)} spans")
         max_props = int(config.get("max_discovery_per_span", 3))
-        
-        # Use direct LLM client without tools for better performance
+
         from bandjacks.llm.client import LLMClient
+        from bandjacks.llm.tools import resolve_technique_by_external_id
         client = LLMClient()
         discovery_model = config.get("discovery_model", "gemini/gemini-2.5-flash")
-        
+
+        # Collect spans that need discovery (local index → original index)
+        needs_discovery: List[tuple] = []  # (local_idx, original_idx, span)
         for i, span in enumerate(mem.spans):
-            # Skip if we already have good candidates
             existing_candidates = mem.candidates.get(i, [])
             if len(existing_candidates) >= 5 and any(c.get("score", 0) > 0.7 for c in existing_candidates):
                 continue
-            
-            # Simple prompt for discovery
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a MITRE ATT&CK expert. Identify ATT&CK techniques in the text. "
-                        "Output ONLY technique IDs mentioned or clearly implied. "
-                        "Format: {\"techniques\": [\"T1055\", \"T1003.001\", ...]}"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"Text: {span['text'][:500]}\n\nIdentify techniques:"
-                },
-            ]
-            
-            # JSON schema for technique discovery
-            discovery_schema = {
-                "type": "object",
-                "properties": {
-                    "techniques": {
-                        "type": "array",
-                        "items": {
-                            "type": "string",
-                            "pattern": "^T[0-9]{4}(\\.[0-9]{3})?$"
+            needs_discovery.append((len(needs_discovery), i, span))
+
+        if not needs_discovery:
+            logger.debug("DiscoveryAgent: All spans have sufficient candidates, skipping")
+            return
+
+        logger.debug(f"DiscoveryAgent: Batching {len(needs_discovery)} spans into single LLM call")
+
+        # Build numbered span list (truncated to 300 chars each)
+        span_lines = []
+        for local_idx, orig_idx, span in needs_discovery:
+            text = span["text"][:300].replace("\n", " ")
+            span_lines.append(f"{local_idx}: {text}")
+        spans_block = "\n".join(span_lines)
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a MITRE ATT&CK expert. For each numbered text span, identify ATT&CK "
+                    "technique IDs that are mentioned or clearly implied. "
+                    'Output ONLY valid JSON matching: {"discoveries": [{"span": 0, "techniques": ["T1055"]}]}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Analyze these {len(needs_discovery)} text spans and identify ATT&CK techniques:\n\n"
+                    f"{spans_block}\n\n"
+                    "Return a discoveries array with one entry per span (use the span number as the key)."
+                ),
+            },
+        ]
+
+        discovery_schema = {
+            "type": "object",
+            "properties": {
+                "discoveries": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "span": {"type": "integer"},
+                            "techniques": {
+                                "type": "array",
+                                "items": {
+                                    "type": "string",
+                                    "pattern": "^T[0-9]{4}(\\.[0-9]{3})?$",
+                                },
+                            },
                         },
-                        "description": "List of MITRE ATT&CK technique IDs"
-                    }
-                },
-                "required": ["techniques"],
-                "additionalProperties": False
-            }
-            
-            # Direct LLM call with structured output (no tools)
-            try:
-                # Override model for this call
-                old_model = client.model
-                client.model = discovery_model
-                response = client.call(
-                    messages,
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": discovery_schema
+                        "required": ["span", "techniques"],
+                        "additionalProperties": False,
                     },
-                    max_tokens=2000  # Small response expected
-                )
-                client.model = old_model  # Restore original
-                content = response.get("content", "")
-                
-                # Parse response
-                if not content:
+                }
+            },
+            "required": ["discoveries"],
+            "additionalProperties": False,
+        }
+
+        try:
+            old_model = client.model
+            client.model = discovery_model
+            response = client.call(
+                messages,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": discovery_schema,
+                },
+                max_tokens=4000,
+            )
+            client.model = old_model  # Restore original
+
+            content = response.get("content", "")
+            if not content:
+                logger.warning("DiscoveryAgent: Empty response from LLM batch call")
+                return
+
+            result = json.loads(content.strip())
+            discoveries = result.get("discoveries", [])
+
+            # Build a lookup from local_idx → original_idx
+            local_to_orig = {local_idx: orig_idx for local_idx, orig_idx, _ in needs_discovery}
+
+            for entry in discoveries:
+                local_idx = entry.get("span")
+                techniques = entry.get("techniques", [])
+                if local_idx not in local_to_orig:
                     continue
-                    
-                result = json.loads(content.strip())
-                techniques = result.get("techniques", [])
-                
-                # Add discovered techniques as candidates
-                mem.candidates.setdefault(i, [])
-                seen = {c.get("external_id") for c in mem.candidates[i]}
-                
+                orig_idx = local_to_orig[local_idx]
+
+                mem.candidates.setdefault(orig_idx, [])
+                seen = {c.get("external_id") for c in mem.candidates[orig_idx]}
+
                 for tech_id in techniques[:max_props]:
                     if not isinstance(tech_id, str) or not TECH_ID_RE.match(tech_id):
                         continue
                     if tech_id in seen:
                         continue
-                    
-                    # Look up technique metadata
-                    from bandjacks.llm.tools import resolve_technique_by_external_id
+
                     meta = resolve_technique_by_external_id(tech_id)
-                    
-                    # Add as candidate with discovery source
-                    mem.candidates[i].append({
+                    mem.candidates[orig_idx].append({
                         "external_id": tech_id,
                         "name": meta.get("name", "") if meta else "",
-                        "score": 0.5,  # Medium confidence for discovered
+                        "score": 0.5,
                         "meta": meta,
                         "source": "discovery",
                     })
                     seen.add(tech_id)
-                    logger.debug(f"  DiscoveryAgent: Added {tech_id} to span {i}")
-                    
-            except Exception as e:
-                logger.debug(f"  DiscoveryAgent failed for span {i}: {e}")
-                continue
+                    logger.debug(f"  DiscoveryAgent: Added {tech_id} to span {orig_idx}")
+
+        except Exception as e:
+            logger.warning(f"DiscoveryAgent: Batch LLM call failed: {e}")
 
 
 class MapperAgent:
