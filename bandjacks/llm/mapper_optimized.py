@@ -9,7 +9,7 @@ from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.tools import list_subtechniques, resolve_technique_by_external_id
 from bandjacks.services.technique_cache import technique_cache
-from bandjacks.llm.json_utils import parse_json_with_fallback, validate_and_ensure_claims
+from bandjacks.llm.json_utils import parse_json_with_fallback, parse_llm_json, validate_and_ensure_claims
 from bandjacks.llm.token_utils import TokenEstimator
 
 logger = logging.getLogger(__name__)
@@ -234,16 +234,10 @@ class BatchMapperAgent:
             # Store original content for fallback
             original_content = content
 
-            # Strip markdown wrapper if present
-            if '```' in content:
-                if '```json' in content:
-                    content = content.split('```json')[1].split('```')[0].strip()
-                elif content.strip().startswith('```'):
-                    content = content.split('```')[1].split('```')[0].strip()
-                logger.debug(f"Stripped markdown wrapper, new length: {len(content)}")
-
-            # Parse the structured response - expects {"techniques": [...]}
-            parsed = json.loads(content)
+            # Strip markdown wrapper and parse JSON
+            parsed = parse_llm_json(content)
+            if parsed is None:
+                raise json.JSONDecodeError("parse_llm_json returned None", content, 0)
             if isinstance(parsed, dict) and "techniques" in parsed:
                 results = parsed["techniques"]
             else:
