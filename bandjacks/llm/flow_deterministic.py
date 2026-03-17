@@ -6,8 +6,11 @@ without LLM calls. Provides fast, reproducible flow generation based
 on kill-chain progression and text position evidence.
 """
 
+import logging
 import uuid
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 from typing import Any, Dict, List, Optional
 
 from bandjacks.llm.constants import get_tactic_order
@@ -253,8 +256,8 @@ def build_dual_flows(
     flows = []
 
     # Always: deterministic full flow
-    det_builder = DeterministicFlowBuilder()
-    det_flow = det_builder.build(claims, technique_cache, flow_name, source_id)
+    det_builder = DeterministicFlowBuilder(technique_cache)
+    det_flow = det_builder.build(claims, source_id or "", flow_name)
     if det_flow:
         flows.append(det_flow)
         logger.info(
