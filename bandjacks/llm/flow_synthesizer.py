@@ -33,6 +33,16 @@ class FlowSynthesizer:
         """
         try:
             # Prepare CTI data from extraction
+            logger.debug("Synthesizer input keys: %s", list(extraction_result.keys()))
+            if "techniques" in extraction_result:
+                techs = extraction_result["techniques"]
+                logger.debug("Techniques type: %s, count: %s", type(techs).__name__, len(techs) if hasattr(techs, '__len__') else 'N/A')
+                if isinstance(techs, dict) and techs:
+                    first_key = next(iter(techs))
+                    logger.debug("First technique: key=%s, value_type=%s, value=%s", first_key, type(techs[first_key]).__name__, str(techs[first_key])[:200])
+            if "chunks" in extraction_result:
+                for ci, chunk in enumerate(extraction_result["chunks"][:2]):
+                    logger.debug("Chunk %d keys: %s, claims: %d", ci, list(chunk.keys()), len(chunk.get("claims", [])))
             cti_data = self._prepare_cti_data(extraction_result)
 
             # Build the prompt
@@ -65,7 +75,7 @@ class FlowSynthesizer:
             return attack_flow
 
         except Exception as e:
-            logger.error("Failed to synthesize attack flow: %s", e)
+            logger.error("Failed to synthesize attack flow: %s", e, exc_info=True)
             return None
 
     def _prepare_cti_data(self, extraction_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -412,6 +422,9 @@ Output as JSON matching the attack flow schema."""
                     step["order"] = i + 1
                 if "entity" not in step:
                     step["entity"] = {"label": "Technique", "id": "unknown"}
+                elif isinstance(step["entity"], str):
+                    # LLM returned entity as a bare string (e.g. "T1566.001")
+                    step["entity"] = {"label": "Technique", "pk": step["entity"]}
                 elif isinstance(step["entity"], dict):
                     # Ensure entity has either 'pk' or 'id' field
                     entity = step["entity"]
@@ -475,6 +488,10 @@ Output as JSON matching the attack flow schema."""
         validated_steps = []
         for step in flow.get("steps", []):
             entity = step.get("entity", {})
+            if not isinstance(entity, dict):
+                # Normalize non-dict entity to dict
+                entity = {"label": "Technique", "pk": str(entity)}
+                step["entity"] = entity
 
             # Check if entity is valid
             if entity.get("label") == "Technique":
