@@ -44,10 +44,8 @@ class BatchRetrieverAgent:
         global _cache_hits, _cache_misses
         
         logger.info(f"[BatchRetrieverAgent] Starting with {len(mem.spans)} spans")
-        logger.debug(f"[BatchRetrieverAgent] Starting with {len(mem.spans)} spans")
         if not mem.spans:
             logger.info("[BatchRetrieverAgent] No spans to process")
-            logger.debug("[BatchRetrieverAgent] No spans to process")
             return
         
         # Get settings and cache instance
@@ -279,11 +277,7 @@ class BatchRetrieverAgent:
                 logger.info(f"[BatchRetriever] Cache stats - Hit rate: {stats['overall_hit_rate']:.2%}")
             
         except Exception as e:
-            logger.debug(f"[BatchRetriever] Error in batch search: {e}")
-            # Fallback to sequential retriever
-            logger.debug("[BatchRetriever] Falling back to sequential retrieval")
-            from bandjacks.llm.agents_v2 import RetrieverAgent
-            RetrieverAgent().run(mem, config)
+            logger.error(f"[BatchRetriever] Batch search failed: {e}", exc_info=True)
     
     def _deduplicate_texts(self, texts: List[str]) -> Tuple[List[str], List[int]]:
         """

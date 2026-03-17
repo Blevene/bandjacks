@@ -1,15 +1,14 @@
 """Optimized batch mapper for faster extraction."""
 
 import json
-import re
 import logging
 import os
 from typing import Any, Dict, List
 from bandjacks.llm.memory import WorkingMemory
-from bandjacks.llm.client import LLMClient
-from bandjacks.llm.tools import list_subtechniques, resolve_technique_by_external_id
+from bandjacks.llm.client import get_llm_client
+from bandjacks.llm.tools import resolve_technique_by_external_id
 from bandjacks.services.technique_cache import technique_cache
-from bandjacks.llm.json_utils import parse_json_with_fallback, parse_llm_json, validate_and_ensure_claims
+from bandjacks.llm.json_utils import parse_llm_json, validate_and_ensure_claims
 from bandjacks.llm.token_utils import TokenEstimator
 
 logger = logging.getLogger(__name__)
@@ -181,7 +180,7 @@ class BatchMapperAgent:
         # Note: LLMClient.call() already has tenacity retry with exponential backoff,
         # so no manual retry loop is needed here.
         logger.info(f"BatchMapper LLM request: batch of {len(spans_data)} spans")
-        client = LLMClient()
+        client = get_llm_client()
 
         try:
             response = client.call(
@@ -212,6 +211,7 @@ class BatchMapperAgent:
             # Strip markdown wrapper and parse JSON
             parsed = parse_llm_json(content)
             if parsed is None:
+                logger.warning(f"parse_llm_json returned None for content ({len(content)} chars): {repr(content[:200])}")
                 raise json.JSONDecodeError("parse_llm_json returned None", content, 0)
             if isinstance(parsed, dict) and "techniques" in parsed:
                 results = parsed["techniques"]
@@ -330,16 +330,6 @@ class BatchMapperAgent:
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error in technique extraction: {e}")
             logger.debug(f"Failed content preview: {content[:200] if content else 'Empty'}")
-
-            # Try fallback parsing with original content
-            parsed = parse_json_with_fallback(
-                original_content,  # Use original content, not modified
-                expected_structure=[],
-                max_retries=2
-            )
-            results = parsed if isinstance(parsed, list) else []
-
-            # Return 0 claims on parse error
             return 0
                         
         except Exception as e:

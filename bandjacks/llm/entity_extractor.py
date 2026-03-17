@@ -4,7 +4,7 @@ import json
 import logging
 import re
 from typing import Dict, Any, List, Optional
-from bandjacks.llm.client import LLMClient
+from bandjacks.llm.client import get_llm_client
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.json_utils import parse_json_with_fallback, parse_llm_json
 from bandjacks.llm.consolidator_base import ConsolidatorBase
@@ -110,7 +110,7 @@ class EntityExtractionAgent:
     
     def __init__(self):
         """Initialize the entity extraction agent."""
-        self.client = LLMClient()
+        self.client = get_llm_client()
         self.chunk_size = 30000  # Increased from 4000 - modern LLMs handle ~8K tokens easily
         self.chunk_overlap = 5000  # Increased from 500 for better context preservation
         

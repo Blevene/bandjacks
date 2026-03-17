@@ -8,11 +8,12 @@ Handles documents by splitting into manageable chunks for LLM processing.
 import re
 import logging
 import time
-from typing import Dict, Any, List, Optional
+from typing import Callable, Dict, Any, List, Optional
 from dataclasses import dataclass
 import concurrent.futures
 from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
 from bandjacks.llm.tracker import ExtractionTracker
+from bandjacks.llm.constants import make_failed_chunk_result
 # Removed hardcoded threat actor and malware extraction - handled by proper entity recognition
 
 logger = logging.getLogger(__name__)
@@ -176,15 +177,11 @@ class ChunkedExtractor:
         
         # All retries failed
         logger.error(f"Chunk {chunk.chunk_id} failed after {max_retries} attempts: {last_error}")
-        return {
-            "chunk_id": chunk.chunk_id,
-            "chunk_boundaries": (chunk.start_idx, chunk.end_idx),
-            "claims": [],
-            "techniques": {},
-            "entities": {},  # Empty entities for failed chunks
-            "error": f"Failed after {max_retries} attempts: {last_error}",
-            "failed": True
-        }
+        return make_failed_chunk_result(
+            str(chunk.chunk_id),
+            (chunk.start_idx, chunk.end_idx),
+            f"Failed after {max_retries} attempts: {last_error}",
+        )
     
     def process_chunk(
         self,
@@ -215,6 +212,7 @@ class ChunkedExtractor:
             "disable_discovery": True,  # Disable discovery to reduce LLM calls
             "disable_targeted_extraction": True,
             "skip_verification": True,  # Skip verification for speed
+            "skip_entity_extraction": True,  # Entities extracted once at document level
             "max_spans": spans_for_chunk,
             "span_score_threshold": 0.9,  # Higher threshold for better quality
             "confidence_threshold": 60,  # Higher confidence threshold
@@ -256,15 +254,11 @@ class ChunkedExtractor:
         except Exception as e:
             logger.error(f"Chunk {chunk.chunk_id} extraction failed: {e}", exc_info=True)
             # Return empty result but continue processing other chunks
-            return {
-                "chunk_id": chunk.chunk_id,
-                "chunk_boundaries": (chunk.start_idx, chunk.end_idx),
-                "claims": [],
-                "techniques": {},
-                "entities": {},  # Empty entities for failed chunks
-                "error": str(e),
-                "failed": True
-            }
+            return make_failed_chunk_result(
+                str(chunk.chunk_id),
+                (chunk.start_idx, chunk.end_idx),
+                str(e),
+            )
     
     def merge_entity_evidence(self, entity_instances: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -563,7 +557,7 @@ class ChunkedExtractor:
         text: str,
         config: Dict[str, Any],
         parallel: bool = True,
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[Callable] = None
     ) -> Dict[str, Any]:
         """
         Extract techniques from document using chunked processing.
@@ -623,14 +617,11 @@ class ChunkedExtractor:
                             
                     except Exception as e:
                         logger.error(f"Chunk {chunk_id} failed: {type(e).__name__}: {str(e) or 'No error message'}")
-                        chunk_results[idx] = {
-                            "chunk_id": chunk_id,
-                            "claims": [],
-                            "techniques": {},
-                            "entities": {},
-                            "error": f"{type(e).__name__}: {str(e)}",
-                            "failed": True
-                        }
+                        chunk_results[idx] = make_failed_chunk_result(
+                            chunk_id,
+                            (0, 0),
+                            f"{type(e).__name__}: {str(e)}",
+                        )
                         completed += 1
                         if progress_callback:
                             progress_pct = 35 + int((completed / len(chunks)) * 30)

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import time
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 from threading import Lock
 
@@ -10,9 +11,10 @@ from threading import Lock
 class LLMCache:
     """Thread-safe in-memory cache for LLM responses with TTL support."""
     
-    def __init__(self, ttl_seconds: int = 900):  # 15 minutes default
-        self.cache: Dict[str, Dict[str, Any]] = {}
+    def __init__(self, ttl_seconds: int = 900, max_size: int = 10000):
+        self.cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         self.ttl = ttl_seconds
+        self.max_size = max_size
         self.lock = Lock()
         self.stats = {
             "hits": 0,
@@ -45,6 +47,7 @@ class LLMCache:
                     self.stats["misses"] += 1
                     return None
                 
+                self.cache.move_to_end(key)  # LRU: mark as recently used
                 self.stats["hits"] += 1
                 return entry["response"]
             
@@ -54,12 +57,17 @@ class LLMCache:
     def set(self, messages: List[Dict[str, str]], response: Dict[str, Any], **kwargs) -> None:
         """Cache a response."""
         key = self._generate_key(messages, **kwargs)
-        
+
         with self.lock:
             self.cache[key] = {
                 "response": response,
                 "timestamp": time.time()
             }
+            # Evict oldest entries if over max_size
+            while len(self.cache) > self.max_size:
+                oldest_key = next(iter(self.cache))
+                del self.cache[oldest_key]
+                self.stats["evictions"] += 1
     
     def clear_expired(self) -> int:
         """Remove expired entries and return count."""

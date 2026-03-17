@@ -3,7 +3,7 @@
 import json
 import logging
 from typing import Dict, Any, List, Optional, Tuple
-from bandjacks.llm.client import LLMClient
+from bandjacks.llm.client import get_llm_client
 from bandjacks.llm.entity_ignorelist import get_entity_ignorelist
 from bandjacks.llm.consolidator_base import ConsolidatorBase
 from bandjacks.llm.json_utils import parse_json_with_fallback
@@ -21,7 +21,7 @@ class BatchEntityExtractor:
             config: Optional configuration dictionary
         """
         config = config or {}
-        self.client = LLMClient()
+        self.client = get_llm_client()
         self.ignorelist = get_entity_ignorelist()
         
         # Configuration parameters (with environment variable overrides)

@@ -633,7 +633,7 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
         """
         # Import here to avoid circular imports
         from bandjacks.llm.mapper_optimized import BatchMapperAgent
-        from bandjacks.llm.agents_v2 import MapperAgent, ConsolidatorAgent
+        from bandjacks.llm.agents_v2 import ConsolidatorAgent
         from bandjacks.llm.entity_extractor import EntityExtractionAgent
         from bandjacks.llm.memory import WorkingMemory
         
@@ -650,12 +650,7 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
         
         # Run mapper on pre-detected spans
         if pre_detected_spans:
-            if config.get("use_batch_mapper", True):
-                mapper = BatchMapperAgent()
-                mapper.run(mem, config)
-            else:
-                mapper = MapperAgent()
-                mapper.run(mem, config)
+            BatchMapperAgent().run(mem, config)
 
         # Run consolidator only if not skipping for global consolidation
         if not config.get("skip_chunk_consolidation", False):

@@ -48,33 +48,67 @@ class LLMClient:
         self.temperature = float(os.getenv("LITELLM_TEMPERATURE", "0.3"))  # Lower for more consistent output
         self.max_tokens = int(os.getenv("LITELLM_MAX_TOKENS", "8000"))  # Increased for comprehensive extraction
         
+        # Instance variable for the API key to pass directly to completion()
+        self.api_key_for_completion = None
+
         # Prioritize Gemini as primary model
         if self.google_api_key and self.primary_llm == "gemini":
-            os.environ["GEMINI_API_KEY"] = self.google_api_key
             # Use gemini/ prefix to ensure LiteLLM uses Gemini API instead of Vertex
             self.model = "gemini/" + os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
+            self.api_key_for_completion = self.google_api_key
             logger.debug(f"Using Google Gemini as primary with model: {self.model}")
             # Add OpenAI as fallback if available
             if self.openai_api_key:
                 self.fallback_models.append(os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
         # Use OpenAI as primary or if explicitly set
         elif self.openai_api_key and (self.primary_llm == "openai" or not self.google_api_key):
-            os.environ["OPENAI_API_KEY"] = self.openai_api_key
             self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            self.api_key_for_completion = self.openai_api_key
             logger.debug(f"Using OpenAI with model: {self.model}")
             # Add Gemini as fallback if available
             if self.google_api_key:
                 self.fallback_models.append("gemini/" + os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"))
         # Configure LiteLLM proxy as fallback
         elif self.base_url and self.api_key:
-            os.environ["OPENAI_API_BASE"] = self.base_url
-            os.environ["OPENAI_API_KEY"] = self.api_key
+            self.api_key_for_completion = self.api_key
             logger.debug(f"Using LiteLLM proxy with model: {self.model}")
         else:
             logger.debug(f"No API keys configured, using fallback model: {self.model}")
         
         logger.info(f"Initialized LLM client with model: {self.model}, fallbacks: {self.fallback_models}")
     
+    def _extract_response(self, response, request_id: str = "") -> Dict[str, Any]:
+        """Extract content and tool calls from an LLM response."""
+        choice = response.choices[0]
+        content = choice.message.content
+
+        if content is None:
+            logger.warning(f"[{request_id}] No content in message.content field")
+            if hasattr(choice.message, 'text'):
+                content = choice.message.text
+            elif hasattr(choice.message, 'function_call') and choice.message.function_call:
+                content = choice.message.function_call.arguments
+            else:
+                content = ""
+
+        if content is None:
+            content = ""
+
+        result = {"content": content, "tool_calls": []}
+
+        if hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
+            for tool_call in choice.message.tool_calls:
+                result["tool_calls"].append({
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments,
+                    },
+                })
+
+        return result
+
     def _should_retry(self, exception):
         """Determine if we should retry based on the exception."""
         # Check for specific error codes
@@ -99,7 +133,8 @@ class LLMClient:
         retry_count: int = 0,
         response_format: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = None,
-        request_id: Optional[str] = None
+        request_id: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Call the LLM with messages and optional tools.
@@ -120,11 +155,13 @@ class LLMClient:
         import uuid
         if not request_id:
             request_id = str(uuid.uuid4())[:8]
-        
+
+        # Use per-call model override if provided, otherwise use instance default
+        effective_model = model or self.model
+
         # Log request details
         request_size = sum(len(m.get("content", "")) for m in messages)
-        actual_model = self.model
-        logger.info(f"[{request_id}] LLM Request: model={actual_model}, messages={len(messages)}, chars={request_size}, json={bool(response_format)}")
+        logger.info(f"[{request_id}] LLM Request: model={effective_model}, messages={len(messages)}, chars={request_size}, json={bool(response_format)}")
         
         # Log first message preview for debugging
         if messages:
@@ -141,24 +178,31 @@ class LLMClient:
                 logger.info(f"[{request_id}] Cache hit - returning cached response")
                 return cached_response
         
+        start_time = time.time()
+
         try:
             # Build request parameters
             params = {
-                "model": self.model,
+                "model": effective_model,
                 "messages": messages,
                 "temperature": self.temperature,
                 "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
                 "timeout": self.timeout
             }
-            
+
+            if self.api_key_for_completion:
+                params["api_key"] = self.api_key_for_completion
+            if self.base_url and not self.google_api_key and not self.openai_api_key:
+                params["api_base"] = self.base_url
+
             if tools:
                 params["tools"] = tools
                 params["tool_choice"] = tool_choice
-            
+
             # Add response_format if provided
             if response_format:
                 # Check if we're using Gemini which needs special handling
-                if "gemini" in self.model.lower():
+                if "gemini" in effective_model.lower():
                     # For Gemini, we used to enable JSON schema validation
                     # but this causes the response content to be None
                     # import litellm
@@ -199,12 +243,12 @@ class LLMClient:
             
             # Check circuit breaker
             circuit_breaker = get_circuit_breaker()
-            if circuit_breaker.is_open(self.model):
-                raise RuntimeError(f"Circuit breaker open for {self.model} due to repeated failures")
-            
+            if circuit_breaker.is_open(effective_model):
+                raise RuntimeError(f"Circuit breaker open for {effective_model} due to repeated failures")
+
             # Apply rate limiting
             rate_limiter = get_rate_limiter()
-            rate_limiter.wait_if_needed(self.model)
+            rate_limiter.wait_if_needed(effective_model)
             
             # Retry decorator for the actual LLM call
             @retry(
@@ -221,77 +265,25 @@ class LLMClient:
                 return completion(**params)
             
             # Call via LiteLLM with retry
-            import time
-            start_time = time.time()
             response = _make_llm_call()
             elapsed_ms = int((time.time() - start_time) * 1000)
             
             # Record success with circuit breaker
-            circuit_breaker.record_success(self.model)
-            
-            # Extract response data
-            choice = response.choices[0]
-            
-            # Debug logging to understand response structure
-            logger.debug(f"[{request_id}] Response type: {type(response)}")
-            logger.debug(f"[{request_id}] Choice type: {type(choice)}")
-            logger.debug(f"[{request_id}] Message type: {type(choice.message)}")
+            circuit_breaker.record_success(effective_model)
 
             # Debug: Log the entire response object for json_schema responses
             if response_format and response_format.get("type") == "json_schema":
                 logger.debug(f"[{request_id}] Full response.model_dump(): {response.model_dump() if hasattr(response, 'model_dump') else 'No model_dump'}")
+                choice = response.choices[0]
                 logger.debug(f"[{request_id}] Full choice dict: {choice.__dict__ if hasattr(choice, '__dict__') else 'No dict'}")
 
-            # Try to get content from various possible locations
-            content = choice.message.content
-            
-            if content is None:
-                logger.warning(f"[{request_id}] No content in message.content field")
-                
-                # Log all available attributes for debugging
-                if hasattr(choice.message, '__dict__'):
-                    logger.debug(f"[{request_id}] Message dict: {choice.message.__dict__}")
-                
-                # Try alternative fields
-                if hasattr(choice.message, 'text'):
-                    content = choice.message.text
-                    logger.info(f"[{request_id}] Found content in message.text field")
-                elif hasattr(choice.message, 'function_call') and choice.message.function_call:
-                    content = choice.message.function_call.arguments
-                    logger.info(f"[{request_id}] Found content in function_call.arguments")
-                else:
-                    # List all attributes for debugging
-                    attrs = [attr for attr in dir(choice.message) if not attr.startswith('_')]
-                    logger.error(f"[{request_id}] Cannot find content. Available attrs: {attrs}")
-                    content = ""
-            
-            # Ensure content is a string
-            if content is None:
-                content = ""
-            
-            # Log response details
+            result = self._extract_response(response, request_id)
+            content = result["content"]
             logger.info(f"[{request_id}] LLM Response: chars={len(content)}, time={elapsed_ms}ms, success=True")
             if content:
                 logger.debug(f"[{request_id}] Response preview: {content[:500]}...")
             else:
                 logger.warning(f"[{request_id}] Empty response content")
-            
-            result = {
-                "content": content,
-                "tool_calls": []
-            }
-            
-            # Extract tool calls if present
-            if hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
-                for tool_call in choice.message.tool_calls:
-                    result["tool_calls"].append({
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments
-                        }
-                    })
             
             # Cache the response if enabled
             if use_cache:
@@ -301,9 +293,11 @@ class LLMClient:
             return result
             
         except Exception as e:
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
             error_msg = str(e)
             elapsed_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"[{request_id}] LLM call failed with {self.model} after {elapsed_ms}ms: {error_msg}")
+            logger.error(f"[{request_id}] LLM call failed with {effective_model} after {elapsed_ms}ms: {error_msg}")
             logger.debug(f"[{request_id}] Failed request size: {request_size} chars, messages: {len(messages)}")
             
             # Log more details for debugging
@@ -316,7 +310,7 @@ class LLMClient:
             
             # Record failure with circuit breaker
             circuit_breaker = get_circuit_breaker()
-            circuit_breaker.record_failure(self.model)
+            circuit_breaker.record_failure(effective_model)
             
             # Check if we should retry with a fallback model
             if self._should_retry(e) and retry_count < len(self.fallback_models):
@@ -333,6 +327,12 @@ class LLMClient:
                         "timeout": self.timeout
                     }
 
+                    # Pass the appropriate API key for the fallback model
+                    if "gemini" in fallback_model.lower() and self.google_api_key:
+                        fallback_params["api_key"] = self.google_api_key
+                    elif self.openai_api_key:
+                        fallback_params["api_key"] = self.openai_api_key
+
                     if tools:
                         fallback_params["tools"] = tools
                         fallback_params["tool_choice"] = tool_choice
@@ -345,27 +345,11 @@ class LLMClient:
                     # Record success with circuit breaker
                     circuit_breaker.record_success(fallback_model)
 
-                    # Extract response data
-                    choice = fallback_response.choices[0]
-                    content = choice.message.content or ""
-
-                    fallback_result = {
-                        "content": content,
-                        "tool_calls": []
-                    }
-
-                    if hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
-                        for tool_call in choice.message.tool_calls:
-                            fallback_result["tool_calls"].append({
-                                "id": tool_call.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tool_call.function.name,
-                                    "arguments": tool_call.function.arguments
-                                }
-                            })
-
+                    fallback_result = self._extract_response(fallback_response, request_id)
                     logger.info(f"[{request_id}] Fallback model {fallback_model} succeeded")
+                    if use_cache:
+                        cache = get_cache()
+                        cache.set(messages, fallback_result, tools=tools, tool_choice=tool_choice)
                     return fallback_result
                 except Exception as fallback_error:
                     logger.error(f"Fallback model {fallback_model} also failed: {fallback_error}")
@@ -380,16 +364,38 @@ def call_llm(
 ) -> Dict[str, Any]:
     """
     Convenience function to call LLM.
-    
+
     Args:
         messages: List of message dicts
         tools: Optional tool definitions
-        
+
     Returns:
         LLM response with content and/or tool calls
     """
-    client = LLMClient()
+    client = get_llm_client()
     return client.call(messages, tools)
+
+
+from threading import Lock as _ClientLock
+
+_global_client = None
+_client_lock = _ClientLock()
+
+
+def get_llm_client() -> LLMClient:
+    """Get or create global LLMClient instance."""
+    global _global_client
+    with _client_lock:
+        if _global_client is None:
+            _global_client = LLMClient()
+        return _global_client
+
+
+def reset_llm_client() -> None:
+    """Reset the global LLMClient singleton. Use in tests for isolation."""
+    global _global_client
+    with _client_lock:
+        _global_client = None
 
 
 def execute_tool_loop(
@@ -414,9 +420,7 @@ def execute_tool_loop(
     Returns:
         Final JSON response from the LLM
     """
-    client = LLMClient()
-    if model:
-        client.model = model  # Override model if specified
+    client = get_llm_client()
     current_messages = messages.copy()
     
     for i in range(max_iterations):
@@ -442,10 +446,12 @@ def execute_tool_loop(
         logger.debug(f"Iteration {i}: Calling LLM with {len(tools_to_use or [])} tools...")
         try:
             # On final iteration without tools, use response_format if provided
+            call_kwargs = {}
+            if model:
+                call_kwargs["model"] = model
             if tools_to_use is None and response_format:
-                response = client.call(current_messages, tools_to_use, response_format=response_format)
-            else:
-                response = client.call(current_messages, tools_to_use)
+                call_kwargs["response_format"] = response_format
+            response = client.call(current_messages, tools_to_use, **call_kwargs)
             logger.debug(f"LLM responded with {len(response.get('tool_calls', []))} tool calls")
         except Exception as e:
             logger.error(f"LLM call failed: {e}")

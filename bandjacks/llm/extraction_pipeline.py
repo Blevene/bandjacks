@@ -10,18 +10,15 @@ Primary entry point for all report extraction and attack flow generation.
 import logging
 import uuid
 import time
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Callable, Dict, Any, List, Optional
 from datetime import datetime
 
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.agents_v2 import (
     SpanFinderAgent,
-    RetrieverAgent,
     DiscoveryAgent,
-    MapperAgent,
     EvidenceVerifierAgent,
     ConsolidatorAgent,
-    KillChainSuggestionsAgent,
     AssemblerAgent,
 )
 from bandjacks.llm.mapper_optimized import BatchMapperAgent
@@ -59,7 +56,7 @@ class ExtractionPipeline:
         report_text: str,
         config: Optional[Dict[str, Any]] = None,
         source_id: Optional[str] = None,
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[Callable] = None
     ) -> Dict[str, Any]:
         """
         Run complete extraction and flow generation pipeline.
@@ -124,7 +121,7 @@ class ExtractionPipeline:
         report_text: str,
         config: Dict[str, Any],
         tracker: ExtractionTracker,
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[Callable] = None
     ) -> Dict[str, Any]:
         """Run the extraction agents to identify techniques.
         
@@ -170,16 +167,8 @@ class ExtractionPipeline:
         if progress_callback:
             progress_callback(40, f"Retrieving candidates for {len(mem.spans)} spans...")
         
-        # Use batch retriever for efficiency when processing multiple spans
-        use_batch = config.get("use_batch_retriever", True) and len(mem.spans) > 1
-        logger.info(f"Retriever decision: use_batch={use_batch}, spans={len(mem.spans)}, config_batch={config.get('use_batch_retriever', True)}")
-        
-        if use_batch:
-            logger.info("Using BatchRetrieverAgent for batch processing")
-            BatchRetrieverAgent().run(mem, config)
-        else:
-            logger.info("Using RetrieverAgent for sequential processing")
-            RetrieverAgent().run(mem, config)
+        logger.info(f"Retrieving candidates for {len(mem.spans)} spans")
+        BatchRetrieverAgent().run(mem, config)
         
         # Optional discovery phase
         if not config.get("disable_discovery", False):
@@ -192,11 +181,7 @@ class ExtractionPipeline:
         tracker.set_stage("Mapper")
         if progress_callback:
             progress_callback(50, "Mapping spans to ATT&CK techniques...")
-        # Use batch mapper for speed if configured
-        if config.get("use_batch_mapper", True):
-            BatchMapperAgent().run(mem, config)
-        else:
-            MapperAgent().run(mem, config)
+        BatchMapperAgent().run(mem, config)
         
         tracker.spans_processed = len({
             c.get("span_idx", -1) for c in mem.claims 
@@ -301,105 +286,92 @@ class ExtractionPipeline:
     ):
         """Re-extract techniques suggested by pair validation and kill-chain gaps."""
         tracker.set_stage("Suggestions")
-        KillChainSuggestionsAgent().run(mem, config)
+        # Kill-chain gap analysis and pair suggestions are now computed inside
+        # ConsolidatorAgent.run(), so no separate agent call is needed here.
 
         suggestions = mem.metadata.get("pair_suggestions", [])
         if not suggestions:
             return
 
-        logger.info(f"Running targeted extraction for {len(suggestions)} suggested techniques")
+        # Filter out techniques already found
+        pending = [s for s in suggestions if s["technique_id"] not in mem.techniques]
+        if not pending:
+            return
 
-        from bandjacks.llm.tools import vector_search_ttx
-        from bandjacks.llm.client import LLMClient
+        logger.info(f"Running targeted extraction for {len(pending)} suggested techniques (single batched LLM call)")
+
+        from bandjacks.llm.client import get_llm_client
         from bandjacks.llm.json_utils import parse_llm_json
 
-        client = LLMClient()
+        client = get_llm_client()
+
+        # Build a numbered list of all pending suggestions for a single prompt
+        suggestion_lines = "\n".join(
+            f'{i + 1}. TID: {s["technique_id"]} | Reason: {s.get("reason", "")}'
+            for i, s in enumerate(pending)
+        )
+
+        batch_prompt = (
+            "You are a threat intelligence analyst. Given the document text below, "
+            "check each listed ATT&CK technique ID for evidence in the text.\n\n"
+            f"Techniques to verify:\n{suggestion_lines}\n\n"
+            f"Document text (first 3000 chars):\n{mem.document_text[:3000]}\n\n"
+            "For each technique respond with whether it is found, a short evidence quote, "
+            "and a confidence score (0-100). "
+            'Respond ONLY with JSON in this exact format:\n'
+            '{"results": [{"tid": "T1234", "found": true, "evidence": "quote", "confidence": 75}, ...]}'
+        )
+
         found_count = 0
-
-        for suggestion in suggestions:
-            tid = suggestion["technique_id"]
-            reason = suggestion.get("reason", "")
-
-            # Skip if already found
-            if tid in mem.techniques:
-                continue
-
-            # Search for candidate technique info via vector store
-            query = f"{tid} {reason}"
-            try:
-                candidates = vector_search_ttx(query, kb_types=["AttackPattern"], top_k=3)
-            except Exception as e:
-                logger.warning(f"Vector search failed for {tid}: {e}")
-                continue
-
-            if not candidates:
-                continue
-
-            # Find the matching candidate by external_id
-            target_candidate = None
-            for c in candidates:
-                ext_id = c.get("external_id", "")
-                if ext_id == tid:
-                    target_candidate = c
-                    break
-                # Also match parent technique ID for sub-techniques
-                if "." not in tid and ext_id.startswith(tid + "."):
-                    target_candidate = c
-                    break
-
-            if not target_candidate:
-                target_candidate = candidates[0]  # Use best vector match
-
-            # Ask LLM to verify if this technique is evidenced in the text
-            technique_name = target_candidate.get("name", tid)
-            verify_prompt = (
-                f"Given this threat intelligence text, is there evidence of the "
-                f"ATT&CK technique {tid} ({technique_name})?\n\n"
-                f"Reason for checking: {reason}\n\n"
-                f"Text (first 3000 chars):\n{mem.document_text[:3000]}\n\n"
-                f'Respond with JSON: {{"found": true/false, "evidence": "quote from text", "confidence": 0-100}}'
+        try:
+            response = client.call(
+                messages=[{"role": "user", "content": batch_prompt}],
+                max_tokens=1000,
             )
+            content = response.get("content", "")
+            batch_result = parse_llm_json(content, default={"results": []})
 
-            try:
-                response = client.call(
-                    messages=[{"role": "user", "content": verify_prompt}],
-                    max_tokens=500,
+            results = batch_result.get("results", []) if batch_result else []
+
+            # Build a lookup from suggestion list for triggered_by / reason
+            suggestion_map = {s["technique_id"]: s for s in pending}
+
+            for item in results:
+                if not item.get("found"):
+                    continue
+
+                tid = item.get("tid", "")
+                if not tid or tid not in suggestion_map:
+                    continue
+
+                suggestion = suggestion_map[tid]
+                reason = suggestion.get("reason", "")
+                # Cap confidence at 60 — these are suggestions, not primary extractions
+                confidence = min(item.get("confidence", 40), 60)
+
+                mem.techniques[tid] = {
+                    "name": tid,  # ID used as name; cache lookup happens downstream
+                    "confidence": confidence,
+                    "evidence": [item.get("evidence", reason)],
+                    "line_refs": [],
+                    "source": "targeted_extraction",
+                    "suggestion_reason": reason,
+                    "triggered_by": suggestion.get("triggered_by", "unknown"),
+                }
+                found_count += 1
+                logger.info(
+                    f"Targeted extraction found {tid} with confidence {confidence}"
                 )
-                content = response.get("content", "")
 
-                result = parse_llm_json(content, default={"found": False})
-
-                if result and result.get("found"):
-                    # Cap confidence at 60 -- these are suggestions, not primary extractions
-                    confidence = min(result.get("confidence", 40), 60)
-                    mem.techniques[tid] = {
-                        "name": technique_name,
-                        "confidence": confidence,
-                        "evidence": [result.get("evidence", reason)],
-                        "line_refs": [],
-                        "source": "targeted_extraction",
-                        "suggestion_reason": reason,
-                        "triggered_by": suggestion.get("triggered_by", "unknown"),
-                    }
-                    found_count += 1
-                    logger.info(
-                        f"Targeted extraction found {tid} ({technique_name}) "
-                        f"with confidence {confidence}"
-                    )
-
-            except Exception as e:
-                logger.warning(f"Targeted extraction failed for {tid}: {e}")
-                continue
+        except Exception as e:
+            logger.warning(f"Batched targeted extraction failed: {e}")
 
         if found_count > 0:
             logger.info(
                 f"Targeted extraction added {found_count} techniques "
-                f"from {len(suggestions)} suggestions"
+                f"from {len(pending)} suggestions"
             )
-            if hasattr(tracker, "targeted_found"):
-                tracker.targeted_found = found_count
-            else:
-                tracker.counters["targeted_found"] = found_count
+        tracker.counters["targeted_found"] = found_count
     
     def _generate_embeddings(self, extraction_result: Dict[str, Any]) -> Dict[str, List[float]]:
         """Generate embeddings for extracted techniques.
@@ -634,7 +606,7 @@ def run_extraction_pipeline(
     config: Optional[Dict[str, Any]] = None,
     source_id: Optional[str] = None,
     neo4j_config: Optional[Dict[str, str]] = None,
-    progress_callback: Optional[callable] = None
+    progress_callback: Optional[Callable] = None
 ) -> Dict[str, Any]:
     """
     Convenience function to run the extraction pipeline.

@@ -133,7 +133,7 @@ def list_tactics() -> List[Dict[str, str]]:
                 return tactics
 
     except Exception as e:
-        # Return a fallback list of common tactics if API fails
+        logger.warning(f"Failed to query tactics from Neo4j, using fallback: {e}")
         return [
             {"shortname": "reconnaissance", "name": "Reconnaissance"},
             {"shortname": "resource-development", "name": "Resource Development"},
