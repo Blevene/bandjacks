@@ -29,7 +29,15 @@ class AttackFlowExporter:
             auth=(neo4j_user, neo4j_password)
         )
         self.validator = AttackFlowValidator()
-    
+
+    @classmethod
+    def from_driver(cls, driver, validator=None):
+        """Create exporter sharing an existing Neo4j driver."""
+        instance = cls.__new__(cls)
+        instance.driver = driver
+        instance.validator = validator or AttackFlowValidator()
+        return instance
+
     def export_to_attack_flow(self, flow_id: str) -> Dict[str, Any]:
         """
         Export an internal flow to Attack Flow 2.0 format.

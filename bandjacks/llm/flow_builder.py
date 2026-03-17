@@ -60,9 +60,7 @@ class FlowBuilder:
         self.synthesizer = FlowSynthesizer()
         self.persistence = FlowPersistence(self.driver, self.batch_helper, opensearch_client)
         # Shared exporter — reuses the same Neo4j driver
-        self.exporter = AttackFlowExporter.__new__(AttackFlowExporter)
-        self.exporter.driver = self.driver
-        self.exporter.validator = self.validator
+        self.exporter = AttackFlowExporter.from_driver(self.driver, self.validator)
     
     def build_from_extraction(
         self,
