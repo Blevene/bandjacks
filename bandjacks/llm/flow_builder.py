@@ -917,7 +917,7 @@ class FlowBuilder:
         elif action1.get("tactic_order", 0) < action2.get("tactic_order", 0):
             reasons.append("tactic progression")
         
-        if action1.get("temporal_priority") < action2.get("temporal_priority"):
+        if (action1.get("temporal_priority") or 0) < (action2.get("temporal_priority") or 0):
             reasons.append("temporal sequence")
         
         return ", ".join(reasons) if reasons else "sequential"

@@ -212,6 +212,7 @@ class BatchMapperAgent:
             # Strip markdown wrapper and parse JSON
             parsed = parse_llm_json(content)
             if parsed is None:
+                logger.warning(f"parse_llm_json returned None for content ({len(content)} chars): {repr(content[:200])}")
                 raise json.JSONDecodeError("parse_llm_json returned None", content, 0)
             if isinstance(parsed, dict) and "techniques" in parsed:
                 results = parsed["techniques"]
