@@ -135,6 +135,37 @@ def parse_json_with_fallback(
     return expected_structure or {}
 
 
+def parse_llm_json(raw: str, default=None):
+    """Parse JSON from LLM response, handling markdown fences and truncation.
+
+    Args:
+        raw: Raw string returned by the LLM (may contain markdown fences).
+        default: Value to return when parsing fails entirely.
+
+    Returns:
+        Parsed Python object, or *default* on failure.
+    """
+    if not raw:
+        return default
+    text = raw.strip()
+    # Strip markdown code fences
+    if '```' in text:
+        if '```json' in text:
+            text = text.split('```json', 1)[1].split('```', 1)[0].strip()
+        elif text.startswith('```'):
+            text = text.split('```', 1)[1].split('```', 1)[0].strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Try repair
+        try:
+            from bandjacks.llm.client import repair_truncated_json
+            repaired = repair_truncated_json(text)
+            return json.loads(repaired)
+        except Exception:
+            return default
+
+
 def validate_and_ensure_claims(mem: Any, agent_name: str = "Unknown") -> None:
     """
     Validate that claims exist when techniques are found.

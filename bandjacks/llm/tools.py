@@ -1,5 +1,6 @@
 """Tool adapters for LLM to interact with Bandjacks APIs."""
 
+import logging
 import os
 from typing import List, Optional, Dict, Any
 import httpx
@@ -8,10 +9,24 @@ from bandjacks.services.api.settings import settings
 from bandjacks.services.technique_cache import technique_cache
 from neo4j import GraphDatabase
 
+logger = logging.getLogger(__name__)
 
 # Base API URL - can be overridden by environment variable
 API_BASE = os.getenv("BANDJACKS_API_BASE", "http://localhost:8000/v1")
 TIMEOUT = 30  # seconds
+
+# Module-level singleton driver (same pattern as deps.py)
+_driver = None
+
+
+def _get_driver():
+    global _driver
+    if _driver is None:
+        _driver = GraphDatabase.driver(
+            settings.neo4j_uri,
+            auth=(settings.neo4j_user, settings.neo4j_password)
+        )
+    return _driver
 
 
 def vector_search_ttx(
@@ -21,12 +36,12 @@ def vector_search_ttx(
 ) -> List[Dict[str, Any]]:
     """
     Search for ATT&CK techniques/entities using vector similarity.
-    
+
     Args:
         text: Query text to search for
         kb_types: Optional list of entity types to filter (e.g., ["AttackPattern"])
         top_k: Number of results to return
-        
+
     Returns:
         List of matching entities with scores
     """
@@ -36,7 +51,7 @@ def vector_search_ttx(
     }
     if kb_types:
         body["kb_types"] = kb_types
-    
+
     try:
         # Call search function directly to avoid HTTP deadlock
         results = ttx_search_kb(
@@ -54,20 +69,16 @@ def vector_search_ttx(
 def graph_lookup(stix_id: str) -> Optional[Dict[str, Any]]:
     """
     Look up a STIX object by ID and return its metadata.
-    
+
     Args:
         stix_id: STIX ID to look up (e.g., "attack-pattern--...")
-        
+
     Returns:
         Object metadata including name, description, tactics, or None if not found
     """
     try:
-        # Query Neo4j directly to avoid HTTP deadlock
-        driver = GraphDatabase.driver(
-            settings.neo4j_uri,
-            auth=(settings.neo4j_user, settings.neo4j_password)
-        )
-        
+        driver = _get_driver()
+
         with driver.session() as session:
             result = session.run("""
                 MATCH (n {stix_id: $stix_id})
@@ -76,7 +87,7 @@ def graph_lookup(stix_id: str) -> Optional[Dict[str, Any]]:
                        labels(n) as labels
                 LIMIT 1
             """, stix_id=stix_id)
-            
+
             record = result.single()
             if record:
                 return {
@@ -88,33 +99,28 @@ def graph_lookup(stix_id: str) -> Optional[Dict[str, Any]]:
                     "labels": record["labels"]
                 }
             return None
-            
-        driver.close()
     except Exception as e:
-        return {"error": str(e)}
+        logger.error("graph_lookup failed for %s: %s", stix_id, e)
+        return None
 
 
 def list_tactics() -> List[Dict[str, str]]:
     """
     Get list of all ATT&CK tactics with shortnames.
-    
+
     Returns:
         List of tactics with stix_id, shortname, and name
     """
     try:
-        # Query Neo4j directly to avoid HTTP deadlock
-        driver = GraphDatabase.driver(
-            settings.neo4j_uri,
-            auth=(settings.neo4j_user, settings.neo4j_password)
-        )
-        
+        driver = _get_driver()
+
         with driver.session() as session:
             result = session.run("""
                 MATCH (t:Tactic)
                 RETURN t.shortname as shortname, t.name as name
                 ORDER BY t.name
             """)
-            
+
             tactics = []
             for record in result:
                 if record["shortname"] and record["name"]:
@@ -122,11 +128,10 @@ def list_tactics() -> List[Dict[str, str]]:
                         "shortname": record["shortname"],
                         "name": record["name"]
                     })
-            
+
             if tactics:
                 return tactics
-                
-        driver.close()
+
     except Exception as e:
         # Return a fallback list of common tactics if API fails
         return [
@@ -150,7 +155,7 @@ def list_tactics() -> List[Dict[str, str]]:
 def get_tool_definitions() -> List[Dict[str, Any]]:
     """
     Get OpenAI-compatible tool definitions for the LLM.
-    
+
     Returns:
         List of tool definitions in OpenAI function calling format
     """
@@ -248,7 +253,7 @@ def get_tool_definitions() -> List[Dict[str, Any]]:
 def get_tool_functions() -> Dict[str, callable]:
     """
     Get mapping of tool names to Python functions.
-    
+
     Returns:
         Dict mapping tool names to their implementation functions
     """
@@ -279,19 +284,16 @@ def resolve_technique_by_external_id(external_id: str) -> Optional[Dict[str, Any
             "platforms": cached_tech.get("platforms", []),
             "subtechnique_of": cached_tech.get("subtechnique_of"),
         }
-    
+
     # Fallback to Neo4j query if not in cache (shouldn't happen normally after startup)
     try:
-        driver = GraphDatabase.driver(
-            settings.neo4j_uri,
-            auth=(settings.neo4j_user, settings.neo4j_password)
-        )
+        driver = _get_driver()
         with driver.session() as session:
             rec = session.run(
                 """
                 MATCH (ap:AttackPattern {external_id: $ext})
                 OPTIONAL MATCH (ap)-[:HAS_TACTIC]->(t:Tactic)
-                RETURN ap.stix_id AS stix_id, ap.name AS name, ap.external_id AS external_id, 
+                RETURN ap.stix_id AS stix_id, ap.name AS name, ap.external_id AS external_id,
                        t.shortname AS tactic, ap.description AS description,
                        ap.x_mitre_platforms AS platforms
                 LIMIT 1
@@ -310,11 +312,6 @@ def resolve_technique_by_external_id(external_id: str) -> Optional[Dict[str, Any
             return None
     except Exception as e:
         return {"error": str(e)}
-    finally:
-        try:
-            driver.close()
-        except Exception:
-            pass
 
 
 def list_techniques_for_tactic(tactic_shortname: str, limit: int = 10) -> List[Dict[str, Any]]:
@@ -322,10 +319,7 @@ def list_techniques_for_tactic(tactic_shortname: str, limit: int = 10) -> List[D
     List ATT&CK techniques for a given tactic shortname.
     """
     try:
-        driver = GraphDatabase.driver(
-            settings.neo4j_uri,
-            auth=(settings.neo4j_user, settings.neo4j_password)
-        )
+        driver = _get_driver()
         with driver.session() as session:
             result = session.run(
                 """
@@ -343,20 +337,12 @@ def list_techniques_for_tactic(tactic_shortname: str, limit: int = 10) -> List[D
             ]
     except Exception as e:
         return [{"error": str(e)}]
-    finally:
-        try:
-            driver.close()
-        except Exception:
-            pass
 
 
 def list_subtechniques(parent_external_id: str) -> List[Dict[str, Any]]:
     """List sub-techniques for a parent technique external_id."""
     try:
-        driver = GraphDatabase.driver(
-            settings.neo4j_uri,
-            auth=(settings.neo4j_user, settings.neo4j_password)
-        )
+        driver = _get_driver()
         with driver.session() as session:
             rows = session.run(
                 """
@@ -369,8 +355,3 @@ def list_subtechniques(parent_external_id: str) -> List[Dict[str, Any]]:
             return [{"external_id": r["external_id"], "name": r["name"]} for r in rows]
     except Exception as e:
         return [{"error": str(e)}]
-    finally:
-        try:
-            driver.close()
-        except Exception:
-            pass

@@ -9,7 +9,7 @@ from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.tools import list_subtechniques, resolve_technique_by_external_id
 from bandjacks.services.technique_cache import technique_cache
-from bandjacks.llm.json_utils import parse_json_with_fallback, validate_and_ensure_claims
+from bandjacks.llm.json_utils import parse_json_with_fallback, parse_llm_json, validate_and_ensure_claims
 from bandjacks.llm.token_utils import TokenEstimator
 
 logger = logging.getLogger(__name__)
@@ -178,55 +178,30 @@ class BatchMapperAgent:
         }
         
         # Single LLM call for this batch with structured output
+        # Note: LLMClient.call() already has tenacity retry with exponential backoff,
+        # so no manual retry loop is needed here.
         logger.info(f"BatchMapper LLM request: batch of {len(spans_data)} spans")
         client = LLMClient()
 
-        # Retry logic for empty responses
-        max_retries = 3
-        retry_delay = 2  # seconds
+        try:
+            response = client.call(
+                messages,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": technique_schema
+                },
+                max_tokens=8000  # Doubled to prevent truncation issues
+            )
+            content = response.get("content", "")
 
-        for retry_attempt in range(max_retries):
-            try:
-                # Call LLM with proper response format
-                response = client.call(
-                    messages,
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": technique_schema
-                    },
-                    max_tokens=8000  # Doubled to prevent truncation issues
-                )
-                content = response.get("content", "")
-
-                # Log response
-                logger.info(f"BatchMapper LLM response (attempt {retry_attempt + 1}): {len(content)} chars")
-                logger.debug(f"BatchMapper raw response preview: {content[:500]}...")
-
-                if content:
-                    # Got a response, proceed
-                    break
-
-                # Empty response, retry if we have attempts left
-                if retry_attempt < max_retries - 1:
-                    logger.warning(f"Empty response from LLM, retrying in {retry_delay} seconds (attempt {retry_attempt + 1}/{max_retries})")
-                    import time
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    logger.error(f"Empty response from LLM after {max_retries} attempts for batch technique extraction")
-                    return 0
-            except Exception as e:
-                if retry_attempt < max_retries - 1:
-                    logger.warning(f"LLM call failed with error: {e}, retrying (attempt {retry_attempt + 1}/{max_retries})")
-                    import time
-                    time.sleep(retry_delay)
-                    retry_delay *= 2
-                else:
-                    logger.error(f"LLM call failed after {max_retries} attempts: {e}")
-                    raise
+            logger.info(f"BatchMapper LLM response: {len(content)} chars")
+            logger.debug(f"BatchMapper raw response preview: {content[:500]}...")
+        except Exception as e:
+            logger.error(f"LLM call failed for batch technique extraction: {e}")
+            return 0
 
         if not content:
-            logger.error("Failed to get non-empty response from LLM")
+            logger.error("Empty response from LLM for batch technique extraction")
             return 0
 
         # Parse the simplified JSON array
@@ -234,16 +209,10 @@ class BatchMapperAgent:
             # Store original content for fallback
             original_content = content
 
-            # Strip markdown wrapper if present
-            if '```' in content:
-                if '```json' in content:
-                    content = content.split('```json')[1].split('```')[0].strip()
-                elif content.strip().startswith('```'):
-                    content = content.split('```')[1].split('```')[0].strip()
-                logger.debug(f"Stripped markdown wrapper, new length: {len(content)}")
-
-            # Parse the structured response - expects {"techniques": [...]}
-            parsed = json.loads(content)
+            # Strip markdown wrapper and parse JSON
+            parsed = parse_llm_json(content)
+            if parsed is None:
+                raise json.JSONDecodeError("parse_llm_json returned None", content, 0)
             if isinstance(parsed, dict) and "techniques" in parsed:
                 results = parsed["techniques"]
             else:

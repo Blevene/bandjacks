@@ -6,7 +6,7 @@ import re
 from typing import Dict, Any, List, Optional
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.memory import WorkingMemory
-from bandjacks.llm.json_utils import parse_json_with_fallback
+from bandjacks.llm.json_utils import parse_json_with_fallback, parse_llm_json
 from bandjacks.llm.consolidator_base import ConsolidatorBase
 
 logger = logging.getLogger(__name__)
@@ -286,19 +286,13 @@ Text: {doc_text[:2000]}"""
                     error_msg = "Empty response from LLM for entity extraction after retries"
                     logger.error(error_msg)
                     mem.entities = {"entities": [], "extraction_status": "failed", "error": error_msg}
-                    mem.extraction_errors = getattr(mem, 'extraction_errors', [])
+                    # extraction_errors is a declared field on WorkingMemory
                     mem.extraction_errors.append({"stage": "entity_extraction", "error": error_msg})
                     return
                 
                 # Parse JSON response
                 try:
-                    # Try to extract JSON from potential markdown wrapper
-                    if '```json' in content:
-                        content = content.split('```json')[1].split('```')[0].strip()
-                    elif '```' in content:
-                        content = content.split('```')[1].split('```')[0].strip()
-                    
-                    entities = json.loads(content)
+                    entities = parse_llm_json(content)
                     
                     # Validate structure
                     if not isinstance(entities, dict) or "entities" not in entities:
@@ -376,8 +370,7 @@ Text: {doc_text[:2000]}"""
             # Set failure state
             mem.entities = {"entities": [], "extraction_status": "failed", "error": str(e)}
             
-            # Track error for reporting
-            mem.extraction_errors = getattr(mem, 'extraction_errors', [])
+            # Track error for reporting (extraction_errors is a declared field on WorkingMemory)
             mem.extraction_errors.append({"stage": "entity_extraction", "error": str(e)})
     
     def _create_chunks(self, text: str, chunk_size: int = None, overlap: int = None) -> List[str]:
@@ -571,24 +564,10 @@ Text: {doc_text[:2000]}"""
                 return []
             
             # Parse JSON response
-            try:
-                result = json.loads(content)
-                if isinstance(result, dict) and "entities" in result:
-                    return result["entities"]
-                return []
-                
-            except json.JSONDecodeError:
-                # Try to extract JSON from the response
-                import re
-                json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                if json_match:
-                    try:
-                        result = json.loads(json_match.group(0))
-                        if isinstance(result, dict) and "entities" in result:
-                            return result["entities"]
-                    except Exception:
-                        pass
-                return []
+            result = parse_llm_json(content, default={})
+            if isinstance(result, dict) and "entities" in result:
+                return result["entities"]
+            return []
                 
         except Exception as e:
             logger.error(f"Error extracting entities from chunk: {e}")

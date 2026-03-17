@@ -193,7 +193,7 @@ class ExtractionPipeline:
         if progress_callback:
             progress_callback(50, "Mapping spans to ATT&CK techniques...")
         # Use batch mapper for speed if configured
-        if config.get("use_batch_mapper", False):
+        if config.get("use_batch_mapper", True):
             BatchMapperAgent().run(mem, config)
         else:
             MapperAgent().run(mem, config)
@@ -224,8 +224,8 @@ class ExtractionPipeline:
             EntityConsolidatorAgent().run(mem, config)
             logger.info(f"Entity consolidation complete: {len(getattr(mem, 'consolidated_entities', {}))} unique entities")
         
-        # Optional targeted extraction for missing tactics
-        if not config.get("disable_targeted_extraction", True):
+        # Targeted extraction for technique pair suggestions
+        if not config.get("disable_targeted_extraction", False):
             self._run_targeted_extraction(mem, config, tracker)
         
         tracker.set_stage("Assembler")
@@ -299,18 +299,107 @@ class ExtractionPipeline:
         config: Dict[str, Any],
         tracker: ExtractionTracker
     ):
-        """Run targeted extraction for missing tactics."""
+        """Re-extract techniques suggested by pair validation and kill-chain gaps."""
         tracker.set_stage("Suggestions")
         KillChainSuggestionsAgent().run(mem, config)
-        
-        # Only do targeted extraction if very few techniques found
-        if len(mem.techniques) < 2 and hasattr(mem, "inferred_suggestions"):
-            missing_tactics = [s["tactic"] for s in mem.inferred_suggestions][:3]
-            if missing_tactics:
-                logger.info(f"Running targeted extraction for {len(missing_tactics)} tactics")
-                # This would require reimplementing targeted extraction logic
-                # For now, we skip this to avoid complexity
-                pass
+
+        suggestions = mem.metadata.get("pair_suggestions", [])
+        if not suggestions:
+            return
+
+        logger.info(f"Running targeted extraction for {len(suggestions)} suggested techniques")
+
+        from bandjacks.llm.tools import vector_search_ttx
+        from bandjacks.llm.client import LLMClient
+        from bandjacks.llm.json_utils import parse_llm_json
+
+        client = LLMClient()
+        found_count = 0
+
+        for suggestion in suggestions:
+            tid = suggestion["technique_id"]
+            reason = suggestion.get("reason", "")
+
+            # Skip if already found
+            if tid in mem.techniques:
+                continue
+
+            # Search for candidate technique info via vector store
+            query = f"{tid} {reason}"
+            try:
+                candidates = vector_search_ttx(query, kb_types=["AttackPattern"], top_k=3)
+            except Exception as e:
+                logger.warning(f"Vector search failed for {tid}: {e}")
+                continue
+
+            if not candidates:
+                continue
+
+            # Find the matching candidate by external_id
+            target_candidate = None
+            for c in candidates:
+                ext_id = c.get("external_id", "")
+                if ext_id == tid:
+                    target_candidate = c
+                    break
+                # Also match parent technique ID for sub-techniques
+                if "." not in tid and ext_id.startswith(tid + "."):
+                    target_candidate = c
+                    break
+
+            if not target_candidate:
+                target_candidate = candidates[0]  # Use best vector match
+
+            # Ask LLM to verify if this technique is evidenced in the text
+            technique_name = target_candidate.get("name", tid)
+            verify_prompt = (
+                f"Given this threat intelligence text, is there evidence of the "
+                f"ATT&CK technique {tid} ({technique_name})?\n\n"
+                f"Reason for checking: {reason}\n\n"
+                f"Text (first 3000 chars):\n{mem.document_text[:3000]}\n\n"
+                f'Respond with JSON: {{"found": true/false, "evidence": "quote from text", "confidence": 0-100}}'
+            )
+
+            try:
+                response = client.call(
+                    messages=[{"role": "user", "content": verify_prompt}],
+                    max_tokens=500,
+                )
+                content = response.get("content", "")
+
+                result = parse_llm_json(content, default={"found": False})
+
+                if result and result.get("found"):
+                    # Cap confidence at 60 -- these are suggestions, not primary extractions
+                    confidence = min(result.get("confidence", 40), 60)
+                    mem.techniques[tid] = {
+                        "name": technique_name,
+                        "confidence": confidence,
+                        "evidence": [result.get("evidence", reason)],
+                        "line_refs": [],
+                        "source": "targeted_extraction",
+                        "suggestion_reason": reason,
+                        "triggered_by": suggestion.get("triggered_by", "unknown"),
+                    }
+                    found_count += 1
+                    logger.info(
+                        f"Targeted extraction found {tid} ({technique_name}) "
+                        f"with confidence {confidence}"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Targeted extraction failed for {tid}: {e}")
+                continue
+
+        if found_count > 0:
+            logger.info(
+                f"Targeted extraction added {found_count} techniques "
+                f"from {len(suggestions)} suggestions"
+            )
+            if hasattr(tracker, "targeted_found"):
+                tracker.targeted_found = found_count
+            else:
+                tracker.counters["targeted_found"] = found_count
     
     def _generate_embeddings(self, extraction_result: Dict[str, Any]) -> Dict[str, List[float]]:
         """Generate embeddings for extracted techniques.

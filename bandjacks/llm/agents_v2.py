@@ -25,6 +25,7 @@ from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.llm.consolidator_base import ConsolidatorBase
 from bandjacks.llm.keyword_index import KeywordIndex
 from bandjacks.llm.technique_pairs import TechniquePairValidator
+from bandjacks.llm.json_utils import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -557,24 +558,13 @@ class MapperAgent:
                 )
                 client.model = old_model  # Restore original
                 raw = response.get("content", "")
-                
-                # Handle potential markdown wrapper despite structured output
-                cleaned = raw.strip() if isinstance(raw, str) else raw
-                if cleaned.startswith('```'):
-                    # Extract JSON from markdown if present
-                    if '```json' in cleaned:
-                        cleaned = cleaned.split('```json')[1].split('```')[0].strip()
-                    else:
-                        cleaned = cleaned.split('```')[1].split('```')[0].strip()
             except Exception as e:
                 logger.debug(f"MapperAgent LLM call failed for span {i}: {e}")
                 continue
-            
-            try:
-                # Direct JSON parsing
-                resp = json.loads(cleaned)
-            except Exception as e:
-                logger.error(f"Failed to parse JSON from MapperAgent: {e}")
+
+            resp = parse_llm_json(raw)
+            if resp is None:
+                logger.error(f"Failed to parse JSON from MapperAgent")
                 logger.debug(f"Raw response: {repr(raw[:500]) if raw else 'None'}")
                 continue
             choice = resp.get("selected") or resp.get("proposed") or {}
@@ -954,7 +944,7 @@ class KillChainSuggestionsAgent:
         missing = sorted(all_tactics - covered)
         mem.notes.append(f"Missing tactics: {', '.join(missing)}")
         # Store suggestions placeholder for future targeted discovery (no commit)
-        setattr(mem, "inferred_suggestions", [{"tactic": t, "candidates": []} for t in missing])
+        mem.inferred_suggestions = [{"tactic": t, "candidates": []} for t in missing]
 
 
 class AssemblerAgent:
