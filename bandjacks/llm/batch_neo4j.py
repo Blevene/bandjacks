@@ -5,6 +5,8 @@ from typing import Dict, Any, List, Optional, Tuple, Set
 from functools import lru_cache
 import json
 
+from bandjacks.llm.constants import get_tactic_order as _get_tactic_order
+
 logger = logging.getLogger(__name__)
 
 
@@ -375,20 +377,11 @@ class BatchNeo4jHelper:
     def get_tactic_order(self, tactic: str) -> int:
         """
         Get numeric order for a tactic (cached).
-        
+
         Args:
             tactic: Tactic shortname
-            
+
         Returns:
             Numeric order (1-14) or 7 for unknown
         """
-        tactic_order = {
-            "reconnaissance": 1, "resource-development": 2,
-            "initial-access": 3, "execution": 4,
-            "persistence": 5, "privilege-escalation": 6,
-            "defense-evasion": 7, "credential-access": 8,
-            "discovery": 9, "lateral-movement": 10,
-            "collection": 11, "command-and-control": 12,
-            "exfiltration": 13, "impact": 14
-        }
-        return tactic_order.get(tactic, 7)
+        return _get_tactic_order(tactic)

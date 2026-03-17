@@ -18,6 +18,7 @@ from bandjacks.llm.client import LLMClient
 from bandjacks.llm.schemas import ATTACK_FLOW_SCHEMA
 from bandjacks.llm.attack_flow_validator import AttackFlowValidator
 from bandjacks.llm.batch_neo4j import BatchNeo4jHelper
+from bandjacks.llm.constants import get_tactic_order
 from bandjacks.loaders.embedder import encode
 
 logger = logging.getLogger(__name__)
@@ -882,18 +883,8 @@ class FlowBuilder:
     
     def _is_tactic_regression(self, tactic1: str, tactic2: str) -> bool:
         """Check if moving from tactic1 to tactic2 is a regression."""
-        tactic_order = {
-            "reconnaissance": 1, "resource-development": 2,
-            "initial-access": 3, "execution": 4,
-            "persistence": 5, "privilege-escalation": 6,
-            "defense-evasion": 7, "credential-access": 8,
-            "discovery": 9, "lateral-movement": 10,
-            "collection": 11, "command-and-control": 12,
-            "exfiltration": 13, "impact": 14
-        }
-        
-        order1 = tactic_order.get(tactic1, 7)
-        order2 = tactic_order.get(tactic2, 7)
+        order1 = get_tactic_order(tactic1)
+        order2 = get_tactic_order(tactic2)
         
         # Regression if going back more than 3 steps
         return order2 < order1 - 3
