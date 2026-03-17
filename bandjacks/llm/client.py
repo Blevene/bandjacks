@@ -178,6 +178,8 @@ class LLMClient:
                 logger.info(f"[{request_id}] Cache hit - returning cached response")
                 return cached_response
         
+        start_time = time.time()
+
         try:
             # Build request parameters
             params = {
@@ -263,8 +265,6 @@ class LLMClient:
                 return completion(**params)
             
             # Call via LiteLLM with retry
-            import time
-            start_time = time.time()
             response = _make_llm_call()
             elapsed_ms = int((time.time() - start_time) * 1000)
             
