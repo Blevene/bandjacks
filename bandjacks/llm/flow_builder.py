@@ -566,14 +566,7 @@ class FlowBuilder:
             })
         
         # Create NEXT edges between consecutive steps
-        edges = []
-        for i in range(len(actions) - 1):
-            edges.append({
-                "source": actions[i]["action_id"],
-                "target": actions[i+1]["action_id"],
-                "probability": self._calculate_probability(actions[i], actions[i+1]),
-                "rationale": "LLM-inferred sequence" if llm_synthesized else "Sequential ordering"
-            })
+        edges = self._compute_next_edges(actions)
         
         return {
             "flow_id": flow_id,
@@ -886,66 +879,6 @@ class FlowBuilder:
             })
         
         return edges
-    
-    def _calculate_probability(self, action1: Dict[str, Any], action2: Dict[str, Any]) -> float:
-        """
-        Calculate transition probability between actions.
-        
-        Args:
-            action1: Source action
-            action2: Target action
-            
-        Returns:
-            Probability between 0.1 and 1.0
-        """
-        base_p = 0.6
-        
-        # Check historical adjacency in Neo4j
-        tech1 = action1.get("attack_pattern_ref") or action1.get("technique_id")
-        tech2 = action2.get("attack_pattern_ref") or action2.get("technique_id")
-        
-        if tech1 and tech2:
-            with self.driver.session() as session:
-                # Check if these techniques have been seen together
-                result = session.run(
-                    """
-                    MATCH (t1:AttackPattern {stix_id: $tech1})
-                    MATCH (t2:AttackPattern {stix_id: $tech2})
-                    OPTIONAL MATCH (t1)-[n:NEXT]-(t2)
-                    RETURN count(n) as adjacency_count
-                    """,
-                    tech1=tech1,
-                    tech2=tech2
-                )
-                record = result.single()
-                if record and record["adjacency_count"] > 0:
-                    base_p += 0.2
-                
-                # Check tactic alignment
-                tactic_result = session.run(
-                    """
-                    MATCH (t1:AttackPattern {stix_id: $tech1})-[:HAS_TACTIC]->(tac1:Tactic)
-                    MATCH (t2:AttackPattern {stix_id: $tech2})-[:HAS_TACTIC]->(tac2:Tactic)
-                    RETURN tac1.shortname as tactic1, tac2.shortname as tactic2
-                    """,
-                    tech1=tech1,
-                    tech2=tech2
-                )
-                tactic_record = tactic_result.single()
-                if tactic_record:
-                    if tactic_record["tactic1"] == tactic_record["tactic2"]:
-                        base_p += 0.1
-                    elif self._is_tactic_regression(tactic_record["tactic1"], tactic_record["tactic2"]):
-                        base_p -= 0.1
-        
-        # Factor in confidence
-        avg_confidence = (action1.get("confidence", 50) + action2.get("confidence", 50)) / 2
-        if avg_confidence > 80:
-            base_p += 0.05
-        elif avg_confidence < 40:
-            base_p -= 0.05
-        
-        return min(1.0, max(0.1, base_p))
     
     def _is_tactic_regression(self, tactic1: str, tactic2: str) -> bool:
         """Check if moving from tactic1 to tactic2 is a regression."""
