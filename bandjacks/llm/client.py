@@ -48,27 +48,29 @@ class LLMClient:
         self.temperature = float(os.getenv("LITELLM_TEMPERATURE", "0.3"))  # Lower for more consistent output
         self.max_tokens = int(os.getenv("LITELLM_MAX_TOKENS", "8000"))  # Increased for comprehensive extraction
         
+        # Instance variable for the API key to pass directly to completion()
+        self.api_key_for_completion = None
+
         # Prioritize Gemini as primary model
         if self.google_api_key and self.primary_llm == "gemini":
-            os.environ["GEMINI_API_KEY"] = self.google_api_key
             # Use gemini/ prefix to ensure LiteLLM uses Gemini API instead of Vertex
             self.model = "gemini/" + os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
+            self.api_key_for_completion = self.google_api_key
             logger.debug(f"Using Google Gemini as primary with model: {self.model}")
             # Add OpenAI as fallback if available
             if self.openai_api_key:
                 self.fallback_models.append(os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
         # Use OpenAI as primary or if explicitly set
         elif self.openai_api_key and (self.primary_llm == "openai" or not self.google_api_key):
-            os.environ["OPENAI_API_KEY"] = self.openai_api_key
             self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+            self.api_key_for_completion = self.openai_api_key
             logger.debug(f"Using OpenAI with model: {self.model}")
             # Add Gemini as fallback if available
             if self.google_api_key:
                 self.fallback_models.append("gemini/" + os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"))
         # Configure LiteLLM proxy as fallback
         elif self.base_url and self.api_key:
-            os.environ["OPENAI_API_BASE"] = self.base_url
-            os.environ["OPENAI_API_KEY"] = self.api_key
+            self.api_key_for_completion = self.api_key
             logger.debug(f"Using LiteLLM proxy with model: {self.model}")
         else:
             logger.debug(f"No API keys configured, using fallback model: {self.model}")
@@ -150,7 +152,12 @@ class LLMClient:
                 "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
                 "timeout": self.timeout
             }
-            
+
+            if self.api_key_for_completion:
+                params["api_key"] = self.api_key_for_completion
+            if self.base_url and not self.google_api_key and not self.openai_api_key:
+                params["api_base"] = self.base_url
+
             if tools:
                 params["tools"] = tools
                 params["tool_choice"] = tool_choice
@@ -332,6 +339,12 @@ class LLMClient:
                         "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
                         "timeout": self.timeout
                     }
+
+                    # Pass the appropriate API key for the fallback model
+                    if "gemini" in fallback_model.lower() and self.google_api_key:
+                        fallback_params["api_key"] = self.google_api_key
+                    elif self.openai_api_key:
+                        fallback_params["api_key"] = self.openai_api_key
 
                     if tools:
                         fallback_params["tools"] = tools
