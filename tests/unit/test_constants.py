@@ -2,7 +2,6 @@
 Tests for bandjacks.llm.constants module.
 """
 
-import pytest
 from bandjacks.llm.constants import (
     DEFAULT_TACTIC_ORDER,
     TACTIC_ORDER,
