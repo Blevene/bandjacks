@@ -105,7 +105,7 @@ class DeterministicFlowBuilder:
             if tid not in by_tid:
                 by_tid[tid] = {
                     "external_id": tid,
-                    "confidence": confidence,
+                    "confidence": float(confidence),
                     "narrative_position": narrative_pos,
                     "name": c.get("name", ""),
                 }
@@ -169,7 +169,7 @@ class DeterministicFlowBuilder:
                     "order": i,
                     "attack_pattern_ref": item["attack_pattern_ref"],
                     "name": item["name"],
-                    "confidence": item["confidence"],
+                    "confidence": float(item["confidence"]),
                     "tactic": item["tactic"],
                     "tactic_rank": item["tactic_rank"],
                     "narrative_position": item["narrative_position"],
