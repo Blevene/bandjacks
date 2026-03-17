@@ -5,6 +5,7 @@ Core module for generating attack flows from extraction results.
 Integrates with Neo4j, OpenSearch, and STIX generation systems.
 """
 
+import logging
 import uuid
 import json
 import re
@@ -18,6 +19,8 @@ from bandjacks.llm.schemas import ATTACK_FLOW_SCHEMA
 from bandjacks.llm.attack_flow_validator import AttackFlowValidator
 from bandjacks.llm.batch_neo4j import BatchNeo4jHelper
 from bandjacks.loaders.embedder import encode
+
+logger = logging.getLogger(__name__)
 
 # Flow builder constants
 DEFAULT_CONFIDENCE = 50.0
@@ -1208,7 +1211,7 @@ class FlowBuilder:
                 return True
                 
             except Exception as e:
-                print(f"Error persisting flow to Neo4j: {e}")
+                logger.error("Error persisting flow to Neo4j: %s", e)
                 return False
     
     def generate_flow_embedding(self, flow_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1318,7 +1321,7 @@ class FlowBuilder:
                 # Return raw text if available
                 return report.get("raw_text")
         except Exception as e:
-            print(f"Error retrieving stored text: {e}")
+            logger.error("Error retrieving stored text: %s", e)
         
         return None
     
@@ -1359,21 +1362,21 @@ class FlowBuilder:
             )
             
             # Parse and validate response
-            print(f"[DEBUG] Raw LLM response for flow: {response['content'][:500]}...")
+            logger.debug("Raw LLM response for flow: %s...", response['content'][:500])
             attack_flow = self._parse_llm_response(response["content"])
             
             if attack_flow:
-                print(f"[DEBUG] Flow parsed successfully, validating...")
+                logger.debug("Flow parsed successfully, validating...")
                 # Validate flow references
                 attack_flow = self._validate_flow(attack_flow, cti_data)
-                print(f"[DEBUG] Flow validation complete, returning flow")
+                logger.debug("Flow validation complete, returning flow")
             else:
-                print(f"[ERROR] Flow parsing failed, attack_flow is None")
+                logger.error("Flow parsing failed, attack_flow is None")
             
             return attack_flow
             
         except Exception as e:
-            print(f"[ERROR] Failed to synthesize attack flow: {e}")
+            logger.error("Failed to synthesize attack flow: %s", e)
             return None
     
     def _prepare_cti_data(self, extraction_result: Dict[str, Any]) -> Dict[str, Any]:
@@ -1652,27 +1655,27 @@ Output as JSON matching the attack flow schema."""
             # Try direct parse
             try:
                 flow = json.loads(response)
-                print(f"[DEBUG] Parsed flow directly: {type(flow)} with keys: {flow.keys() if isinstance(flow, dict) else 'not dict'}")
+                logger.debug("Parsed flow directly: %s with keys: %s", type(flow), flow.keys() if isinstance(flow, dict) else 'not dict')
             except json.JSONDecodeError as e:
-                print(f"[DEBUG] Direct JSON parse failed: {e}")
+                logger.debug("Direct JSON parse failed: %s", e)
                 # Extract from code block
                 json_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', response, re.DOTALL)
                 if json_match:
                     flow = json.loads(json_match.group(1))
-                    print(f"[DEBUG] Extracted flow from code block: {type(flow)} with keys: {flow.keys() if isinstance(flow, dict) else 'not dict'}")
+                    logger.debug("Extracted flow from code block: %s with keys: %s", type(flow), flow.keys() if isinstance(flow, dict) else 'not dict')
                 else:
                     # Try to find JSON object
                     json_match = re.search(r'\{.*\}', response, re.DOTALL)
                     if json_match:
                         flow = json.loads(json_match.group(0))
-                        print(f"[DEBUG] Extracted flow from JSON match: {type(flow)} with keys: {flow.keys() if isinstance(flow, dict) else 'not dict'}")
+                        logger.debug("Extracted flow from JSON match: %s with keys: %s", type(flow), flow.keys() if isinstance(flow, dict) else 'not dict')
                     else:
-                        print(f"[ERROR] No JSON found in response: {response[:200]}...")
+                        logger.error("No JSON found in response: %s...", response[:200])
                         return None
             
             # Handle direct format (flow_name, steps at top level)
             if "flow_name" in flow and "steps" in flow:
-                print(f"[DEBUG] Detected direct format with flow_name: {flow.get('flow_name')}")
+                logger.debug("Detected direct format with flow_name: %s", flow.get('flow_name'))
                 # Convert to expected nested format
                 flow["flow"] = {
                     "label": "AttackFlow", 
@@ -1684,7 +1687,7 @@ Output as JSON matching the attack flow schema."""
                 }
             elif "flow" not in flow:
                 # Create default flow structure
-                print("[DEBUG] No flow structure found, creating default")
+                logger.debug("No flow structure found, creating default")
                 flow["flow"] = {
                     "label": "AttackFlow",
                     "pk": f"flow-{uuid.uuid4().hex[:8]}",
@@ -1703,7 +1706,7 @@ Output as JSON matching the attack flow schema."""
                 else:
                     flow["steps"] = []
             
-            print(f"[DEBUG] Flow has {len(flow.get('steps', []))} steps")
+            logger.debug("Flow has %d steps", len(flow.get('steps', [])))
             
             # Add missing step fields
             for i, step in enumerate(flow["steps"]):
@@ -1721,13 +1724,11 @@ Output as JSON matching the attack flow schema."""
                 if "reason" not in step:
                     step["reason"] = "Sequence position"
             
-            print(f"[DEBUG] Successfully parsed flow with {len(flow['steps'])} steps")
+            logger.debug("Successfully parsed flow with %d steps", len(flow['steps']))
             return flow
             
         except Exception as e:
-            print(f"[ERROR] Failed to parse attack flow: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("Failed to parse attack flow: %s", e, exc_info=True)
             return None
     
     def _validate_flow(
@@ -1920,7 +1921,7 @@ Output as JSON matching the attack flow schema."""
         # Validate the bundle
         is_valid, errors = self.validator.validate(bundle)
         if not is_valid:
-            print(f"Warning: Generated Attack Flow has validation issues: {errors}")
+            logger.warning("Generated Attack Flow has validation issues: %s", errors)
         
         return bundle
     
