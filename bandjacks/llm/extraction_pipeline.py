@@ -307,99 +307,85 @@ class ExtractionPipeline:
         if not suggestions:
             return
 
-        logger.info(f"Running targeted extraction for {len(suggestions)} suggested techniques")
+        # Filter out techniques already found
+        pending = [s for s in suggestions if s["technique_id"] not in mem.techniques]
+        if not pending:
+            return
 
-        from bandjacks.llm.tools import vector_search_ttx
+        logger.info(f"Running targeted extraction for {len(pending)} suggested techniques (single batched LLM call)")
+
         from bandjacks.llm.client import LLMClient
         from bandjacks.llm.json_utils import parse_llm_json
 
         client = LLMClient()
+
+        # Build a numbered list of all pending suggestions for a single prompt
+        suggestion_lines = "\n".join(
+            f'{i + 1}. TID: {s["technique_id"]} | Reason: {s.get("reason", "")}'
+            for i, s in enumerate(pending)
+        )
+
+        batch_prompt = (
+            "You are a threat intelligence analyst. Given the document text below, "
+            "check each listed ATT&CK technique ID for evidence in the text.\n\n"
+            f"Techniques to verify:\n{suggestion_lines}\n\n"
+            f"Document text (first 3000 chars):\n{mem.document_text[:3000]}\n\n"
+            "For each technique respond with whether it is found, a short evidence quote, "
+            "and a confidence score (0-100). "
+            'Respond ONLY with JSON in this exact format:\n'
+            '{"results": [{"tid": "T1234", "found": true, "evidence": "quote", "confidence": 75}, ...]}'
+        )
+
         found_count = 0
-
-        for suggestion in suggestions:
-            tid = suggestion["technique_id"]
-            reason = suggestion.get("reason", "")
-
-            # Skip if already found
-            if tid in mem.techniques:
-                continue
-
-            # Search for candidate technique info via vector store
-            query = f"{tid} {reason}"
-            try:
-                candidates = vector_search_ttx(query, kb_types=["AttackPattern"], top_k=3)
-            except Exception as e:
-                logger.warning(f"Vector search failed for {tid}: {e}")
-                continue
-
-            if not candidates:
-                continue
-
-            # Find the matching candidate by external_id
-            target_candidate = None
-            for c in candidates:
-                ext_id = c.get("external_id", "")
-                if ext_id == tid:
-                    target_candidate = c
-                    break
-                # Also match parent technique ID for sub-techniques
-                if "." not in tid and ext_id.startswith(tid + "."):
-                    target_candidate = c
-                    break
-
-            if not target_candidate:
-                target_candidate = candidates[0]  # Use best vector match
-
-            # Ask LLM to verify if this technique is evidenced in the text
-            technique_name = target_candidate.get("name", tid)
-            verify_prompt = (
-                f"Given this threat intelligence text, is there evidence of the "
-                f"ATT&CK technique {tid} ({technique_name})?\n\n"
-                f"Reason for checking: {reason}\n\n"
-                f"Text (first 3000 chars):\n{mem.document_text[:3000]}\n\n"
-                f'Respond with JSON: {{"found": true/false, "evidence": "quote from text", "confidence": 0-100}}'
+        try:
+            response = client.call(
+                messages=[{"role": "user", "content": batch_prompt}],
+                max_tokens=1000,
             )
+            content = response.get("content", "")
+            batch_result = parse_llm_json(content, default={"results": []})
 
-            try:
-                response = client.call(
-                    messages=[{"role": "user", "content": verify_prompt}],
-                    max_tokens=500,
+            results = batch_result.get("results", []) if batch_result else []
+
+            # Build a lookup from suggestion list for triggered_by / reason
+            suggestion_map = {s["technique_id"]: s for s in pending}
+
+            for item in results:
+                if not item.get("found"):
+                    continue
+
+                tid = item.get("tid", "")
+                if not tid or tid not in suggestion_map:
+                    continue
+
+                suggestion = suggestion_map[tid]
+                reason = suggestion.get("reason", "")
+                # Cap confidence at 60 — these are suggestions, not primary extractions
+                confidence = min(item.get("confidence", 40), 60)
+
+                mem.techniques[tid] = {
+                    "name": tid,  # ID used as name; cache lookup happens downstream
+                    "confidence": confidence,
+                    "evidence": [item.get("evidence", reason)],
+                    "line_refs": [],
+                    "source": "targeted_extraction",
+                    "suggestion_reason": reason,
+                    "triggered_by": suggestion.get("triggered_by", "unknown"),
+                }
+                found_count += 1
+                logger.info(
+                    f"Targeted extraction found {tid} with confidence {confidence}"
                 )
-                content = response.get("content", "")
 
-                result = parse_llm_json(content, default={"found": False})
-
-                if result and result.get("found"):
-                    # Cap confidence at 60 -- these are suggestions, not primary extractions
-                    confidence = min(result.get("confidence", 40), 60)
-                    mem.techniques[tid] = {
-                        "name": technique_name,
-                        "confidence": confidence,
-                        "evidence": [result.get("evidence", reason)],
-                        "line_refs": [],
-                        "source": "targeted_extraction",
-                        "suggestion_reason": reason,
-                        "triggered_by": suggestion.get("triggered_by", "unknown"),
-                    }
-                    found_count += 1
-                    logger.info(
-                        f"Targeted extraction found {tid} ({technique_name}) "
-                        f"with confidence {confidence}"
-                    )
-
-            except Exception as e:
-                logger.warning(f"Targeted extraction failed for {tid}: {e}")
-                continue
+        except Exception as e:
+            logger.warning(f"Batched targeted extraction failed: {e}")
 
         if found_count > 0:
             logger.info(
                 f"Targeted extraction added {found_count} techniques "
-                f"from {len(suggestions)} suggestions"
+                f"from {len(pending)} suggestions"
             )
-            if hasattr(tracker, "targeted_found"):
-                tracker.targeted_found = found_count
-            else:
-                tracker.counters["targeted_found"] = found_count
+        tracker.counters["targeted_found"] = found_count
     
     def _generate_embeddings(self, extraction_result: Dict[str, Any]) -> Dict[str, List[float]]:
         """Generate embeddings for extracted techniques.
