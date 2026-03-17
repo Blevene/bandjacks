@@ -344,9 +344,9 @@ class DiscoveryAgent:
         logger.debug(f"DiscoveryAgent: Processing {len(mem.spans)} spans")
         max_props = int(config.get("max_discovery_per_span", 3))
 
-        from bandjacks.llm.client import LLMClient
+        from bandjacks.llm.client import get_llm_client
         from bandjacks.llm.tools import resolve_technique_by_external_id
-        client = LLMClient()
+        client = get_llm_client()
         discovery_model = config.get("discovery_model", "gemini/gemini-2.5-flash")
 
         # Collect spans that need discovery (local index → original index)
@@ -416,17 +416,15 @@ class DiscoveryAgent:
         }
 
         try:
-            old_model = client.model
-            client.model = discovery_model
             response = client.call(
                 messages,
+                model=discovery_model,
                 response_format={
                     "type": "json_schema",
                     "json_schema": discovery_schema,
                 },
                 max_tokens=4000,
             )
-            client.model = old_model  # Restore original
 
             content = response.get("content", "")
             if not content:
@@ -531,8 +529,8 @@ class MapperAgent:
             ]
             
             # Use direct LLM call for better performance
-            from bandjacks.llm.client import LLMClient
-            client = LLMClient()
+            from bandjacks.llm.client import get_llm_client
+            client = get_llm_client()
             mapper_model = config.get("mapper_model", "gemini/gemini-2.5-flash")
             
             # JSON schema for mapper response
@@ -574,18 +572,15 @@ class MapperAgent:
             }
             
             try:
-                # Override model for this call
-                old_model = client.model
-                client.model = mapper_model
                 response = client.call(
                     messages,
+                    model=mapper_model,
                     response_format={
                         "type": "json_schema",
                         "json_schema": mapper_schema
                     },
                     max_tokens=8000  # Doubled for complex spans
                 )
-                client.model = old_model  # Restore original
                 raw = response.get("content", "")
             except Exception as e:
                 logger.debug(f"MapperAgent LLM call failed for span {i}: {e}")

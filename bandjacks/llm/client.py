@@ -133,7 +133,8 @@ class LLMClient:
         retry_count: int = 0,
         response_format: Optional[Dict[str, Any]] = None,
         max_tokens: Optional[int] = None,
-        request_id: Optional[str] = None
+        request_id: Optional[str] = None,
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Call the LLM with messages and optional tools.
@@ -154,11 +155,13 @@ class LLMClient:
         import uuid
         if not request_id:
             request_id = str(uuid.uuid4())[:8]
-        
+
+        # Use per-call model override if provided, otherwise use instance default
+        effective_model = model or self.model
+
         # Log request details
         request_size = sum(len(m.get("content", "")) for m in messages)
-        actual_model = self.model
-        logger.info(f"[{request_id}] LLM Request: model={actual_model}, messages={len(messages)}, chars={request_size}, json={bool(response_format)}")
+        logger.info(f"[{request_id}] LLM Request: model={effective_model}, messages={len(messages)}, chars={request_size}, json={bool(response_format)}")
         
         # Log first message preview for debugging
         if messages:
@@ -178,7 +181,7 @@ class LLMClient:
         try:
             # Build request parameters
             params = {
-                "model": self.model,
+                "model": effective_model,
                 "messages": messages,
                 "temperature": self.temperature,
                 "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
@@ -193,11 +196,11 @@ class LLMClient:
             if tools:
                 params["tools"] = tools
                 params["tool_choice"] = tool_choice
-            
+
             # Add response_format if provided
             if response_format:
                 # Check if we're using Gemini which needs special handling
-                if "gemini" in self.model.lower():
+                if "gemini" in effective_model.lower():
                     # For Gemini, we used to enable JSON schema validation
                     # but this causes the response content to be None
                     # import litellm
@@ -238,12 +241,12 @@ class LLMClient:
             
             # Check circuit breaker
             circuit_breaker = get_circuit_breaker()
-            if circuit_breaker.is_open(self.model):
-                raise RuntimeError(f"Circuit breaker open for {self.model} due to repeated failures")
-            
+            if circuit_breaker.is_open(effective_model):
+                raise RuntimeError(f"Circuit breaker open for {effective_model} due to repeated failures")
+
             # Apply rate limiting
             rate_limiter = get_rate_limiter()
-            rate_limiter.wait_if_needed(self.model)
+            rate_limiter.wait_if_needed(effective_model)
             
             # Retry decorator for the actual LLM call
             @retry(
@@ -266,7 +269,7 @@ class LLMClient:
             elapsed_ms = int((time.time() - start_time) * 1000)
             
             # Record success with circuit breaker
-            circuit_breaker.record_success(self.model)
+            circuit_breaker.record_success(effective_model)
 
             # Debug: Log the entire response object for json_schema responses
             if response_format and response_format.get("type") == "json_schema":
@@ -294,7 +297,7 @@ class LLMClient:
                 raise
             error_msg = str(e)
             elapsed_ms = int((time.time() - start_time) * 1000)
-            logger.error(f"[{request_id}] LLM call failed with {self.model} after {elapsed_ms}ms: {error_msg}")
+            logger.error(f"[{request_id}] LLM call failed with {effective_model} after {elapsed_ms}ms: {error_msg}")
             logger.debug(f"[{request_id}] Failed request size: {request_size} chars, messages: {len(messages)}")
             
             # Log more details for debugging
@@ -307,7 +310,7 @@ class LLMClient:
             
             # Record failure with circuit breaker
             circuit_breaker = get_circuit_breaker()
-            circuit_breaker.record_failure(self.model)
+            circuit_breaker.record_failure(effective_model)
             
             # Check if we should retry with a fallback model
             if self._should_retry(e) and retry_count < len(self.fallback_models):
@@ -361,16 +364,31 @@ def call_llm(
 ) -> Dict[str, Any]:
     """
     Convenience function to call LLM.
-    
+
     Args:
         messages: List of message dicts
         tools: Optional tool definitions
-        
+
     Returns:
         LLM response with content and/or tool calls
     """
     client = LLMClient()
     return client.call(messages, tools)
+
+
+from threading import Lock as _ClientLock
+
+_global_client = None
+_client_lock = _ClientLock()
+
+
+def get_llm_client() -> LLMClient:
+    """Get or create global LLMClient instance."""
+    global _global_client
+    with _client_lock:
+        if _global_client is None:
+            _global_client = LLMClient()
+        return _global_client
 
 
 def execute_tool_loop(

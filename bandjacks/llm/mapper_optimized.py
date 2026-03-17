@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Any, Dict, List
 from bandjacks.llm.memory import WorkingMemory
-from bandjacks.llm.client import LLMClient
+from bandjacks.llm.client import LLMClient, get_llm_client
 from bandjacks.llm.tools import list_subtechniques, resolve_technique_by_external_id
 from bandjacks.services.technique_cache import technique_cache
 from bandjacks.llm.json_utils import parse_llm_json, validate_and_ensure_claims
@@ -181,7 +181,7 @@ class BatchMapperAgent:
         # Note: LLMClient.call() already has tenacity retry with exponential backoff,
         # so no manual retry loop is needed here.
         logger.info(f"BatchMapper LLM request: batch of {len(spans_data)} spans")
-        client = LLMClient()
+        client = get_llm_client()
 
         try:
             response = client.call(

@@ -314,10 +314,10 @@ class ExtractionPipeline:
 
         logger.info(f"Running targeted extraction for {len(pending)} suggested techniques (single batched LLM call)")
 
-        from bandjacks.llm.client import LLMClient
+        from bandjacks.llm.client import get_llm_client
         from bandjacks.llm.json_utils import parse_llm_json
 
-        client = LLMClient()
+        client = get_llm_client()
 
         # Build a numbered list of all pending suggestions for a single prompt
         suggestion_lines = "\n".join(
