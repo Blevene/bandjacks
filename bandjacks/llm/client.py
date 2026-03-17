@@ -372,7 +372,7 @@ def call_llm(
     Returns:
         LLM response with content and/or tool calls
     """
-    client = LLMClient()
+    client = get_llm_client()
     return client.call(messages, tools)
 
 
@@ -413,9 +413,7 @@ def execute_tool_loop(
     Returns:
         Final JSON response from the LLM
     """
-    client = LLMClient()
-    if model:
-        client.model = model  # Override model if specified
+    client = get_llm_client()
     current_messages = messages.copy()
     
     for i in range(max_iterations):
@@ -441,10 +439,12 @@ def execute_tool_loop(
         logger.debug(f"Iteration {i}: Calling LLM with {len(tools_to_use or [])} tools...")
         try:
             # On final iteration without tools, use response_format if provided
+            call_kwargs = {}
+            if model:
+                call_kwargs["model"] = model
             if tools_to_use is None and response_format:
-                response = client.call(current_messages, tools_to_use, response_format=response_format)
-            else:
-                response = client.call(current_messages, tools_to_use)
+                call_kwargs["response_format"] = response_format
+            response = client.call(current_messages, tools_to_use, **call_kwargs)
             logger.debug(f"LLM responded with {len(response.get('tool_calls', []))} tool calls")
         except Exception as e:
             logger.error(f"LLM call failed: {e}")
