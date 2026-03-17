@@ -9,7 +9,7 @@ from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.tools import list_subtechniques, resolve_technique_by_external_id
 from bandjacks.services.technique_cache import technique_cache
-from bandjacks.llm.json_utils import parse_json_with_fallback, parse_llm_json, validate_and_ensure_claims
+from bandjacks.llm.json_utils import parse_llm_json, validate_and_ensure_claims
 from bandjacks.llm.token_utils import TokenEstimator
 
 logger = logging.getLogger(__name__)
@@ -330,16 +330,6 @@ class BatchMapperAgent:
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error in technique extraction: {e}")
             logger.debug(f"Failed content preview: {content[:200] if content else 'Empty'}")
-
-            # Try fallback parsing with original content
-            parsed = parse_json_with_fallback(
-                original_content,  # Use original content, not modified
-                expected_structure=[],
-                max_retries=2
-            )
-            results = parsed if isinstance(parsed, list) else []
-
-            # Return 0 claims on parse error
             return 0
                         
         except Exception as e:
