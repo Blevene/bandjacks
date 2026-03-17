@@ -1,13 +1,12 @@
 """Optimized batch mapper for faster extraction."""
 
 import json
-import re
 import logging
 import os
 from typing import Any, Dict, List
 from bandjacks.llm.memory import WorkingMemory
-from bandjacks.llm.client import LLMClient, get_llm_client
-from bandjacks.llm.tools import list_subtechniques, resolve_technique_by_external_id
+from bandjacks.llm.client import get_llm_client
+from bandjacks.llm.tools import resolve_technique_by_external_id
 from bandjacks.services.technique_cache import technique_cache
 from bandjacks.llm.json_utils import parse_llm_json, validate_and_ensure_claims
 from bandjacks.llm.token_utils import TokenEstimator

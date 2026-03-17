@@ -8,7 +8,7 @@ Handles documents by splitting into manageable chunks for LLM processing.
 import re
 import logging
 import time
-from typing import Dict, Any, List, Optional
+from typing import Callable, Dict, Any, List, Optional
 from dataclasses import dataclass
 import concurrent.futures
 from bandjacks.llm.extraction_pipeline import run_extraction_pipeline
@@ -557,7 +557,7 @@ class ChunkedExtractor:
         text: str,
         config: Dict[str, Any],
         parallel: bool = True,
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[Callable] = None
     ) -> Dict[str, Any]:
         """
         Extract techniques from document using chunked processing.

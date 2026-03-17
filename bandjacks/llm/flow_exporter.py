@@ -263,7 +263,7 @@ class AttackFlowExporter:
                         
             except Exception as e:
                 # Log error but continue with other flows
-                print(f"Failed to export flow {flow_id}: {e}")
+                logger.error(f"Failed to export flow {flow_id}: {e}")
         
         return combined_bundle
     
@@ -513,17 +513,17 @@ def export_flow_to_json_file(
         # Validate before writing
         warnings = exporter.validate_export(attack_flow)
         if warnings:
-            print(f"Export warnings: {warnings}")
-        
+            logger.warning(f"Export warnings: {warnings}")
+
         # Write to file
         with open(output_path, 'w') as f:
             json.dump(attack_flow, f, indent=2)
-        
-        print(f"Flow exported to {output_path}")
+
+        logger.info(f"Flow exported to {output_path}")
         return True
-        
+
     except Exception as e:
-        print(f"Export failed: {e}")
+        logger.error(f"Export failed: {e}")
         return False
         
     finally:

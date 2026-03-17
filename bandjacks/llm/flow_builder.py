@@ -14,15 +14,12 @@ from datetime import datetime
 from neo4j import GraphDatabase
 from opensearchpy import OpenSearch
 
-from bandjacks.llm.client import LLMClient
-from bandjacks.llm.schemas import ATTACK_FLOW_SCHEMA
 from bandjacks.llm.attack_flow_validator import AttackFlowValidator
 from bandjacks.llm.batch_neo4j import BatchNeo4jHelper
 from bandjacks.llm.constants import get_tactic_order
 from bandjacks.llm.flow_synthesizer import FlowSynthesizer
 from bandjacks.llm.flow_persistence import FlowPersistence
 from bandjacks.llm.flow_exporter import AttackFlowExporter
-from bandjacks.loaders.embedder import encode
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +51,6 @@ class FlowBuilder:
             auth=(neo4j_user, neo4j_password)
         )
         self.opensearch = opensearch_client
-        self.llm_client = LLMClient()
         self.validator = AttackFlowValidator()
         self.batch_helper = BatchNeo4jHelper(self.driver)
         self.synthesizer = FlowSynthesizer()
