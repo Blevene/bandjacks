@@ -193,7 +193,7 @@ class ExtractionPipeline:
         if progress_callback:
             progress_callback(50, "Mapping spans to ATT&CK techniques...")
         # Use batch mapper for speed if configured
-        if config.get("use_batch_mapper", False):
+        if config.get("use_batch_mapper", True):
             BatchMapperAgent().run(mem, config)
         else:
             MapperAgent().run(mem, config)
