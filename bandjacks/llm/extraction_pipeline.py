@@ -16,9 +16,7 @@ from datetime import datetime
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.agents_v2 import (
     SpanFinderAgent,
-    RetrieverAgent,
     DiscoveryAgent,
-    MapperAgent,
     EvidenceVerifierAgent,
     ConsolidatorAgent,
     AssemblerAgent,
@@ -169,16 +167,8 @@ class ExtractionPipeline:
         if progress_callback:
             progress_callback(40, f"Retrieving candidates for {len(mem.spans)} spans...")
         
-        # Use batch retriever for efficiency when processing multiple spans
-        use_batch = config.get("use_batch_retriever", True) and len(mem.spans) > 1
-        logger.info(f"Retriever decision: use_batch={use_batch}, spans={len(mem.spans)}, config_batch={config.get('use_batch_retriever', True)}")
-        
-        if use_batch:
-            logger.info("Using BatchRetrieverAgent for batch processing")
-            BatchRetrieverAgent().run(mem, config)
-        else:
-            logger.info("Using RetrieverAgent for sequential processing")
-            RetrieverAgent().run(mem, config)
+        logger.info(f"Retrieving candidates for {len(mem.spans)} spans")
+        BatchRetrieverAgent().run(mem, config)
         
         # Optional discovery phase
         if not config.get("disable_discovery", False):
@@ -191,11 +181,7 @@ class ExtractionPipeline:
         tracker.set_stage("Mapper")
         if progress_callback:
             progress_callback(50, "Mapping spans to ATT&CK techniques...")
-        # Use batch mapper for speed if configured
-        if config.get("use_batch_mapper", True):
-            BatchMapperAgent().run(mem, config)
-        else:
-            MapperAgent().run(mem, config)
+        BatchMapperAgent().run(mem, config)
         
         tracker.spans_processed = len({
             c.get("span_idx", -1) for c in mem.claims 

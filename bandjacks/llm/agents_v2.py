@@ -12,20 +12,11 @@ import logging
 from typing import Any, Dict, List
 
 from bandjacks.llm.memory import WorkingMemory
-from bandjacks.llm.tools import (
-    vector_search_ttx,
-    graph_lookup,
-    list_tactics,
-    get_tool_definitions,
-    get_tool_functions,
-)
-from bandjacks.llm.client import execute_tool_loop
-from bandjacks.llm.stix_builder import STIXBuilder
+from bandjacks.llm.tools import list_tactics
 from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.llm.consolidator_base import ConsolidatorBase
 from bandjacks.llm.keyword_index import KeywordIndex
 from bandjacks.llm.technique_pairs import TechniquePairValidator
-from bandjacks.llm.json_utils import parse_llm_json
 
 logger = logging.getLogger(__name__)
 
@@ -298,45 +289,6 @@ class SpanFinderAgent:
                     })
 
 
-LEX = ["powershell", "rundll32", "schtasks", "reg add", "wmic", "psexec", "lsass", "mimikatz", "wmi", "svc", "runkey"]
-
-# Removed hardcoded threat actor and malware extraction functions
-# These should be handled by proper entity recognition or knowledge base lookups
-
-def _hinted_query(text: str) -> str:
-    lower = text.lower()
-    hits = [h for h in LEX if h in lower]
-    return f"{text}\nHINTS: {', '.join(hits)}" if hits else text
-
-
-class RetrieverAgent:
-    def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
-        top_k = int(config.get("top_k", 8))
-        for i, span in enumerate(mem.spans):
-            results = vector_search_ttx(_hinted_query(span["text"]), kb_types=["AttackPattern"], top_k=top_k)
-            mem.candidates.setdefault(i, [])
-            seen = {c.get("external_id") for c in mem.candidates[i]}
-            for rank, r in enumerate(results[:top_k], start=1):
-                ext_id = r.get("external_id") or r.get("id")
-                if not ext_id or ext_id in seen:
-                    continue
-                stix_id = r.get("stix_id") or ""
-                meta = mem.graph_cache.get(ext_id)
-                if not meta and stix_id:
-                    meta = graph_lookup(stix_id)
-                    if isinstance(meta, dict):
-                        mem.graph_cache[ext_id] = meta
-                mem.candidates[i].append({
-                    "external_id": ext_id,
-                    "name": r.get("name", ""),
-                    "score": r.get("score", 0.0),
-                    "rank": rank,
-                    "meta": meta,
-                    "source": "retrieval",
-                })
-                seen.add(ext_id)
-
-
 class DiscoveryAgent:
     """Use LLM to discover techniques not found by retrieval."""
 
@@ -468,173 +420,7 @@ class DiscoveryAgent:
             logger.warning(f"DiscoveryAgent: Batch LLM call failed: {e}")
 
 
-class MapperAgent:
-    """Map spans to techniques with high-quality evidence."""
-    
-    def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
-        initial_claims = len(mem.claims)
-        logger.debug(f"MapperAgent: Processing {len(mem.spans)} spans, {initial_claims} existing claims")
-        for i, span in enumerate(mem.spans):
-            cands = mem.candidates.get(i, [])
-            
-            # Get limited context for evidence extraction (optimization)
-            line_refs = span.get("line_refs", [])
-            evidence_lines = []
-            for ref in line_refs[:3]:  # Limit to 3 evidence lines for performance
-                if 1 <= ref <= len(mem.line_index):
-                    evidence_lines.append(f"Line {ref}: {mem.line_index[ref-1]}")
-            
-            # Include keyword hints if available
-            keyword_hint_text = ""
-            if span.get("keyword_hints"):
-                hint_ids = set()
-                for kh in span["keyword_hints"]:
-                    hint_ids.update(kh["technique_ids"])
-                if hint_ids:
-                    keyword_hint_text = f"\nKeyword-matched candidates: {', '.join(sorted(hint_ids))}"
-
-            span_text = span["text"][:800] + keyword_hint_text
-
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are a cybersecurity analyst that outputs JSON. "
-                        "Analyze the span and map it to the BEST matching ATT&CK technique. "
-                        "Select from candidates or propose a different technique.\n\n"
-                        "Requirements:\n"
-                        "- The span contains complete sentences for context\n"
-                        "- Extract 2-3 meaningful phrases or sentences as evidence\n"
-                        "- Evidence quotes should be complete thoughts, not fragments\n"
-                        "- Include line numbers for each quote\n"
-                        "- Score confidence 0-100\n\n"
-                        "Output JSON: {\"selected\":{\"external_id\":str,\"name\":str}|null, \"proposed\":{\"external_id\":str,\"name\":str}|null, "
-                        "\"evidence\":{\"quotes\":[str],\"line_refs\":[int]}, \"confidence\":int}"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "span": span_text,
-                            "line_refs": span["line_refs"][:10],  # More line refs for sentence context
-                            "evidence_lines": evidence_lines,
-                            "candidates": [
-                                {"external_id": c["external_id"], "name": c.get("name", ""), "score": c.get("score", 0)}
-                                for c in cands[:5]  # Limit candidates to top 5
-                            ],
-                        }
-                    ),
-                },
-            ]
-            
-            # Use direct LLM call for better performance
-            from bandjacks.llm.client import get_llm_client
-            client = get_llm_client()
-            mapper_model = config.get("mapper_model", "gemini/gemini-2.5-flash")
-            
-            # JSON schema for mapper response
-            mapper_schema = {
-                "type": "object",
-                "properties": {
-                    "techniques": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "tid": {
-                                    "type": "string",
-                                    "pattern": "^T[0-9]{4}(\\.[0-9]{3})?$",
-                                    "description": "MITRE ATT&CK technique ID"
-                                },
-                                "name": {
-                                    "type": "string",
-                                    "description": "Technique name"
-                                },
-                                "confidence": {
-                                    "type": "integer",
-                                    "minimum": 0,
-                                    "maximum": 100,
-                                    "description": "Confidence score"
-                                },
-                                "rationale": {
-                                    "type": "string",
-                                    "description": "Brief explanation"
-                                }
-                            },
-                            "required": ["tid", "name", "confidence", "rationale"],
-                            "additionalProperties": False
-                        }
-                    }
-                },
-                "required": ["techniques"],
-                "additionalProperties": False
-            }
-            
-            try:
-                response = client.call(
-                    messages,
-                    model=mapper_model,
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": mapper_schema
-                    },
-                    max_tokens=8000  # Doubled for complex spans
-                )
-                raw = response.get("content", "")
-            except Exception as e:
-                logger.debug(f"MapperAgent LLM call failed for span {i}: {e}")
-                continue
-
-            resp = parse_llm_json(raw)
-            if resp is None:
-                logger.error(f"Failed to parse JSON from MapperAgent")
-                logger.debug(f"Raw response: {repr(raw[:500]) if raw else 'None'}")
-                continue
-            choice = resp.get("selected") or resp.get("proposed") or {}
-            ev = resp.get("evidence") or {}
-            # Prefer sub-technique if quotes explicitly mention a sub-tech name
-            choice_id = choice.get("external_id", "")
-            if choice_id and "." not in choice_id:
-                subs = list_subtechniques(choice_id)
-                if isinstance(subs, list) and subs:
-                    for s in subs:
-                        nm = (s.get("name", "") or "").lower()
-                        if nm and any(nm in (q or "").lower() for q in ev.get("quotes", [])):
-                            choice["external_id"] = s.get("external_id", choice_id)
-                            choice["name"] = s.get("name", choice.get("name", ""))
-                            break
-            if choice.get("external_id"):
-                # Be more flexible with evidence
-                quotes = ev.get("quotes", [])
-                line_refs = ev.get("line_refs", [])
-                
-                if not quotes:
-                    logger.debug(f"  Span {i}: No quotes for {choice.get('external_id')}, skipping")
-                    continue
-                    
-                if not line_refs:
-                    logger.debug(f"  Span {i}: No line_refs for {choice.get('external_id')}, using span refs")
-                    line_refs = span.get("line_refs", [])
-                
-                if quotes and line_refs:
-                    mem.claims.append(
-                        {
-                            "span_idx": i,
-                            "external_id": choice["external_id"],
-                            "name": choice.get("name", ""),
-                            "quotes": quotes,
-                            "line_refs": line_refs,
-                            "confidence": int(resp.get("confidence", 60)),
-                            "source": "candidate" if resp.get("selected") else "free_propose",
-                        }
-                    )
-                    logger.debug(f"  Span {i}: Added {choice['external_id']} with {len(quotes)} quotes")
-        
-        logger.info(f"MapperAgent: Added {len(mem.claims) - initial_claims} claims (total: {len(mem.claims)})")
-
-
-from bandjacks.llm.tools import resolve_technique_by_external_id, list_subtechniques
+from bandjacks.llm.tools import resolve_technique_by_external_id
 
 
 class EvidenceVerifierAgent:

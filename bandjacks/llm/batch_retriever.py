@@ -277,11 +277,7 @@ class BatchRetrieverAgent:
                 logger.info(f"[BatchRetriever] Cache stats - Hit rate: {stats['overall_hit_rate']:.2%}")
             
         except Exception as e:
-            logger.debug(f"[BatchRetriever] Error in batch search: {e}")
-            # Fallback to sequential retriever
-            logger.debug("[BatchRetriever] Falling back to sequential retrieval")
-            from bandjacks.llm.agents_v2 import RetrieverAgent
-            RetrieverAgent().run(mem, config)
+            logger.error(f"[BatchRetriever] Batch search failed: {e}", exc_info=True)
     
     def _deduplicate_texts(self, texts: List[str]) -> Tuple[List[str], List[int]]:
         """
