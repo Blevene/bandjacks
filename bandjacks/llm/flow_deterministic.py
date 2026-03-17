@@ -225,3 +225,58 @@ class DeterministicFlowBuilder:
             )
 
         return edges
+
+
+def build_dual_flows(
+    claims: list,
+    technique_cache,
+    flow_builder=None,
+    extraction_data: dict = None,
+    report_text: str = "",
+    source_id: str = None,
+    flow_name: str = "Deterministic Attack Flow",
+) -> list:
+    """Build both deterministic and LLM flows.
+
+    Args:
+        claims: Extraction claims for deterministic flow
+        technique_cache: TechniqueCache instance
+        flow_builder: Optional FlowBuilder for LLM synthesis
+        extraction_data: Extraction data dict for LLM flow
+        report_text: Report text for LLM flow context
+        source_id: Report ID
+        flow_name: Name for deterministic flow
+
+    Returns:
+        List of flow dicts (1-2 flows). Deterministic first, then LLM if successful.
+    """
+    flows = []
+
+    # Always: deterministic full flow
+    det_builder = DeterministicFlowBuilder()
+    det_flow = det_builder.build(claims, technique_cache, flow_name, source_id)
+    if det_flow:
+        flows.append(det_flow)
+        logger.info(
+            "Deterministic flow: %d steps, tiers: %s",
+            det_flow["stats"]["steps_count"],
+            det_flow["stats"]["tier_distribution"],
+        )
+
+    # Attempt: LLM synthesis (if flow_builder provided)
+    if flow_builder and extraction_data:
+        try:
+            llm_flow = flow_builder.build_from_extraction(
+                extraction_data=extraction_data,
+                source_id=source_id,
+                report_text=report_text,
+                use_stored_text=False,
+            )
+            if llm_flow:
+                flows.append(llm_flow)
+                logger.info("LLM flow: %d steps", len(llm_flow.get("actions", [])))
+        except Exception as e:
+            logger.warning("LLM flow synthesis failed: %s", e)
+
+    logger.info("build_dual_flows produced %d flow(s)", len(flows))
+    return flows
