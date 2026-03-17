@@ -208,9 +208,9 @@ class VectorSearchCache:
                     self.ttl,
                     json.dumps(embedding)
                 )
-            except (RedisError, json.JSONDecodeError) as e:
+            except (RedisError, TypeError, ValueError) as e:
                 logger.debug(f"Redis cache write error: {e}")
-    
+
     def set_candidates(self, text: str, top_k: int, candidates: List[Dict[str, Any]]) -> None:
         """Cache search results.
         
@@ -232,7 +232,7 @@ class VectorSearchCache:
                     self.ttl,
                     json.dumps(candidates)
                 )
-            except (RedisError, json.JSONDecodeError) as e:
+            except (RedisError, TypeError, ValueError) as e:
                 logger.debug(f"Redis cache write error: {e}")
     
     def _add_to_l1(self, key: str, value: Any) -> None:
