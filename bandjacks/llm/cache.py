@@ -10,9 +10,10 @@ from threading import Lock
 class LLMCache:
     """Thread-safe in-memory cache for LLM responses with TTL support."""
     
-    def __init__(self, ttl_seconds: int = 900):  # 15 minutes default
+    def __init__(self, ttl_seconds: int = 900, max_size: int = 10000):
         self.cache: Dict[str, Dict[str, Any]] = {}
         self.ttl = ttl_seconds
+        self.max_size = max_size
         self.lock = Lock()
         self.stats = {
             "hits": 0,
@@ -54,12 +55,17 @@ class LLMCache:
     def set(self, messages: List[Dict[str, str]], response: Dict[str, Any], **kwargs) -> None:
         """Cache a response."""
         key = self._generate_key(messages, **kwargs)
-        
+
         with self.lock:
             self.cache[key] = {
                 "response": response,
                 "timestamp": time.time()
             }
+            # Evict oldest entries if over max_size
+            while len(self.cache) > self.max_size:
+                oldest_key = next(iter(self.cache))
+                del self.cache[oldest_key]
+                self.stats["evictions"] += 1
     
     def clear_expired(self) -> int:
         """Remove expired entries and return count."""
