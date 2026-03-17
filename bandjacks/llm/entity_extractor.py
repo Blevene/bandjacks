@@ -6,7 +6,7 @@ import re
 from typing import Dict, Any, List, Optional
 from bandjacks.llm.client import LLMClient
 from bandjacks.llm.memory import WorkingMemory
-from bandjacks.llm.json_utils import parse_json_with_fallback
+from bandjacks.llm.json_utils import parse_json_with_fallback, parse_llm_json
 from bandjacks.llm.consolidator_base import ConsolidatorBase
 
 logger = logging.getLogger(__name__)
@@ -286,7 +286,7 @@ Text: {doc_text[:2000]}"""
                     error_msg = "Empty response from LLM for entity extraction after retries"
                     logger.error(error_msg)
                     mem.entities = {"entities": [], "extraction_status": "failed", "error": error_msg}
-                    mem.extraction_errors = getattr(mem, 'extraction_errors', [])
+                    # extraction_errors is a declared field on WorkingMemory
                     mem.extraction_errors.append({"stage": "entity_extraction", "error": error_msg})
                     return
                 
@@ -376,8 +376,7 @@ Text: {doc_text[:2000]}"""
             # Set failure state
             mem.entities = {"entities": [], "extraction_status": "failed", "error": str(e)}
             
-            # Track error for reporting
-            mem.extraction_errors = getattr(mem, 'extraction_errors', [])
+            # Track error for reporting (extraction_errors is a declared field on WorkingMemory)
             mem.extraction_errors.append({"stage": "entity_extraction", "error": str(e)})
     
     def _create_chunks(self, text: str, chunk_size: int = None, overlap: int = None) -> List[str]:

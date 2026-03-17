@@ -954,7 +954,7 @@ class KillChainSuggestionsAgent:
         missing = sorted(all_tactics - covered)
         mem.notes.append(f"Missing tactics: {', '.join(missing)}")
         # Store suggestions placeholder for future targeted discovery (no commit)
-        setattr(mem, "inferred_suggestions", [{"tactic": t, "candidates": []} for t in missing])
+        mem.inferred_suggestions = [{"tactic": t, "candidates": []} for t in missing]
 
 
 class AssemblerAgent:

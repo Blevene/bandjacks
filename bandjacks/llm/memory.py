@@ -62,6 +62,18 @@ class WorkingMemory:
     # Extensible metadata for pipeline enhancements (pair suggestions, etc.)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    # Entity claims from EntityExtractionAgent
+    entity_claims: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Consolidated entities from EntityConsolidatorAgent
+    consolidated_entities: Dict[str, Any] = field(default_factory=dict)
+
+    # Inferred kill-chain suggestions from KillChainSuggestionsAgent
+    inferred_suggestions: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Errors accumulated during extraction stages
+    extraction_errors: List[Dict[str, Any]] = field(default_factory=list)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "entities": self.entities,
@@ -70,6 +82,10 @@ class WorkingMemory:
             "claims": self.claims,
             "techniques": self.techniques,
             "notes": self.notes,
+            "entity_claims": self.entity_claims,
+            "consolidated_entities": self.consolidated_entities,
+            "inferred_suggestions": self.inferred_suggestions,
+            "extraction_errors": self.extraction_errors,
         }
 
     def add_entity(self, entity_type: str, name: str, evidence: str = "", 
