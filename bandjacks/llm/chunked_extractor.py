@@ -215,6 +215,7 @@ class ChunkedExtractor:
             "disable_discovery": True,  # Disable discovery to reduce LLM calls
             "disable_targeted_extraction": True,
             "skip_verification": True,  # Skip verification for speed
+            "skip_entity_extraction": True,  # Entities extracted once at document level
             "max_spans": spans_for_chunk,
             "span_score_threshold": 0.9,  # Higher threshold for better quality
             "confidence_threshold": 60,  # Higher confidence threshold
