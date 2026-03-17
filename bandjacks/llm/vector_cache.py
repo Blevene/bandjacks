@@ -3,7 +3,6 @@
 import hashlib
 import json
 import logging
-import pickle
 import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
@@ -83,7 +82,7 @@ class VectorSearchCache:
             Cache key string
         """
         # Create a hash of the text for the key
-        text_hash = hashlib.md5(text.encode('utf-8')).hexdigest()
+        text_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
         return f"vector_cache:{cache_type}:{text_hash}:{top_k}"
     
     def _is_expired(self, timestamp: float) -> bool:
@@ -134,12 +133,12 @@ class VectorSearchCache:
             try:
                 cached = self.redis_client.get(cache_key)
                 if cached:
-                    value = pickle.loads(cached)
+                    value = json.loads(cached)
                     # Add to L1 cache
                     self._add_to_l1(cache_key, value)
                     self.l2_hits += 1
                     return value
-            except (RedisError, pickle.PickleError) as e:
+            except (RedisError, json.JSONDecodeError) as e:
                 logger.debug(f"Redis cache read error: {e}")
         
         self.l2_misses += 1
@@ -177,13 +176,13 @@ class VectorSearchCache:
             try:
                 cached = self.redis_client.get(cache_key)
                 if cached:
-                    value = pickle.loads(cached)
+                    value = json.loads(cached)
                     # Add to L1 cache
                     self._add_to_l1(cache_key, value)
                     self.l2_hits += 1
                     logger.debug(f"L2 cache hit for: {cache_key}")
                     return value
-            except (RedisError, pickle.PickleError) as e:
+            except (RedisError, json.JSONDecodeError) as e:
                 logger.debug(f"Redis cache read error: {e}")
         
         self.l2_misses += 1
@@ -207,9 +206,9 @@ class VectorSearchCache:
                 self.redis_client.setex(
                     cache_key,
                     self.ttl,
-                    pickle.dumps(embedding)
+                    json.dumps(embedding)
                 )
-            except (RedisError, pickle.PickleError) as e:
+            except (RedisError, json.JSONDecodeError) as e:
                 logger.debug(f"Redis cache write error: {e}")
     
     def set_candidates(self, text: str, top_k: int, candidates: List[Dict[str, Any]]) -> None:
@@ -231,9 +230,9 @@ class VectorSearchCache:
                 self.redis_client.setex(
                     cache_key,
                     self.ttl,
-                    pickle.dumps(candidates)
+                    json.dumps(candidates)
                 )
-            except (RedisError, pickle.PickleError) as e:
+            except (RedisError, json.JSONDecodeError) as e:
                 logger.debug(f"Redis cache write error: {e}")
     
     def _add_to_l1(self, key: str, value: Any) -> None:
