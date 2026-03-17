@@ -178,7 +178,7 @@ class ChunkedExtractor:
         # All retries failed
         logger.error(f"Chunk {chunk.chunk_id} failed after {max_retries} attempts: {last_error}")
         return make_failed_chunk_result(
-            chunk.chunk_id,
+            str(chunk.chunk_id),
             (chunk.start_idx, chunk.end_idx),
             f"Failed after {max_retries} attempts: {last_error}",
         )
@@ -255,7 +255,7 @@ class ChunkedExtractor:
             logger.error(f"Chunk {chunk.chunk_id} extraction failed: {e}", exc_info=True)
             # Return empty result but continue processing other chunks
             return make_failed_chunk_result(
-                chunk.chunk_id,
+                str(chunk.chunk_id),
                 (chunk.start_idx, chunk.end_idx),
                 str(e),
             )
