@@ -190,7 +190,7 @@ class BatchNeo4jHelper:
                        pair.target AS target,
                        count(n) AS adjacency_count
                 """,
-                pairs_data=pairs_data
+                pairs=pairs_data
             )
             
             for record in query_result:
@@ -354,7 +354,7 @@ class BatchNeo4jHelper:
                 RETURN source, target, tactics1, tactics2,
                        size([t IN tactics1 WHERE t IN tactics2]) > 0 AS same_tactic
                 """,
-                pairs_data=pairs_data
+                pairs=pairs_data
             )
             
             for record in query_result:

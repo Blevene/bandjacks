@@ -109,12 +109,21 @@ class FlowSynthesizer:
         # Add techniques from extraction result
         if "techniques" in extraction_result:
             techniques = extraction_result["techniques"]
-            for tech_id, tech_data in techniques.items():
-                cti_data["entities"]["techniques"].append({
-                    "id": tech_id,
-                    "name": tech_data.get("name", tech_id),
-                    "confidence": tech_data.get("confidence", 0)
-                })
+            if isinstance(techniques, dict):
+                for tech_id, tech_data in techniques.items():
+                    if isinstance(tech_data, dict):
+                        cti_data["entities"]["techniques"].append({
+                            "id": tech_id,
+                            "name": tech_data.get("name", tech_id),
+                            "confidence": tech_data.get("confidence", 0)
+                        })
+                    else:
+                        # Handle case where tech_data is a string (just the name)
+                        cti_data["entities"]["techniques"].append({
+                            "id": tech_id,
+                            "name": str(tech_data) if tech_data else tech_id,
+                            "confidence": 50
+                        })
 
         # Add top-level entities if present (legacy format)
         if "threat_actors" in extraction_result:
