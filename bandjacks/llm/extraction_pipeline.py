@@ -21,7 +21,6 @@ from bandjacks.llm.agents_v2 import (
     MapperAgent,
     EvidenceVerifierAgent,
     ConsolidatorAgent,
-    KillChainSuggestionsAgent,
     AssemblerAgent,
 )
 from bandjacks.llm.mapper_optimized import BatchMapperAgent
@@ -301,7 +300,8 @@ class ExtractionPipeline:
     ):
         """Re-extract techniques suggested by pair validation and kill-chain gaps."""
         tracker.set_stage("Suggestions")
-        KillChainSuggestionsAgent().run(mem, config)
+        # Kill-chain gap analysis and pair suggestions are now computed inside
+        # ConsolidatorAgent.run(), so no separate agent call is needed here.
 
         suggestions = mem.metadata.get("pair_suggestions", [])
         if not suggestions:

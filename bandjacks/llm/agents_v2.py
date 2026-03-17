@@ -955,20 +955,20 @@ class ConsolidatorAgent(ConsolidatorBase):
         except Exception as e:
             logger.warning(f"Technique pair validation failed: {e}")
 
-
-class KillChainSuggestionsAgent:
-    def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
-        # Derive covered tactics from resolved techniques (lazy resolve)
-        covered = set()
-        for tid in mem.techniques.keys():
-            meta = resolve_technique_by_external_id(tid)
-            if meta and meta.get("tactic"):
-                covered.add(meta["tactic"])
-        all_tactics = {t["shortname"] for t in list_tactics()}
-        missing = sorted(all_tactics - covered)
-        mem.notes.append(f"Missing tactics: {', '.join(missing)}")
-        # Store suggestions placeholder for future targeted discovery (no commit)
-        mem.inferred_suggestions = [{"tactic": t, "candidates": []} for t in missing]
+        # Kill-chain gap analysis: identify tactics not yet covered
+        try:
+            covered = set()
+            for tid in mem.techniques.keys():
+                meta = resolve_technique_by_external_id(tid)
+                if meta and meta.get("tactic"):
+                    covered.add(meta["tactic"])
+            all_tactics = {t["shortname"] for t in list_tactics()}
+            missing = sorted(all_tactics - covered)
+            mem.notes.append(f"Missing tactics: {', '.join(missing)}")
+            # Store suggestions placeholder for future targeted discovery (no commit)
+            mem.inferred_suggestions = [{"tactic": t, "candidates": []} for t in missing]
+        except Exception as e:
+            logger.warning(f"Kill-chain gap analysis failed: {e}")
 
 
 class AssemblerAgent:
