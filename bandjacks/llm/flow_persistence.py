@@ -273,7 +273,7 @@ class FlowPersistence:
             "llm_synthesized": flow_data.get("llm_synthesized", False)
         }
 
-    def _get_stored_text(self, report_id: str) -> Optional[str]:
+    def get_stored_text(self, report_id: str) -> Optional[str]:
         """
         Retrieve stored text from OpenSearch for a report.
 

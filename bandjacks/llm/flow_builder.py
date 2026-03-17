@@ -997,7 +997,7 @@ class FlowBuilder:
 
     def _get_stored_text(self, report_id: str) -> Optional[str]:
         """Retrieve stored text from OpenSearch. Delegates to FlowPersistence."""
-        return self.persistence._get_stored_text(report_id)
+        return self.persistence.get_stored_text(report_id)
 
     def export_to_stix_attack_flow(
         self,
