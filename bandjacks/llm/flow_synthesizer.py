@@ -9,8 +9,7 @@ import re
 import uuid
 from typing import Dict, Any, List, Optional
 
-from bandjacks.llm.client import LLMClient
-from bandjacks.llm.schemas import ATTACK_FLOW_SCHEMA
+from bandjacks.llm.client import get_llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +18,7 @@ class FlowSynthesizer:
     """Synthesize attack flows from extraction results using LLM."""
 
     def __init__(self):
-        self.llm_client = LLMClient()
+        self.llm_client = get_llm_client()
 
     def synthesize(
         self,
