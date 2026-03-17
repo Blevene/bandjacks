@@ -391,6 +391,13 @@ def get_llm_client() -> LLMClient:
         return _global_client
 
 
+def reset_llm_client() -> None:
+    """Reset the global LLMClient singleton. Use in tests for isolation."""
+    global _global_client
+    with _client_lock:
+        _global_client = None
+
+
 def execute_tool_loop(
     messages: List[Dict[str, str]],
     tools: List[Dict[str, Any]],
