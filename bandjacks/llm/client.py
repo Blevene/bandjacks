@@ -77,6 +77,38 @@ class LLMClient:
         
         logger.info(f"Initialized LLM client with model: {self.model}, fallbacks: {self.fallback_models}")
     
+    def _extract_response(self, response, request_id: str = "") -> Dict[str, Any]:
+        """Extract content and tool calls from an LLM response."""
+        choice = response.choices[0]
+        content = choice.message.content
+
+        if content is None:
+            logger.warning(f"[{request_id}] No content in message.content field")
+            if hasattr(choice.message, 'text'):
+                content = choice.message.text
+            elif hasattr(choice.message, 'function_call') and choice.message.function_call:
+                content = choice.message.function_call.arguments
+            else:
+                content = ""
+
+        if content is None:
+            content = ""
+
+        result = {"content": content, "tool_calls": []}
+
+        if hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
+            for tool_call in choice.message.tool_calls:
+                result["tool_calls"].append({
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments,
+                    },
+                })
+
+        return result
+
     def _should_retry(self, exception):
         """Determine if we should retry based on the exception."""
         # Check for specific error codes
@@ -235,70 +267,20 @@ class LLMClient:
             
             # Record success with circuit breaker
             circuit_breaker.record_success(self.model)
-            
-            # Extract response data
-            choice = response.choices[0]
-            
-            # Debug logging to understand response structure
-            logger.debug(f"[{request_id}] Response type: {type(response)}")
-            logger.debug(f"[{request_id}] Choice type: {type(choice)}")
-            logger.debug(f"[{request_id}] Message type: {type(choice.message)}")
 
             # Debug: Log the entire response object for json_schema responses
             if response_format and response_format.get("type") == "json_schema":
                 logger.debug(f"[{request_id}] Full response.model_dump(): {response.model_dump() if hasattr(response, 'model_dump') else 'No model_dump'}")
+                choice = response.choices[0]
                 logger.debug(f"[{request_id}] Full choice dict: {choice.__dict__ if hasattr(choice, '__dict__') else 'No dict'}")
 
-            # Try to get content from various possible locations
-            content = choice.message.content
-            
-            if content is None:
-                logger.warning(f"[{request_id}] No content in message.content field")
-                
-                # Log all available attributes for debugging
-                if hasattr(choice.message, '__dict__'):
-                    logger.debug(f"[{request_id}] Message dict: {choice.message.__dict__}")
-                
-                # Try alternative fields
-                if hasattr(choice.message, 'text'):
-                    content = choice.message.text
-                    logger.info(f"[{request_id}] Found content in message.text field")
-                elif hasattr(choice.message, 'function_call') and choice.message.function_call:
-                    content = choice.message.function_call.arguments
-                    logger.info(f"[{request_id}] Found content in function_call.arguments")
-                else:
-                    # List all attributes for debugging
-                    attrs = [attr for attr in dir(choice.message) if not attr.startswith('_')]
-                    logger.error(f"[{request_id}] Cannot find content. Available attrs: {attrs}")
-                    content = ""
-            
-            # Ensure content is a string
-            if content is None:
-                content = ""
-            
-            # Log response details
+            result = self._extract_response(response, request_id)
+            content = result["content"]
             logger.info(f"[{request_id}] LLM Response: chars={len(content)}, time={elapsed_ms}ms, success=True")
             if content:
                 logger.debug(f"[{request_id}] Response preview: {content[:500]}...")
             else:
                 logger.warning(f"[{request_id}] Empty response content")
-            
-            result = {
-                "content": content,
-                "tool_calls": []
-            }
-            
-            # Extract tool calls if present
-            if hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
-                for tool_call in choice.message.tool_calls:
-                    result["tool_calls"].append({
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments
-                        }
-                    })
             
             # Cache the response if enabled
             if use_cache:
@@ -308,6 +290,8 @@ class LLMClient:
             return result
             
         except Exception as e:
+            if isinstance(e, (KeyboardInterrupt, SystemExit)):
+                raise
             error_msg = str(e)
             elapsed_ms = int((time.time() - start_time) * 1000)
             logger.error(f"[{request_id}] LLM call failed with {self.model} after {elapsed_ms}ms: {error_msg}")
@@ -358,27 +342,11 @@ class LLMClient:
                     # Record success with circuit breaker
                     circuit_breaker.record_success(fallback_model)
 
-                    # Extract response data
-                    choice = fallback_response.choices[0]
-                    content = choice.message.content or ""
-
-                    fallback_result = {
-                        "content": content,
-                        "tool_calls": []
-                    }
-
-                    if hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
-                        for tool_call in choice.message.tool_calls:
-                            fallback_result["tool_calls"].append({
-                                "id": tool_call.id,
-                                "type": "function",
-                                "function": {
-                                    "name": tool_call.function.name,
-                                    "arguments": tool_call.function.arguments
-                                }
-                            })
-
+                    fallback_result = self._extract_response(fallback_response, request_id)
                     logger.info(f"[{request_id}] Fallback model {fallback_model} succeeded")
+                    if use_cache:
+                        cache = get_cache()
+                        cache.set(messages, fallback_result, tools=tools, tool_choice=tool_choice)
                     return fallback_result
                 except Exception as fallback_error:
                     logger.error(f"Fallback model {fallback_model} also failed: {fallback_error}")
