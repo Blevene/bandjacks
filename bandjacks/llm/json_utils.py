@@ -157,7 +157,20 @@ def parse_llm_json(raw: str, default=None):
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Try repair
+        # Try repair strategies
+        # Strategy 1: trim last incomplete object and close brackets
+        last_complete = text.rfind('},')
+        if last_complete > 0:
+            trimmed = text[:last_complete + 1]  # keep up to the last complete '}'
+            # Close any open brackets/braces
+            open_brackets = trimmed.count('[') - trimmed.count(']')
+            open_braces = trimmed.count('{') - trimmed.count('}')
+            trimmed += ']' * open_brackets + '}' * open_braces
+            try:
+                return json.loads(trimmed)
+            except json.JSONDecodeError:
+                pass
+        # Strategy 2: generic repair
         try:
             from bandjacks.llm.client import repair_truncated_json
             repaired = repair_truncated_json(text)
