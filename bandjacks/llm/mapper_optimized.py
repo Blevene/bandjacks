@@ -178,55 +178,30 @@ class BatchMapperAgent:
         }
         
         # Single LLM call for this batch with structured output
+        # Note: LLMClient.call() already has tenacity retry with exponential backoff,
+        # so no manual retry loop is needed here.
         logger.info(f"BatchMapper LLM request: batch of {len(spans_data)} spans")
         client = LLMClient()
 
-        # Retry logic for empty responses
-        max_retries = 3
-        retry_delay = 2  # seconds
+        try:
+            response = client.call(
+                messages,
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": technique_schema
+                },
+                max_tokens=8000  # Doubled to prevent truncation issues
+            )
+            content = response.get("content", "")
 
-        for retry_attempt in range(max_retries):
-            try:
-                # Call LLM with proper response format
-                response = client.call(
-                    messages,
-                    response_format={
-                        "type": "json_schema",
-                        "json_schema": technique_schema
-                    },
-                    max_tokens=8000  # Doubled to prevent truncation issues
-                )
-                content = response.get("content", "")
-
-                # Log response
-                logger.info(f"BatchMapper LLM response (attempt {retry_attempt + 1}): {len(content)} chars")
-                logger.debug(f"BatchMapper raw response preview: {content[:500]}...")
-
-                if content:
-                    # Got a response, proceed
-                    break
-
-                # Empty response, retry if we have attempts left
-                if retry_attempt < max_retries - 1:
-                    logger.warning(f"Empty response from LLM, retrying in {retry_delay} seconds (attempt {retry_attempt + 1}/{max_retries})")
-                    import time
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    logger.error(f"Empty response from LLM after {max_retries} attempts for batch technique extraction")
-                    return 0
-            except Exception as e:
-                if retry_attempt < max_retries - 1:
-                    logger.warning(f"LLM call failed with error: {e}, retrying (attempt {retry_attempt + 1}/{max_retries})")
-                    import time
-                    time.sleep(retry_delay)
-                    retry_delay *= 2
-                else:
-                    logger.error(f"LLM call failed after {max_retries} attempts: {e}")
-                    raise
+            logger.info(f"BatchMapper LLM response: {len(content)} chars")
+            logger.debug(f"BatchMapper raw response preview: {content[:500]}...")
+        except Exception as e:
+            logger.error(f"LLM call failed for batch technique extraction: {e}")
+            return 0
 
         if not content:
-            logger.error("Failed to get non-empty response from LLM")
+            logger.error("Empty response from LLM for batch technique extraction")
             return 0
 
         # Parse the simplified JSON array
