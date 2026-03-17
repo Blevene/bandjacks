@@ -44,10 +44,8 @@ class BatchRetrieverAgent:
         global _cache_hits, _cache_misses
         
         logger.info(f"[BatchRetrieverAgent] Starting with {len(mem.spans)} spans")
-        logger.debug(f"[BatchRetrieverAgent] Starting with {len(mem.spans)} spans")
         if not mem.spans:
             logger.info("[BatchRetrieverAgent] No spans to process")
-            logger.debug("[BatchRetrieverAgent] No spans to process")
             return
         
         # Get settings and cache instance

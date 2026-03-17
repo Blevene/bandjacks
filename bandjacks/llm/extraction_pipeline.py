@@ -10,7 +10,7 @@ Primary entry point for all report extraction and attack flow generation.
 import logging
 import uuid
 import time
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Callable, Dict, Any, List, Optional
 from datetime import datetime
 
 from bandjacks.llm.memory import WorkingMemory
@@ -59,7 +59,7 @@ class ExtractionPipeline:
         report_text: str,
         config: Optional[Dict[str, Any]] = None,
         source_id: Optional[str] = None,
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[Callable] = None
     ) -> Dict[str, Any]:
         """
         Run complete extraction and flow generation pipeline.
@@ -124,7 +124,7 @@ class ExtractionPipeline:
         report_text: str,
         config: Dict[str, Any],
         tracker: ExtractionTracker,
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[Callable] = None
     ) -> Dict[str, Any]:
         """Run the extraction agents to identify techniques.
         
@@ -620,7 +620,7 @@ def run_extraction_pipeline(
     config: Optional[Dict[str, Any]] = None,
     source_id: Optional[str] = None,
     neo4j_config: Optional[Dict[str, str]] = None,
-    progress_callback: Optional[callable] = None
+    progress_callback: Optional[Callable] = None
 ) -> Dict[str, Any]:
     """
     Convenience function to run the extraction pipeline.
