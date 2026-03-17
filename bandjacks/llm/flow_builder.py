@@ -21,6 +21,7 @@ from bandjacks.llm.batch_neo4j import BatchNeo4jHelper
 from bandjacks.llm.constants import get_tactic_order
 from bandjacks.llm.flow_synthesizer import FlowSynthesizer
 from bandjacks.llm.flow_persistence import FlowPersistence
+from bandjacks.llm.flow_exporter import AttackFlowExporter
 from bandjacks.loaders.embedder import encode
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,10 @@ class FlowBuilder:
         self.batch_helper = BatchNeo4jHelper(self.driver)
         self.synthesizer = FlowSynthesizer()
         self.persistence = FlowPersistence(self.driver, self.batch_helper, opensearch_client)
+        # Shared exporter — reuses the same Neo4j driver
+        self.exporter = AttackFlowExporter.__new__(AttackFlowExporter)
+        self.exporter.driver = self.driver
+        self.exporter.validator = self.validator
     
     def build_from_extraction(
         self,
@@ -1003,168 +1008,33 @@ class FlowBuilder:
         marking_refs: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
-        Export flow to STIX Attack Flow 2.0 format (absorbed from AttackFlowGenerator).
-        
+        Export flow to STIX Attack Flow 2.0 format.
+
+        Delegates to AttackFlowExporter.export_to_stix_attack_flow.
+
         Args:
             flow_data: Internal flow data
             scope: Flow scope ("incident", "campaign", or "global")
             marking_refs: Optional list of marking definition references
-            
+
         Returns:
             Valid Attack Flow 2.0 JSON bundle
         """
-        # Initialize bundle
-        bundle_id = f"bundle--{uuid.uuid4()}"
-        flow_id = f"attack-flow--{uuid.uuid4()}"
-        
-        bundle = {
-            "type": "bundle",
-            "id": bundle_id,
-            "spec_version": "2.1",
-            "created": datetime.utcnow().isoformat() + "Z",
-            "modified": datetime.utcnow().isoformat() + "Z",
-            "objects": []
-        }
-        
-        # Create attack-flow object
-        flow_obj = {
-            "type": "attack-flow",
-            "id": flow_id,
-            "spec_version": "2.1",
-            "created": flow_data.get("created_at", datetime.utcnow().isoformat() + "Z"),
-            "modified": datetime.utcnow().isoformat() + "Z",
-            "name": flow_data.get("name", "Generated Attack Flow"),
-            "description": flow_data.get("description", f"Attack flow with {len(flow_data['actions'])} steps"),
-            "scope": scope,
-            "start_refs": [],
-            "created_by_ref": "identity--bandjacks-generator"
-        }
-        
-        # Add markings if provided
-        if marking_refs:
-            flow_obj["object_marking_refs"] = marking_refs
-        
-        # Add identity object
-        identity_obj = {
-            "type": "identity",
-            "id": "identity--bandjacks-generator",
-            "spec_version": "2.1",
-            "created": datetime.utcnow().isoformat() + "Z",
-            "modified": datetime.utcnow().isoformat() + "Z",
-            "name": "Bandjacks Attack Flow Generator",
-            "identity_class": "system"
-        }
-        bundle["objects"].append(identity_obj)
-        
-        # Create attack-action objects for techniques
-        action_stix_map = {}  # Map internal action_id to STIX action ID
-        for i, action in enumerate(flow_data["actions"]):
-            stix_action_id = f"attack-action--{uuid.uuid4()}"
-            action_stix_map[action["action_id"]] = stix_action_id
-            
-            # Look up technique details if available
-            technique_ref = action.get("attack_pattern_ref", action.get("technique_id", "unknown"))
-            technique_info = self._lookup_technique(technique_ref) if self.driver else {}
-            
-            action_obj = {
-                "type": "attack-action",
-                "id": stix_action_id,
-                "spec_version": "2.1",
-                "created": datetime.utcnow().isoformat() + "Z",
-                "modified": datetime.utcnow().isoformat() + "Z",
-                "name": action.get("name", technique_info.get("name", f"Action: {technique_ref}")),
-                "technique_id": technique_ref,
-                "description": (action.get("description", "") or technique_info.get("description", ""))[:500],
-                "confidence": int(action.get("confidence", 75)),
-                "execution_start": action.get("order", i),
-                "execution_end": action.get("order", i) + 1
-            }
-            
-            # Add tactic references if available
-            if technique_info.get("tactics"):
-                action_obj["tactic_refs"] = [f"x-mitre-tactic--{t}" for t in technique_info["tactics"]]
-            
-            # Add to start_refs if it's the first action
-            if i == 0:
-                flow_obj["start_refs"].append(stix_action_id)
-            
-            bundle["objects"].append(action_obj)
-        
-        # Create relationships for edges
-        for edge in flow_data.get("edges", []):
-            if edge["source"] in action_stix_map and edge["target"] in action_stix_map:
-                relationship = {
-                    "type": "relationship",
-                    "id": f"relationship--{uuid.uuid4()}",
-                    "spec_version": "2.1",
-                    "created": datetime.utcnow().isoformat() + "Z",
-                    "modified": datetime.utcnow().isoformat() + "Z",
-                    "relationship_type": "followed-by",
-                    "source_ref": action_stix_map[edge["source"]],
-                    "target_ref": action_stix_map[edge["target"]],
-                    "confidence": int(edge.get("probability", 0.5) * 100),
-                    "x_rationale": edge.get("rationale", "sequential")
-                }
-                bundle["objects"].append(relationship)
-        
-        # Add the flow object
-        bundle["objects"].append(flow_obj)
-        
-        # Validate the bundle
-        is_valid, errors = self.validator.validate(bundle)
-        if not is_valid:
-            logger.warning("Generated Attack Flow has validation issues: %s", errors)
-        
-        return bundle
-    
+        return self.exporter.export_to_stix_attack_flow(flow_data, scope=scope, marking_refs=marking_refs)
+
     def _lookup_technique(self, technique_id: str) -> Dict[str, Any]:
         """
         Look up technique details from Neo4j.
-        
+
+        Delegates to AttackFlowExporter._lookup_technique.
+
         Args:
             technique_id: Technique STIX ID or external ID
-            
+
         Returns:
             Technique info dict
         """
-        if not self.driver:
-            return {}
-        
-        with self.driver.session() as session:
-            # Try STIX ID first
-            if technique_id.startswith("attack-pattern--"):
-                result = session.run(
-                    """
-                    MATCH (t:AttackPattern {stix_id: $id})
-                    OPTIONAL MATCH (t)-[:HAS_TACTIC]->(tac:Tactic)
-                    RETURN t.name as name, t.description as description,
-                           collect(DISTINCT tac.shortname) as tactics
-                    """,
-                    id=technique_id
-                )
-            else:
-                # Try external ID
-                result = session.run(
-                    """
-                    MATCH (t:AttackPattern)
-                    WHERE t.external_id = $id OR $id IN t.external_ids
-                    OPTIONAL MATCH (t)-[:HAS_TACTIC]->(tac:Tactic)
-                    RETURN t.name as name, t.description as description,
-                           collect(DISTINCT tac.shortname) as tactics
-                    LIMIT 1
-                    """,
-                    id=technique_id
-                )
-            
-            record = result.single()
-            if record:
-                return {
-                    "name": record["name"],
-                    "description": record["description"],
-                    "tactics": record["tactics"]
-                }
-        
-        return {}
+        return self.exporter._lookup_technique(technique_id)
     
     def close(self):
         """Close Neo4j connection."""
