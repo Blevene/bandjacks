@@ -16,6 +16,9 @@ from typing import Any, Dict, List, Optional
 from bandjacks.llm.constants import get_tactic_order
 
 
+_NO_POSITION = 999_999  # Sentinel for techniques without line references (sorts last, OpenSearch-safe)
+
+
 class DeterministicFlowBuilder:
     """
     Builds attack flows deterministically from extraction claims.
@@ -58,7 +61,7 @@ class DeterministicFlowBuilder:
             tier_dist[e["tier"]] += 1
 
         techniques_without_position = sum(
-            1 for a in actions if a["narrative_position"] == float("inf")
+            1 for a in actions if a["narrative_position"] == _NO_POSITION
         )
 
         return {
@@ -89,7 +92,7 @@ class DeterministicFlowBuilder:
         Deduplicate claims by external_id.
 
         Keeps max confidence and min(line_refs) as narrative_position.
-        Empty line_refs → narrative_position = inf (sorted last).
+        Empty line_refs → narrative_position = _NO_POSITION (sorted last).
         """
         by_tid: Dict[str, Dict[str, Any]] = {}
 
@@ -100,7 +103,7 @@ class DeterministicFlowBuilder:
 
             confidence = c.get("confidence", 0.0)
             line_refs = c.get("line_refs", [])
-            narrative_pos = min(line_refs) if line_refs else float("inf")
+            narrative_pos = min(line_refs) if line_refs else _NO_POSITION
 
             if tid not in by_tid:
                 by_tid[tid] = {

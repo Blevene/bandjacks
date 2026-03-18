@@ -126,19 +126,19 @@ def test_deduplication():
 
 
 def test_no_line_refs_sorts_last():
-    """Empty line_refs → narrative_position=inf, sorts after positioned techniques in same tactic."""
+    """Empty line_refs → narrative_position=_NO_POSITION, sorts after positioned techniques in same tactic."""
     claims = [
-        _make_claim("T1059", [], 0.7),         # execution, no position → inf
+        _make_claim("T1059", [], 0.7),         # execution, no position → _NO_POSITION
         _make_claim("T1059.001", [10], 0.8),   # execution, position 10
         _make_claim("T1566.001", [1], 0.9),    # initial-access, position 1
     ]
     result = _builder().build(claims)
     assert result is not None
-    # Order: T1566.001 (rank 3), T1059.001 (rank 4, pos 10), T1059 (rank 4, pos inf)
+    # Order: T1566.001 (rank 3), T1059.001 (rank 4, pos 10), T1059 (rank 4, pos _NO_POSITION)
     assert result["actions"][0]["attack_pattern_ref"] == "attack-pattern--T1566.001"
     assert result["actions"][1]["attack_pattern_ref"] == "attack-pattern--T1059.001"
     assert result["actions"][2]["attack_pattern_ref"] == "attack-pattern--T1059"
-    assert result["actions"][2]["narrative_position"] == float("inf")
+    assert result["actions"][2]["narrative_position"] == 999_999
 
 
 def test_self_loop_guard():
