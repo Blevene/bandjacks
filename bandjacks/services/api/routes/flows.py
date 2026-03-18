@@ -13,6 +13,8 @@ from bandjacks.services.api.schemas import (
     FlowSearchResult
 )
 from bandjacks.llm.flow_builder import FlowBuilder
+from bandjacks.llm.flow_deterministic import build_dual_flows
+from bandjacks.services.technique_cache import technique_cache
 from bandjacks.llm.flow_exporter import AttackFlowExporter
 from bandjacks.loaders.opensearch_index import upsert_flow_embedding
 from bandjacks.loaders.embedder import encode
@@ -61,11 +63,15 @@ async def build_flow(
     try:
         # Determine source and build flow
         if request and request.extraction:
-            # Use LLM synthesis from extraction
-            flow_data = builder.build_from_extraction(
+            # Use dual-flow generation from extraction (deterministic + optional LLM)
+            raw_flows = build_dual_flows(
+                claims=request.extraction.get("extraction_claims", []),
+                technique_cache=technique_cache,
+                flow_builder=builder,
                 extraction_data=request.extraction,
-                source_id=request.source_id or source_id
+                source_id=request.source_id or source_id,
             )
+            flow_data = raw_flows[0] if raw_flows else None
             
         elif request and request.bundle:
             # Deterministic from bundle

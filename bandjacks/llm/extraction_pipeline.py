@@ -27,6 +27,8 @@ from bandjacks.llm.entity_extractor import EntityExtractionAgent
 from bandjacks.llm.entity_consolidator import EntityConsolidatorAgent
 from bandjacks.llm.tracker import ExtractionTracker
 from bandjacks.llm.flow_builder import FlowBuilder
+from bandjacks.llm.flow_deterministic import build_dual_flows
+from bandjacks.services.technique_cache import technique_cache
 from bandjacks.loaders.embedder import encode
 
 logger = logging.getLogger(__name__)
@@ -82,14 +84,16 @@ class ExtractionPipeline:
         embeddings = self._generate_embeddings(extraction_result)
         
         # Step 3: Build attack flow if we have techniques
+        flows = []
         flow = None
         if extraction_result.get("techniques"):
-            flow = self._build_attack_flow(
+            flows = self._build_attack_flow(
                 extraction_result,
                 report_text,
                 source_id
             )
-        
+            flow = flows[0] if flows else None
+
         # Step 4: Prepare review package
         review_package = self._prepare_for_review(
             extraction_result,
@@ -111,7 +115,10 @@ class ExtractionPipeline:
         
         # Add techniques_count at top level for API compatibility
         review_package["techniques_count"] = len(extraction_result.get("techniques", {}))
-        
+
+        # Store full flows list for callers that need both deterministic + LLM flows
+        review_package["flows"] = flows
+
         logger.info(f"Pipeline complete: {len(extraction_result.get('techniques', {}))} techniques extracted")
         
         return review_package
@@ -412,62 +419,67 @@ class ExtractionPipeline:
         extraction_result: Dict[str, Any],
         report_text: str,
         source_id: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Build attack flow from extraction results.
-        
+    ) -> List[Dict[str, Any]]:
+        """Build attack flows from extraction results.
+
+        Uses build_dual_flows() to produce a deterministic flow and optionally
+        an LLM-synthesized flow when a flow_builder is available.
+
         Args:
             extraction_result: The extraction result
             report_text: Original report text
             source_id: Optional source identifier
-            
+
         Returns:
-            Attack flow data or None if building fails
+            List of flow dicts (may be empty on failure).
         """
-        if not self.flow_builder:
-            logger.warning("Flow builder not initialized (no Neo4j connection)")
-            return None
-        
+        claims = extraction_result.get("claims", [])
+        if not claims:
+            logger.warning("No claims available for flow building")
+            return []
+
         try:
-            # Prepare extraction data in expected format  
             entities_data = extraction_result.get("entities", {"entities": []})
             flow_extraction_data = {
-                "extraction_claims": extraction_result.get("claims", []),
+                "extraction_claims": claims,
                 "techniques": extraction_result.get("techniques", {}),
                 "chunks": [{
-                    "claims": extraction_result.get("claims", []),
-                    "entities": entities_data  # Pass structured entities directly
+                    "claims": claims,
+                    "entities": entities_data,
                 }]
             }
-            
-            # Build flow
-            logger.info(f"Building flow with {len(flow_extraction_data['extraction_claims'])} claims")
-            flow_result = self.flow_builder.build_from_extraction(
+
+            logger.info(f"Building dual flows with {len(claims)} claims")
+            flows = build_dual_flows(
+                claims=claims,
+                technique_cache=technique_cache,
+                flow_builder=self.flow_builder,
                 extraction_data=flow_extraction_data,
-                source_id=source_id,
                 report_text=report_text,
-                use_stored_text=False
+                source_id=source_id,
             )
-            
-            logger.info(f"Flow build result: {type(flow_result)}, keys: {flow_result.keys() if flow_result else 'None'}")
-            
-            if flow_result:
+            logger.info(f"build_dual_flows returned {len(flows)} flow(s)")
+
+            # Normalise each flow dict to the shape callers expect
+            result = []
+            for fr in flows:
                 flow_data = {
-                    "flow_id": flow_result.get("flow_id"),
-                    "flow_name": flow_result.get("name"),
-                    "flow_type": "llm_synthesized" if flow_result.get("llm_synthesized") else "deterministic",
-                    "steps": flow_result.get("actions", []),
-                    "edges": flow_result.get("edges", []),
-                    "confidence": flow_result.get("confidence", 0.5)
+                    "flow_id": fr.get("flow_id"),
+                    "flow_name": fr.get("name"),
+                    "flow_type": "llm_synthesized" if fr.get("llm_synthesized") else "deterministic",
+                    "steps": fr.get("actions", []),
+                    "edges": fr.get("edges", []),
+                    "stats": fr.get("stats", {}),
+                    "confidence": fr.get("confidence", 0.5),
                 }
-                logger.info(f"Returning flow data: {flow_data}")
-                return flow_data
-            else:
-                logger.warning("Flow result was None or empty")
-                
+                result.append(flow_data)
+
+            return result
+
         except Exception as e:
-            logger.error(f"Failed to build attack flow: {e}")
-        
-        return None
+            logger.error(f"Failed to build attack flows: {e}")
+
+        return []
     
     def _prepare_for_review(
         self,

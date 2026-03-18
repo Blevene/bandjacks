@@ -623,57 +623,67 @@ class JobProcessor:
             
             # Build flow from chunked results
             from bandjacks.llm.flow_builder import FlowBuilder
-            
+            from bandjacks.llm.flow_deterministic import build_dual_flows
+            from bandjacks.services.technique_cache import technique_cache
+
             self.job_store.update(job_id, {
                 "progress": 70,
                 "message": "Building attack flow from extracted techniques..."
             })
-            
+
             flow_builder = FlowBuilder(
                 settings.neo4j_uri,
                 settings.neo4j_user,
                 settings.neo4j_password
             )
-            
+
             # Prepare extraction data for flow building
+            claims = extraction_results.get("claims", [])
             flow_extraction_data = {
-                "extraction_claims": extraction_results.get("claims", []),
+                "extraction_claims": claims,
                 "techniques": extraction_results.get("techniques", {}),
                 "chunks": [{
-                    "claims": extraction_results.get("claims", []),
+                    "claims": claims,
                     "entities": extraction_results.get("entities", {})
                 }]
             }
-            
-            # Build flow
-            flow_data = None
+
+            # Build dual flows (deterministic + optional LLM)
+            flow_data_list = []
             try:
-                flow_result = flow_builder.build_from_extraction(
+                raw_flows = build_dual_flows(
+                    claims=claims,
+                    technique_cache=technique_cache,
+                    flow_builder=flow_builder,
                     extraction_data=flow_extraction_data,
-                    source_id=report_sdo["id"],
                     report_text=text_content,
-                    use_stored_text=False
+                    source_id=report_sdo["id"],
                 )
-                
-                if flow_result:
-                    flow_data = {
-                        "flow_id": flow_result.get("id"),
-                        "flow_name": flow_result.get("name"),
-                        "flow_type": "llm_synthesized" if flow_result.get("llm_synthesized") else "deterministic",
-                        "steps": flow_result.get("actions", []),
-                        "edges": flow_result.get("edges", []),
-                        "confidence": flow_result.get("confidence", 0.5)
-                    }
+                for fr in raw_flows:
+                    flow_data_list.append({
+                        "flow_id": fr.get("flow_id"),
+                        "flow_name": fr.get("name"),
+                        "flow_type": "llm_synthesized" if fr.get("llm_synthesized") else "deterministic",
+                        "steps": fr.get("actions", []),
+                        "edges": fr.get("edges", []),
+                        "stats": fr.get("stats", {}),
+                        "confidence": fr.get("confidence", 0.5),
+                    })
+                    try:
+                        flow_builder.persist_to_neo4j(fr)
+                    except Exception as pe:
+                        logger.warning(f"Failed to persist flow to Neo4j: {pe}")
             except Exception as e:
-                logger.error(f"Failed to build flow: {e}")
-            
+                logger.error(f"Failed to build flows: {e}")
+
             # Package results similar to pipeline
             pipeline_results = {
                 "techniques": extraction_results.get("techniques", {}),
                 "technique_count": len(extraction_results.get("techniques", {})),
-                "claims": extraction_results.get("claims", []),
+                "claims": claims,
                 "entities": extraction_results.get("entities", {}),
-                "flow": flow_data,
+                "flow": flow_data_list[0] if flow_data_list else None,  # legacy compat
+                "flows": flow_data_list,
                 "evidence_map": {},
                 "requires_manual_review": True,
                 "metrics": extraction_results.get("metrics", {})
@@ -697,7 +707,8 @@ class JobProcessor:
         bundle = self._create_stix_bundle(report_sdo, extraction_results)
         
         # Get flow data from pipeline results
-        flow_data = pipeline_results.get("flow")
+        flow_data = pipeline_results.get("flow")  # legacy single-flow compat
+        flow_data_list = pipeline_results.get("flows", [])
         if flow_data:
             self.job_store.update(job_id, {
                 "progress": 80,
@@ -739,7 +750,8 @@ class JobProcessor:
                 "bundle_preview": bundle,
                 "extraction_claims": claims,
                 "entities": extraction_results.get("entities", {}),
-                "flow": flow_data,
+                "flow": flow_data,  # legacy compat
+                "flows": flow_data_list,
                 "review_package": {
                     "evidence_map": pipeline_results.get("evidence_map", {}),
                     "requires_manual_review": pipeline_results.get("requires_manual_review", True),
@@ -759,7 +771,7 @@ class JobProcessor:
             "report_id": report_sdo["id"],
             "techniques_count": extraction_results.get("techniques_count", 0),
             "claims_count": len(claims),
-            "flow_generated": flow_data is not None,
+            "flow_generated": len(flow_data_list) > 0,
             "bundle_size": len(bundle.get("objects", [])),
             "review_required": True
         }

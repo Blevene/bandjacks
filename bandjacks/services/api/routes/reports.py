@@ -1076,25 +1076,32 @@ async def approve_report(
                             if claim.get("technique_id") in approved_ids
                         ]
                         
-                        # Build flow
-                        flow_data = flow_builder.build_from_extraction(
+                        # Build dual flows
+                        from bandjacks.llm.flow_deterministic import build_dual_flows
+                        from bandjacks.services.technique_cache import technique_cache
+                        flows = build_dual_flows(
+                            claims=flow_extraction.get("claims", []),
+                            technique_cache=technique_cache,
+                            flow_builder=flow_builder,
                             extraction_data=flow_extraction,
                             source_id=report_id,
-                            use_stored_text=True
                         )
-                        
-                        if flow_data:
-                            flow_builder.persist_to_neo4j(flow_data)
+                        for f in flows:
+                            try:
+                                flow_builder.persist_to_neo4j(f)
+                            except Exception as e:
+                                logger.warning(f"Failed to persist flow: {e}")
+                        if flows:
                             result["flow_generated"] = True
-                            result["flow_id"] = flow_data.get("episode_id")
-                            
-                            # Update OpenSearch
+                            result["flow_id"] = flows[0].get("flow_id")
+
+                            # Update OpenSearch with first flow for legacy compat
                             os_store.update_report_flow(
                                 report_id=report_id,
-                                flow_id=flow_data.get("episode_id"),
-                                flow_data=flow_data
+                                flow_id=flows[0].get("flow_id"),
+                                flow_data=flows[0]
                             )
-                        
+
                         flow_builder.close()
                         
                     except Exception as e:
@@ -1308,19 +1315,31 @@ async def generate_flow_for_report(
             }]
         }
         
-        # Generate flow using stored text
-        flow_result = flow_builder.build_from_extraction(
+        # Generate dual flows using stored text
+        from bandjacks.llm.flow_deterministic import build_dual_flows
+        from bandjacks.services.technique_cache import technique_cache
+        raw_flows = build_dual_flows(
+            claims=extraction_data.get("extraction_claims", []),
+            technique_cache=technique_cache,
+            flow_builder=flow_builder,
             extraction_data=extraction_data,
             source_id=report_id,
-            use_stored_text=True
         )
-        
-        if flow_result:
+
+        if raw_flows:
+            # Persist all flows; use first for response
+            for fr in raw_flows:
+                try:
+                    flow_builder.persist_to_neo4j(fr)
+                except Exception as pe:
+                    logger.warning(f"Failed to persist flow: {pe}")
+
+            first = raw_flows[0]
             # Convert to simpler format
             flow_data = {
-                "flow_name": flow_result.get("name"),
-                "flow_type": "llm_synthesized" if flow_result.get("llm_synthesized") else "deterministic",
-                "confidence": "high" if flow_result.get("llm_synthesized") else "medium",
+                "flow_name": first.get("name"),
+                "flow_type": "llm_synthesized" if first.get("llm_synthesized") else "deterministic",
+                "confidence": "high" if first.get("llm_synthesized") else "medium",
                 "steps": [
                     {
                         "order": action["order"],
@@ -1331,11 +1350,11 @@ async def generate_flow_for_report(
                         "description": action.get("description"),
                         "reason": action.get("reason", "")
                     }
-                    for action in flow_result.get("actions", [])
+                    for action in first.get("actions", [])
                 ],
-                "notes": f"Generated with {len(flow_result.get('actions', []))} steps"
+                "notes": f"Generated with {len(first.get('actions', []))} steps"
             }
-            
+
             # Update report
             extraction["flow"] = flow_data
             update_body = {
@@ -1349,12 +1368,13 @@ async def generate_flow_for_report(
                 id=report_id,
                 body=update_body
             )
-            
+
             flow_builder.close()
-            
+
             return {
                 "message": "Attack flow generated successfully",
                 "flow": flow_data,
+                "flows_count": len(raw_flows),
                 "steps_count": len(flow_data.get("steps", []))
             }
         else:

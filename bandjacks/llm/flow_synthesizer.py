@@ -104,7 +104,9 @@ class FlowSynthesizer:
         if "chunks" in extraction_result:
             for chunk in extraction_result["chunks"]:
                 if "claims" in chunk:
-                    cti_data["claims"].extend(chunk["claims"])
+                    cti_data["claims"].extend(
+                        c for c in chunk["claims"] if isinstance(c, dict)
+                    )
                 if "entities" in chunk:
                     for key, values in chunk.get("entities", {}).items():
                         if key in cti_data["entities"]:
@@ -114,7 +116,9 @@ class FlowSynthesizer:
 
         # Also check top-level extraction_claims
         if "extraction_claims" in extraction_result:
-            cti_data["claims"].extend(extraction_result["extraction_claims"])
+            cti_data["claims"].extend(
+                c for c in extraction_result["extraction_claims"] if isinstance(c, dict)
+            )
 
         # Add techniques from extraction result
         if "techniques" in extraction_result:
@@ -317,9 +321,11 @@ Output as JSON matching the attack flow schema."""
         # From claims
         if "claims" in cti_data:
             for claim in cti_data["claims"]:
+                if not isinstance(claim, dict):
+                    continue
                 # Extract techniques from mappings
                 for mapping in claim.get("mappings", []):
-                    if mapping.get("external_id"):
+                    if isinstance(mapping, dict) and mapping.get("external_id"):
                         tech_info = f"{mapping['external_id']}: {mapping.get('name', '')}"
                         if tech_info not in entities["techniques"]:
                             entities["techniques"].append(tech_info)
@@ -346,6 +352,8 @@ Output as JSON matching the attack flow schema."""
 
         if "claims" in cti_data:
             for claim in cti_data["claims"][:30]:  # Limit to 30 claims
+                if not isinstance(claim, dict):
+                    continue
                 claim_summary = {
                     "type": claim.get("type"),
                     "text": claim.get("span", {}).get("text", "") if isinstance(claim.get("span"), dict) else claim.get("span", ""),
@@ -472,9 +480,15 @@ Output as JSON matching the attack flow schema."""
         # Get techniques from claims (both old and new format)
         if "claims" in cti_data:
             for claim in cti_data["claims"]:
+                if not isinstance(claim, dict):
+                    # Claim is a bare string — treat as technique ID if it matches ATT&CK format
+                    claim_str = str(claim)
+                    if re.match(r'^T\d{4}(\.\d{3})?$', claim_str):
+                        valid_techniques.add(claim_str)
+                    continue
                 # Old format with mappings
                 for mapping in claim.get("mappings", []):
-                    if mapping.get("external_id"):
+                    if isinstance(mapping, dict) and mapping.get("external_id"):
                         valid_techniques.add(mapping["external_id"])
                 # New format with direct external_id
                 if claim.get("external_id"):
@@ -487,6 +501,9 @@ Output as JSON matching the attack flow schema."""
         # Validate each step
         validated_steps = []
         for step in flow.get("steps", []):
+            if not isinstance(step, dict):
+                # Bare string step — wrap it
+                step = {"entity": {"label": "Technique", "pk": str(step)}, "description": str(step)}
             entity = step.get("entity", {})
             if not isinstance(entity, dict):
                 # Normalize non-dict entity to dict
@@ -495,15 +512,15 @@ Output as JSON matching the attack flow schema."""
 
             # Check if entity is valid
             if entity.get("label") == "Technique":
-                # Try to match technique ID
-                pk = entity.get("pk", "")
-                if pk.startswith("T") and any(pk in tech for tech in valid_techniques):
+                # Try to match technique ID (handle both 'pk' and 'id' keys)
+                pk = entity.get("pk") or entity.get("id", "")
+                if re.match(r'^T\d{4}', pk) and any(pk in tech for tech in valid_techniques):
                     validated_steps.append(step)
                 elif len(validated_steps) < 5:  # Keep some steps even if not perfect match
                     validated_steps.append(step)
             elif entity.get("label") in ["Tool", "Malware"]:
                 # Check if tool/malware is mentioned
-                pk = entity.get("pk", "")
+                pk = entity.get("pk") or entity.get("id", "")
                 if pk in valid_tools or len(validated_steps) < 5:
                     validated_steps.append(step)
             else:

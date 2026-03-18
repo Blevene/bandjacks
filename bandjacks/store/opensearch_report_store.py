@@ -100,7 +100,8 @@ class OpenSearchReportStore:
                 "bundle": extraction_result.get("bundle_preview", {}),
                 "claims": extraction_result.get("extraction_claims", []),
                 "entities": extraction_result.get("entities", {}),  # Include extracted entities
-                "flow": extraction_result.get("flow")  # Include flow if generated
+                "flow": extraction_result.get("flow"),  # Legacy single-flow compat
+                "flows": extraction_result.get("flows", [])  # Dual flows list
             },
             "techniques": techniques,
             "source": source_info or {}
