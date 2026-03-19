@@ -210,24 +210,27 @@ class SpanFinderAgent:
     
     def _aggregate_context_spans(self, mem: WorkingMemory):
         """Aggregate consecutive lines that form behavioral sequences using sentence extraction."""
-        
+
         # Build full text for sentence extraction
         full_text = '\n'.join(mem.line_index) if mem.line_index else mem.document_text
-        
+
+        # Precompute cumulative character offsets
+        char_offsets = [0]
+        for line in mem.line_index:
+            char_offsets.append(char_offsets[-1] + len(line) + 1)
+
         # Look for multi-step sequences
         window_size = 5
         for i in range(len(mem.line_index) - window_size + 1):
             window_text = " ".join(mem.line_index[i:i+window_size])
-            
+
             # Check for attack chains
             if ("download" in window_text.lower() and "execute" in window_text.lower()) or \
                ("encrypt" in window_text.lower() and "ransom" in window_text.lower()) or \
                ("credential" in window_text.lower() and "lateral" in window_text.lower()):
-                
+
                 # Calculate character position for middle of window
-                char_pos = 0
-                for j in range(i + window_size // 2):
-                    char_pos += len(mem.line_index[j]) + 1
+                char_pos = char_offsets[i + window_size // 2]
                 
                 # Extract sentence-based evidence for this window
                 evidence = ConsolidatorBase.extract_sentence_evidence(
@@ -248,23 +251,26 @@ class SpanFinderAgent:
     
     def _create_entity_spans(self, mem: WorkingMemory):
         """Create spans based on entity mentions and their actions using sentence extraction."""
-        
+
         # Build full text for sentence extraction
         full_text = '\n'.join(mem.line_index) if mem.line_index else mem.document_text
-        
+
+        # Precompute cumulative character offsets
+        char_offsets = [0]
+        for line in mem.line_index:
+            char_offsets.append(char_offsets[-1] + len(line) + 1)
+
         # Find entity mentions - expanded to include more threat actors and malware
         entity_pattern = re.compile(
             r"\b(APT\d+|TA\d+|FIN\d+|UNC\d+|" +  # Standard threat actor naming
             r"threat actor|attacker|adversary|threat group|intrusion set|" +  # Generic terms
             r"malware|trojan|ransomware|backdoor|RAT|rootkit|worm|virus)\b", re.I  # Specific malware
         )
-        
+
         for idx, line in enumerate(mem.line_index):
             if entity_pattern.search(line):
                 # Calculate character position for this line
-                char_pos = 0
-                for j in range(idx):
-                    char_pos += len(mem.line_index[j]) + 1
+                char_pos = char_offsets[idx]
                 
                 # Find position of entity mention in line
                 match = entity_pattern.search(line)

@@ -52,21 +52,23 @@ def ttx_search(os_url: str, index: str, text: str, top_k: int = 10):
     return out
 
 
-def ttx_search_kb(os_url: str, index: str, text: str, top_k: int = 10, kb_types: Optional[List[str]] = None):
+def ttx_search_kb(os_url: str, index: str, text: str, top_k: int = 10, kb_types: Optional[List[str]] = None, client: Optional[OpenSearch] = None):
     """
     Search for nodes similar to input text using KNN with optional kb_type filtering.
-    
+
     Args:
         os_url: OpenSearch URL
         index: Index name to search
         text: Query text
         top_k: Number of results to return
         kb_types: Optional list of kb_types to filter (e.g., ['AttackPattern', 'IntrusionSet'])
-        
+        client: Optional pre-existing OpenSearch client to reuse (avoids creating a new one per call)
+
     Returns:
         List of matching nodes with scores, filtered by kb_type if specified
     """
-    client = OpenSearch(os_url, timeout=30)
+    if client is None:
+        client = OpenSearch(os_url, timeout=30)
     qvec = encode(text)
     
     if qvec is None:

@@ -33,7 +33,16 @@ def get_opensearch_client(url: str = None, timeout: int = 30) -> OpenSearch:
 
 class BatchRetrieverAgent:
     """Retrieve technique candidates for all spans in a single batch operation."""
-    
+
+    def __init__(self, os_client: Optional[OpenSearch] = None):
+        """Initialize BatchRetrieverAgent.
+
+        Args:
+            os_client: Optional pre-existing OpenSearch client to reuse.
+                       When not provided, falls back to the module-level singleton.
+        """
+        self._os_client = os_client
+
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
         """Process all spans in a batch for efficiency.
         
@@ -149,9 +158,9 @@ class BatchRetrieverAgent:
         for idx, vec in cached_vectors.items():
             vectors[idx] = vec
         
-        # Get OpenSearch client
+        # Get OpenSearch client (prefer injected, fall back to module singleton)
         from bandjacks.services.api.settings import settings
-        client = get_opensearch_client()
+        client = self._os_client if self._os_client is not None else get_opensearch_client()
         
         # Build multi-search request for unique vectors only
         msearch_body = []
