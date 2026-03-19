@@ -11,6 +11,32 @@ import uuid
 
 router = APIRouter(prefix="/graph", tags=["graph"])
 
+# Allowlist of valid Neo4j relationship types to prevent Cypher injection
+# via the relationship_types query parameter
+import re
+_VALID_REL_TYPE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+ALLOWED_RELATIONSHIP_TYPES = {
+    "USES", "MITIGATES", "HAS_TACTIC", "NEXT", "CONTAINS", "COUNTERS",
+    "RELATED_TO", "EXTRACTED_ENTITY", "EXTRACTED_TECHNIQUE", "IDENTIFIED_ACTOR",
+    "EXTRACTED_MALWARE", "MENTIONS_TOOL", "DESCRIBES_CAMPAIGN", "HAS_FLOW",
+    "OF_TECHNIQUE", "DETECTS", "HAS_ANALYTIC", "PRODUCES", "IMPLIES_TECHNIQUE",
+    "CONTAINS_EPISODE", "HAS_DATA_SOURCE", "HAS_DATA_COMPONENT",
+}
+
+
+def _validate_relationship_types(relationship_types: Optional[List[str]]) -> None:
+    """Validate relationship types against allowlist to prevent Cypher injection."""
+    if not relationship_types:
+        return
+    for rt in relationship_types:
+        if rt not in ALLOWED_RELATIONSHIP_TYPES and not _VALID_REL_TYPE_RE.match(rt):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid relationship type: '{rt}'. "
+                       f"Allowed: {', '.join(sorted(ALLOWED_RELATIONSHIP_TYPES))}"
+            )
+
 
 class GraphNode(BaseModel):
     """Graph node representation."""
@@ -309,12 +335,13 @@ async def get_node_neighbors(
     
     Returns all nodes connected to the specified node with their relationships.
     """
-    # Build relationship filter
+    # Validate and build relationship filter
+    _validate_relationship_types(relationship_types)
     rel_filter = ""
     if relationship_types:
         rel_types = "|".join(relationship_types)
         rel_filter = f":{rel_types}"
-    
+
     # Build direction-specific query
     if direction == "outgoing":
         query = f"""
@@ -401,7 +428,8 @@ async def find_path(
     
     Returns the shortest path(s) between source and target nodes.
     """
-    # Build relationship filter
+    # Validate and build relationship filter
+    _validate_relationship_types(relationship_types)
     rel_filter = ""
     if relationship_types:
         rel_types = "|".join(relationship_types)
