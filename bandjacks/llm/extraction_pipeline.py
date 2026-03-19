@@ -29,7 +29,7 @@ from bandjacks.llm.tracker import ExtractionTracker
 from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.llm.flow_deterministic import build_dual_flows
 from bandjacks.services.technique_cache import technique_cache
-from bandjacks.loaders.embedder import encode
+from bandjacks.loaders.embedder import encode, batch_encode
 
 logger = logging.getLogger(__name__)
 
@@ -382,36 +382,39 @@ class ExtractionPipeline:
     
     def _generate_embeddings(self, extraction_result: Dict[str, Any]) -> Dict[str, List[float]]:
         """Generate embeddings for extracted techniques.
-        
+
         Args:
             extraction_result: The extraction result containing techniques
-            
+
         Returns:
             Dictionary mapping technique IDs to embeddings
         """
-        embeddings = {}
-        
+        tech_ids = []
+        texts = []
+
         for tech_id, tech_data in extraction_result.get("techniques", {}).items():
-            # Create text representation for embedding
             text_parts = [
                 tech_data.get("name", ""),
                 tech_data.get("description", "")
             ]
-            
-            # Add evidence text if available
             for claim in extraction_result.get("claims", []):
                 if claim.get("technique_id") == tech_id:
                     text_parts.append(claim.get("evidence", ""))
-            
-            # Generate embedding
             text = " ".join(filter(None, text_parts))
             if text:
-                try:
-                    embedding = encode(text)
-                    embeddings[tech_id] = embedding
-                except Exception as e:
-                    logger.warning(f"Failed to generate embedding for {tech_id}: {e}")
-        
+                tech_ids.append(tech_id)
+                texts.append(text)
+
+        embeddings = {}
+        if texts:
+            try:
+                vectors = batch_encode(texts)
+                for tech_id, vec in zip(tech_ids, vectors):
+                    if vec is not None:
+                        embeddings[tech_id] = vec
+            except Exception as e:
+                logger.warning(f"Failed to batch generate embeddings: {e}")
+
         return embeddings
     
     def _build_attack_flow(

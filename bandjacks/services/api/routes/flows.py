@@ -467,29 +467,28 @@ async def get_flow(
         """
         
         actions_result = neo4j_session.run(actions_query, flow_id=flow_id)
-        
+
+        # Consume cursor into a list to allow two-pass processing
+        action_records = list(actions_result)
+
+        # Collect unique technique refs and batch-resolve names
+        refs = {r["attack_pattern_ref"] for r in action_records if r["attack_pattern_ref"]}
+
+        if refs:
+            name_query = """
+                MATCH (t:AttackPattern) WHERE t.stix_id IN $refs
+                RETURN t.stix_id AS ref, t.name AS name
+            """
+            name_result = neo4j_session.run(name_query, refs=list(refs))
+            action_names = {r["ref"]: r["name"] for r in name_result}
+        else:
+            action_names = {}
+
         steps = []
-        action_names = {}  # Cache for technique names
-        
-        for action_record in actions_result:
+        for action_record in action_records:
             action_id = action_record["action_id"]
-            
-            # Get technique name
-            if action_record["attack_pattern_ref"] not in action_names:
-                tech_query = """
-                    MATCH (t:AttackPattern {stix_id: $tech_id})
-                    RETURN t.name as name
-                """
-                tech_result = neo4j_session.run(
-                    tech_query, 
-                    tech_id=action_record["attack_pattern_ref"]
-                )
-                tech_record = tech_result.single()
-                technique_name = tech_record["name"] if tech_record else "Unknown"
-                action_names[action_record["attack_pattern_ref"]] = technique_name
-            else:
-                technique_name = action_names[action_record["attack_pattern_ref"]]
-            
+            technique_name = action_names.get(action_record["attack_pattern_ref"], "Unknown")
+
             # Parse evidence JSON
             evidence = None
             if action_record["evidence"]:
@@ -497,7 +496,7 @@ async def get_flow(
                     evidence = json.loads(action_record["evidence"])
                 except Exception:
                     evidence = []
-            
+
             steps.append(FlowStep(
                 order=action_record["order"],
                 action_id=action_id,

@@ -36,6 +36,8 @@ ENDPOINT_LIMITS = {
     "/v1/reports/ingest_file_async": 30,  # Async file ingestion
     "/v1/reports/": 200,  # Report retrieval and details - UI needs frequent access for navigation/display
 }
+# Pre-sorted by length descending for longest-prefix-match
+_SORTED_ENDPOINT_LIMITS = sorted(ENDPOINT_LIMITS.items(), key=lambda x: len(x[0]), reverse=True)
 
 
 def _get_redis_client():
@@ -245,8 +247,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if path in ENDPOINT_LIMITS:
             return ENDPOINT_LIMITS[path]
 
-        # Check prefix match
-        for endpoint, limit in ENDPOINT_LIMITS.items():
+        # Check prefix match (longest first so specific routes win)
+        for endpoint, limit in _SORTED_ENDPOINT_LIMITS:
             if path.startswith(endpoint):
                 return limit
 

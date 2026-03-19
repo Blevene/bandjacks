@@ -5,9 +5,9 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
-from neo4j import GraphDatabase
 
 from ....config import get_settings
+from bandjacks.services.api.deps import get_neo4j_driver
 from bandjacks.analytics.cooccurrence import (
     CooccurrenceAnalyzer, CooccurrenceMetrics, TechniqueBundle, ActorProfile
 )
@@ -69,19 +69,6 @@ class GapAnalysisResponse(BaseModel):
     remediation_plan: List[Dict[str, Any]]
 
 
-def get_neo4j_driver():
-    """Get Neo4j driver instance."""
-    if not settings.neo4j_password:
-        raise ValueError(
-            "NEO4J_PASSWORD environment variable is required. "
-            "Please set it in your .env file or environment variables."
-        )
-    return GraphDatabase.driver(
-        settings.neo4j_uri,
-        auth=(settings.neo4j_user, settings.neo4j_password)
-    )
-
-
 @router.get("/coverage", response_model=CoverageResponse)
 async def analyze_coverage_get(
     tactics: Optional[str] = Query(None, description="Comma-separated list of tactics"),
@@ -111,31 +98,31 @@ async def analyze_coverage(request: CoverageRequest) -> CoverageResponse:
     Identifies gaps in detection and defensive capabilities.
     """
     driver = get_neo4j_driver()
-    
+
     try:
         with driver.session() as session:
             # Get overall statistics
             summary = _get_coverage_summary(session)
-            
+
             # Analyze by tactics
             tactics_coverage = _analyze_tactics_coverage(
-                session, 
+                session,
                 request.tactics,
                 request.include_sub_techniques
             )
-            
+
             # Analyze by groups
             groups_coverage = _analyze_groups_coverage(
                 session,
                 request.groups
             )
-            
+
             # Generate recommendations
             recommendations = _generate_coverage_recommendations(
                 tactics_coverage,
                 groups_coverage
             )
-            
+
             return CoverageResponse(
                 summary=summary,
                 tactics=tactics_coverage,
@@ -143,12 +130,10 @@ async def analyze_coverage(request: CoverageRequest) -> CoverageResponse:
                 recommendations=recommendations,
                 generated_at=datetime.utcnow().isoformat()
             )
-            
+
     except Exception as e:
         logger.error(f"Coverage analysis failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        driver.close()
 
 
 @router.post("/gaps", response_model=GapAnalysisResponse)
@@ -195,12 +180,10 @@ async def analyze_gaps(request: GapAnalysisRequest) -> GapAnalysisResponse:
                 estimated_impact=estimated_impact,
                 remediation_plan=remediation_plan
             )
-            
+
     except Exception as e:
         logger.error(f"Gap analysis failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        driver.close()
 
 
 @router.get("/statistics")
@@ -223,12 +206,10 @@ async def get_statistics() -> Dict[str, Any]:
             }
             
             return stats
-            
+
     except Exception as e:
         logger.error(f"Failed to get statistics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        driver.close()
 
 
 @router.get("/reports/{report_type}")
@@ -246,12 +227,10 @@ async def generate_report(report_type: str) -> Dict[str, Any]:
     try:
         with driver.session() as session:
             return _generate_report_data(session, report_type)
-                
+
     except Exception as e:
         logger.error(f"Report generation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        driver.close()
 
 
 # Helper functions
@@ -682,8 +661,6 @@ async def get_top_cooccurring_pairs(
     except Exception as e:
         logger.error(f"Failed to compute co-occurrence pairs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        driver.close()
 
 
 class ConditionalCooccurrence(BaseModel):
@@ -755,8 +732,6 @@ async def get_conditional_cooccurrence(
     except Exception as e:
         logger.error(f"Failed to compute conditional co-occurrence: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        driver.close()
 
 
 # =====================
@@ -885,8 +860,6 @@ async def analyze_actor_cooccurrence(request: ActorCooccurrenceRequest) -> Actor
             for tech in [m.technique_a, m.technique_b]
         ))
         
-        driver.close()
-        
         return ActorCooccurrenceResponse(
             intrusion_set_id=request.intrusion_set_id,
             intrusion_set_name=actor_name,
@@ -999,8 +972,6 @@ async def extract_technique_bundles(request: BundleExtractionRequest) -> BundleE
             """, techniques=list(all_techniques))
             coverage_stats = dict(coverage_stats_result.single() or {})
         
-        driver.close()
-        
         return BundleExtractionResponse(
             bundles=formatted_bundles,
             total_bundles=len(bundles),
@@ -1089,8 +1060,6 @@ async def calculate_actor_similarity(request: ActorSimilarityRequest) -> ActorSi
                     "signature_techniques": profile.signature_techniques[:10]
                 })
         
-        driver.close()
-        
         return ActorSimilarityResponse(
             similarities=formatted_similarities,
             actor_profiles=formatted_profiles,
@@ -1165,8 +1134,6 @@ async def identify_bridging_techniques(
                 "tactics": tech_data["tactics"] if tech_data else [],
                 "actors_sample": actors
             })
-        
-        driver.close()
         
         return BridgingTechniquesResponse(
             techniques=formatted_techniques,
@@ -1254,8 +1221,6 @@ async def analyze_global_cooccurrence(request: GlobalCooccurrenceRequest) -> Glo
                 "npmi": round(metric.npmi, 3),
                 "jaccard": round(metric.jaccard, 3)
             })
-        
-        driver.close()
         
         return GlobalCooccurrenceResponse(
             pairs=formatted_pairs,

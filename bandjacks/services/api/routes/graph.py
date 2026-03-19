@@ -86,20 +86,27 @@ async def get_attack_flow(
     
     filter_clause = f"WHERE {' AND '.join(filter_clauses)}" if filter_clauses else ""
     
-    # Get the center technique
+    # Single combined query with WITH clauses to avoid Cartesian products
     technique_query = f"""
         MATCH (t:AttackPattern {{stix_id: $technique_id}})
         {filter_clause}
         OPTIONAL MATCH (t)-[:HAS_TACTIC]->(tactic:Tactic)
-        RETURN t, collect(tactic) as tactics
+        WITH t, collect(DISTINCT tactic) AS tactics
+        OPTIONAL MATCH (g:IntrusionSet)-[:USES]->(t) WHERE NOT coalesce(g.revoked, false)
+        WITH t, tactics, collect(DISTINCT g)[..10] AS groups
+        OPTIONAL MATCH (s:Software)-[:USES]->(t) WHERE NOT coalesce(s.revoked, false)
+        WITH t, tactics, groups, collect(DISTINCT s)[..10] AS software
+        OPTIONAL MATCH (m:Mitigation)-[:MITIGATES]->(t) WHERE NOT coalesce(m.revoked, false)
+        RETURN t, tactics, groups, software,
+               collect(DISTINCT m)[..10] AS mitigations
     """
-    
+
     result = neo4j_session.run(technique_query, technique_id=request.technique_id)
     record = result.single()
-    
+
     if not record:
         raise HTTPException(status_code=404, detail=f"Technique {request.technique_id} not found")
-    
+
     # Add center technique
     technique = dict(record["t"])
     nodes.append(GraphNode(
@@ -113,7 +120,7 @@ async def get_attack_flow(
         }
     ))
     node_ids.add(technique["stix_id"])
-    
+
     # Add tactics
     for tactic in record["tactics"]:
         if tactic:
@@ -127,105 +134,81 @@ async def get_attack_flow(
                     properties={"shortname": tactic_dict.get("shortname", "")}
                 ))
                 node_ids.add(tactic_dict["stix_id"])
-            
+
             edges.append(GraphEdge(
                 source=technique["stix_id"],
                 target=tactic_dict["stix_id"],
                 type="HAS_TACTIC",
                 properties={}
             ))
-    
-    # Get related entities based on depth
+
+    # Add related entities based on depth and request flags
     if request.depth >= 1:
         # Groups using this technique
         if request.include_groups:
-            group_query = """
-                MATCH (g:IntrusionSet)-[:USES]->(t:AttackPattern {stix_id: $technique_id})
-                WHERE g.revoked = false OR g.revoked IS NULL
-                RETURN g
-                LIMIT 10
-            """
-            
-            group_result = neo4j_session.run(group_query, technique_id=request.technique_id)
-            
-            for record in group_result:
-                group = dict(record["g"])
-                if group["stix_id"] not in node_ids:
-                    nodes.append(GraphNode(
-                        stix_id=group["stix_id"],
-                        type="intrusion-set",
-                        name=group.get("name", ""),
-                        description=group.get("description", ""),
-                        properties={"aliases": group.get("aliases", [])}
+            for group_node in record["groups"]:
+                if group_node:
+                    group = dict(group_node)
+                    if group["stix_id"] not in node_ids:
+                        nodes.append(GraphNode(
+                            stix_id=group["stix_id"],
+                            type="intrusion-set",
+                            name=group.get("name", ""),
+                            description=group.get("description", ""),
+                            properties={"aliases": group.get("aliases", [])}
+                        ))
+                        node_ids.add(group["stix_id"])
+
+                    edges.append(GraphEdge(
+                        source=group["stix_id"],
+                        target=technique["stix_id"],
+                        type="USES",
+                        properties={}
                     ))
-                    node_ids.add(group["stix_id"])
-                
-                edges.append(GraphEdge(
-                    source=group["stix_id"],
-                    target=technique["stix_id"],
-                    type="USES",
-                    properties={}
-                ))
-        
+
         # Software using this technique
         if request.include_software:
-            software_query = """
-                MATCH (s:Software)-[:USES]->(t:AttackPattern {stix_id: $technique_id})
-                WHERE s.revoked = false OR s.revoked IS NULL
-                RETURN s
-                LIMIT 10
-            """
-            
-            software_result = neo4j_session.run(software_query, technique_id=request.technique_id)
-            
-            for record in software_result:
-                software = dict(record["s"])
-                if software["stix_id"] not in node_ids:
-                    nodes.append(GraphNode(
-                        stix_id=software["stix_id"],
-                        type=software.get("type", "software"),
-                        name=software.get("name", ""),
-                        description=software.get("description", ""),
+            for sw_node in record["software"]:
+                if sw_node:
+                    software = dict(sw_node)
+                    if software["stix_id"] not in node_ids:
+                        nodes.append(GraphNode(
+                            stix_id=software["stix_id"],
+                            type=software.get("type", "software"),
+                            name=software.get("name", ""),
+                            description=software.get("description", ""),
+                            properties={}
+                        ))
+                        node_ids.add(software["stix_id"])
+
+                    edges.append(GraphEdge(
+                        source=software["stix_id"],
+                        target=technique["stix_id"],
+                        type="USES",
                         properties={}
                     ))
-                    node_ids.add(software["stix_id"])
-                
-                edges.append(GraphEdge(
-                    source=software["stix_id"],
-                    target=technique["stix_id"],
-                    type="USES",
-                    properties={}
-                ))
-        
+
         # Mitigations
         if request.include_mitigations:
-            mitigation_query = """
-                MATCH (m:Mitigation)-[:MITIGATES]->(t:AttackPattern {stix_id: $technique_id})
-                WHERE m.revoked = false OR m.revoked IS NULL
-                RETURN m
-                LIMIT 10
-            """
-            
-            mitigation_result = neo4j_session.run(mitigation_query, technique_id=request.technique_id)
-            
-            for record in mitigation_result:
-                mitigation = dict(record["m"])
-                if mitigation["stix_id"] not in node_ids:
-                    nodes.append(GraphNode(
-                        stix_id=mitigation["stix_id"],
-                        type="mitigation",
-                        name=mitigation.get("name", ""),
-                        description=mitigation.get("description", ""),
+            for mit_node in record["mitigations"]:
+                if mit_node:
+                    mitigation = dict(mit_node)
+                    if mitigation["stix_id"] not in node_ids:
+                        nodes.append(GraphNode(
+                            stix_id=mitigation["stix_id"],
+                            type="mitigation",
+                            name=mitigation.get("name", ""),
+                            description=mitigation.get("description", ""),
+                            properties={}
+                        ))
+                        node_ids.add(mitigation["stix_id"])
+
+                    edges.append(GraphEdge(
+                        source=mitigation["stix_id"],
+                        target=technique["stix_id"],
+                        type="MITIGATES",
                         properties={}
                     ))
-                    node_ids.add(mitigation["stix_id"])
-                
-                edges.append(GraphEdge(
-                    source=mitigation["stix_id"],
-                    target=technique["stix_id"],
-                    type="MITIGATES",
-                    properties={}
-                ))
     
     # Get related techniques if depth > 1
     if request.depth > 1:
@@ -237,7 +220,7 @@ async def get_attack_flow(
             LIMIT 5
         """
         
-        related_result = neo4j_session.run(related_query, technique_id=technique_id)
+        related_result = neo4j_session.run(related_query, technique_id=request.technique_id)
         
         for record in related_result:
             if record["related"]:
@@ -265,7 +248,7 @@ async def get_attack_flow(
         nodes=nodes,
         edges=edges,
         metadata={
-            "center_node": technique_id,
+            "center_node": request.technique_id,
             "depth": request.depth,
             "node_count": len(nodes),
             "edge_count": len(edges)

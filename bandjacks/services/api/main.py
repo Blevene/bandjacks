@@ -150,6 +150,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to start job processor: {e}")
 
+    # Pre-warm embedding model
+    try:
+        from bandjacks.loaders.embedder import get_model
+        get_model()
+        logger.info("Embedding model pre-warmed")
+    except Exception as e:
+        logger.error(f"Failed to pre-warm embedding model: {e}")
+
     # Initialize vector update system
     try:
         await initialize_vector_updates()

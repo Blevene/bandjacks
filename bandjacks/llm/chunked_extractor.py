@@ -38,7 +38,7 @@ class ChunkedExtractor:
         chunk_size: int = 4000,
         overlap: int = 150,
         max_chunks: int = 8,
-        parallel_workers: int = 1
+        parallel_workers: int = 3
     ):
         """
         Initialize chunked extractor.
