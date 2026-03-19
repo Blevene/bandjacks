@@ -165,3 +165,20 @@ class TestClientUsageExtraction:
         assert usage["tokens_out"] == 60
         assert usage["model"] == "gpt-4o-mini"
         assert usage["cost_usd"] == 0.001
+
+
+from bandjacks.llm.token_utils import BudgetTracker, BudgetConfig
+
+
+class TestBudgetTrackerStats:
+    """Test BudgetTracker returns separate token counts."""
+
+    def test_get_usage_stats_split_tokens(self):
+        tracker = BudgetTracker(BudgetConfig(enforce_limits=False))
+        tracker.record_usage("gemini/gemini-2.5-flash", tokens_in=500, tokens_out=200, actual_cost=0.001)
+        tracker.record_usage("gemini/gemini-2.5-flash", tokens_in=300, tokens_out=100, actual_cost=0.0005)
+
+        stats = tracker.get_usage_stats()
+        assert stats["total_tokens_in"] == 800
+        assert stats["total_tokens_out"] == 300
+        assert "total_tokens" not in stats  # replaced by split fields
