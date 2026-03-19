@@ -324,12 +324,20 @@ async def dump_flows_route(
         report_ids = [report_id]
 
     if actor or actor_id:
-        query = """
-            MATCH (r:Report)-[:IDENTIFIED_ACTOR]->(g:IntrusionSet)
-            WHERE g.stix_id = $actor_id OR toLower(g.name) CONTAINS toLower($actor)
-            RETURN r.stix_id AS report_id
-        """
-        result = neo4j_session.run(query, actor_id=actor_id or "", actor=actor or "")
+        if actor_id:
+            query = """
+                MATCH (r:Report)-[:IDENTIFIED_ACTOR]->(g:IntrusionSet)
+                WHERE g.stix_id = $actor_id
+                RETURN r.stix_id AS report_id
+            """
+            result = neo4j_session.run(query, actor_id=actor_id)
+        else:
+            query = """
+                MATCH (r:Report)-[:IDENTIFIED_ACTOR]->(g:IntrusionSet)
+                WHERE toLower(g.name) CONTAINS toLower($actor)
+                RETURN r.stix_id AS report_id
+            """
+            result = neo4j_session.run(query, actor=actor)
         actor_report_ids = [r["report_id"] for r in result]
         if report_ids:
             report_ids = list(set(report_ids) & set(actor_report_ids))
@@ -339,12 +347,20 @@ async def dump_flows_route(
             return {"flows": [], "total": 0, "limit": limit, "offset": offset, "filters_applied": {}}
 
     if campaign or campaign_id:
-        query = """
-            MATCH (r:Report)-[:DESCRIBES_CAMPAIGN]->(c:Campaign)
-            WHERE c.stix_id = $campaign_id OR toLower(c.name) CONTAINS toLower($campaign)
-            RETURN r.stix_id AS report_id
-        """
-        result = neo4j_session.run(query, campaign_id=campaign_id or "", campaign=campaign or "")
+        if campaign_id:
+            query = """
+                MATCH (r:Report)-[:DESCRIBES_CAMPAIGN]->(c:Campaign)
+                WHERE c.stix_id = $campaign_id
+                RETURN r.stix_id AS report_id
+            """
+            result = neo4j_session.run(query, campaign_id=campaign_id)
+        else:
+            query = """
+                MATCH (r:Report)-[:DESCRIBES_CAMPAIGN]->(c:Campaign)
+                WHERE toLower(c.name) CONTAINS toLower($campaign)
+                RETURN r.stix_id AS report_id
+            """
+            result = neo4j_session.run(query, campaign=campaign)
         campaign_report_ids = [r["report_id"] for r in result]
         if report_ids:
             report_ids = list(set(report_ids) & set(campaign_report_ids))

@@ -501,7 +501,9 @@ class OpenSearchReportStore:
             for flow in report_flows:
                 if not isinstance(flow, dict):
                     continue
-                # Copy to avoid mutating the OpenSearch response
+                # Shallow copy — safe to add/overwrite top-level keys without
+                # mutating the OpenSearch response.  Nested objects (steps,
+                # edges) are still shared references.
                 enriched = {**flow}
                 enriched["source_id"] = report_id
                 enriched["report_name"] = report_name
