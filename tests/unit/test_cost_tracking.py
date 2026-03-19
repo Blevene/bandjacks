@@ -234,3 +234,32 @@ class TestRecordUsageToTracker:
         record_usage_to_tracker(response, tracker, 0)
         assert tracker.cost_usd == 0.0
         assert tracker.counters["llm_calls"] == 0
+
+
+from fastapi.testclient import TestClient
+
+
+class TestCostEndpoint:
+    """Test GET /v1/costs/stats endpoint."""
+
+    def test_cost_stats_returns_daily(self):
+        from bandjacks.services.api.routes.costs import router
+        from fastapi import FastAPI
+
+        app = FastAPI()
+        app.include_router(router, prefix="/v1")
+
+        client = TestClient(app)
+        response = client.get("/v1/costs/stats")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert "daily" in data
+        daily = data["daily"]
+        assert "total_cost_usd" in daily
+        assert "total_calls" in daily
+        assert "total_tokens_in" in daily
+        assert "total_tokens_out" in daily
+        assert "calls_by_model" in daily
+        assert "cost_by_model" in daily
+        assert "last_reset" in daily
