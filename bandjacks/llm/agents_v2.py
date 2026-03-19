@@ -9,6 +9,7 @@ EvidenceVerifierAgent, ConsolidatorAgent, and AssemblerAgent.
 import re
 import json
 import logging
+import time
 from typing import Any, Dict, List
 
 from bandjacks.llm.memory import WorkingMemory
@@ -374,6 +375,9 @@ class DiscoveryAgent:
         }
 
         try:
+            from bandjacks.llm.client import record_usage_to_tracker
+            tracker = config.get("_tracker")
+            _start = time.time()
             response = client.call(
                 messages,
                 model=discovery_model,
@@ -383,6 +387,7 @@ class DiscoveryAgent:
                 },
                 max_tokens=4000,
             )
+            record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
 
             content = response.get("content", "")
             if not content:

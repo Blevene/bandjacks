@@ -644,6 +644,23 @@ def repair_truncated_json(json_text: str) -> str:
     return text
 
 
+def record_usage_to_tracker(response: Dict[str, Any], tracker, elapsed_ms: int = 0) -> None:
+    """Record usage from a client.call() response to an ExtractionTracker."""
+    if tracker is None:
+        return
+    usage = response.get("usage")
+    if not usage:
+        return
+    tracker.add_llm_call(
+        model=usage["model"],
+        ms=elapsed_ms,
+        tokens_in=usage["tokens_in"],
+        tokens_out=usage["tokens_out"],
+        tool_calls=len(response.get("tool_calls", [])),
+        cost_usd=usage["cost_usd"],
+    )
+
+
 def validate_json_response(response: str, schema: Dict[str, Any]) -> Dict[str, Any]:
     """
     Validate and parse JSON response from LLM with repair capabilities.

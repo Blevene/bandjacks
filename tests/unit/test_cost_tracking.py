@@ -182,3 +182,55 @@ class TestBudgetTrackerStats:
         assert stats["total_tokens_in"] == 800
         assert stats["total_tokens_out"] == 300
         assert "total_tokens" not in stats  # replaced by split fields
+
+
+from bandjacks.llm.tracker import ExtractionTracker
+from bandjacks.llm.client import record_usage_to_tracker
+
+
+class TestExtractionTrackerCost:
+    """Test ExtractionTracker accumulates cost from usage dicts."""
+
+    def test_add_llm_call_from_usage(self):
+        tracker = ExtractionTracker()
+        usage = {"tokens_in": 500, "tokens_out": 200, "cost_usd": 0.001, "model": "gemini/gemini-2.5-flash"}
+        tracker.add_llm_call(
+            model=usage["model"], ms=150, tokens_in=usage["tokens_in"],
+            tokens_out=usage["tokens_out"], tool_calls=0, cost_usd=usage["cost_usd"],
+        )
+        assert tracker.cost_usd == 0.001
+        assert tracker.counters["llm_calls"] == 1
+        assert len(tracker.llm_stats) == 1
+        assert tracker.llm_stats[0].tokens_in == 500
+
+    def test_snapshot_includes_cost(self):
+        tracker = ExtractionTracker()
+        tracker.add_llm_call("gemini/gemini-2.5-flash", 100, 500, 200, 0, 0.001)
+        tracker.add_llm_call("gemini/gemini-2.5-flash", 120, 300, 100, 0, 0.0005)
+        snap = tracker.snapshot()
+        assert snap["cost_usd"] == 0.0015
+
+
+class TestRecordUsageToTracker:
+    """Test the record_usage_to_tracker helper function."""
+
+    def test_records_usage_to_tracker(self):
+        tracker = ExtractionTracker()
+        response = {
+            "content": "test", "tool_calls": [{"id": "1"}],
+            "usage": {"tokens_in": 500, "tokens_out": 200, "cost_usd": 0.001, "model": "gemini/gemini-2.5-flash"},
+        }
+        record_usage_to_tracker(response, tracker, elapsed_ms=150)
+        assert tracker.cost_usd == 0.001
+        assert tracker.llm_stats[0].tool_calls == 1
+
+    def test_noop_when_tracker_is_none(self):
+        response = {"content": "test", "usage": {"tokens_in": 1, "tokens_out": 1, "cost_usd": 0.1, "model": "x"}}
+        record_usage_to_tracker(response, None, 0)  # should not raise
+
+    def test_noop_when_usage_is_none(self):
+        tracker = ExtractionTracker()
+        response = {"content": "test", "usage": None}
+        record_usage_to_tracker(response, tracker, 0)
+        assert tracker.cost_usd == 0.0
+        assert tracker.counters["llm_calls"] == 0

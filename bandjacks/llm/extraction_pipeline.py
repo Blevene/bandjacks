@@ -26,6 +26,7 @@ from bandjacks.llm.batch_retriever import BatchRetrieverAgent
 from bandjacks.llm.entity_extractor import EntityExtractionAgent
 from bandjacks.llm.entity_consolidator import EntityConsolidatorAgent
 from bandjacks.llm.tracker import ExtractionTracker
+from bandjacks.llm.client import record_usage_to_tracker
 from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.llm.flow_deterministic import build_dual_flows
 from bandjacks.services.technique_cache import technique_cache
@@ -74,7 +75,8 @@ class ExtractionPipeline:
         """
         config = config or {}
         tracker = ExtractionTracker()
-        
+        config["_tracker"] = tracker
+
         logger.info("Starting extraction pipeline")
         
         # Step 1: Extract techniques
@@ -331,10 +333,13 @@ class ExtractionPipeline:
 
         found_count = 0
         try:
+            import time as _time
+            _start = _time.time()
             response = client.call(
                 messages=[{"role": "user", "content": batch_prompt}],
                 max_tokens=1000,
             )
+            record_usage_to_tracker(response, tracker, int((_time.time() - _start) * 1000))
             content = response.get("content", "")
             batch_result = parse_llm_json(content, default={"results": []})
 
