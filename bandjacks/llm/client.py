@@ -6,7 +6,7 @@ import time
 import logging
 from typing import List, Dict, Any, Optional
 import httpx
-from litellm import completion
+from litellm import completion, completion_cost
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -16,6 +16,7 @@ from tenacity import (
 )
 from bandjacks.llm.cache import get_cache
 from bandjacks.llm.rate_limiter import get_rate_limiter, get_circuit_breaker
+from bandjacks.llm.token_utils import get_budget_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,7 @@ class LLMClient:
             cached_response = cache.get(messages, tools=tools, tool_choice=tool_choice)
             if cached_response:
                 logger.info(f"[{request_id}] Cache hit - returning cached response")
+                cached_response["usage"] = None
                 return cached_response
         
         start_time = time.time()
@@ -284,12 +286,35 @@ class LLMClient:
                 logger.debug(f"[{request_id}] Response preview: {content[:500]}...")
             else:
                 logger.warning(f"[{request_id}] Empty response content")
-            
-            # Cache the response if enabled
+
+            # Extract usage and cost from response
+            usage = response.usage if hasattr(response, 'usage') and response.usage else None
+            tokens_in = usage.prompt_tokens if usage else 0
+            tokens_out = usage.completion_tokens if usage else 0
+            try:
+                cost_usd = completion_cost(completion_response=response)
+            except Exception:
+                cost_usd = 0.0
+            result["usage"] = {
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "cost_usd": cost_usd,
+                "model": effective_model,
+            }
+
+            # Record to BudgetTracker (never break extraction for cost tracking)
+            try:
+                budget_tracker = get_budget_tracker()
+                budget_tracker.record_usage(effective_model, tokens_in, tokens_out, actual_cost=cost_usd)
+            except Exception:
+                pass
+
+            # Cache the response if enabled (strip usage to prevent double-counting)
             if use_cache:
                 cache = get_cache()
-                cache.set(messages, result, tools=tools, tool_choice=tool_choice)
-            
+                cache_result = {k: v for k, v in result.items() if k != "usage"}
+                cache.set(messages, cache_result, tools=tools, tool_choice=tool_choice)
+
             return result
             
         except Exception as e:
@@ -347,9 +372,33 @@ class LLMClient:
 
                     fallback_result = self._extract_response(fallback_response, request_id)
                     logger.info(f"[{request_id}] Fallback model {fallback_model} succeeded")
+
+                    # Extract usage and cost from fallback response
+                    fb_usage = fallback_response.usage if hasattr(fallback_response, 'usage') and fallback_response.usage else None
+                    fb_tokens_in = fb_usage.prompt_tokens if fb_usage else 0
+                    fb_tokens_out = fb_usage.completion_tokens if fb_usage else 0
+                    try:
+                        fb_cost_usd = completion_cost(completion_response=fallback_response)
+                    except Exception:
+                        fb_cost_usd = 0.0
+                    fallback_result["usage"] = {
+                        "tokens_in": fb_tokens_in,
+                        "tokens_out": fb_tokens_out,
+                        "cost_usd": fb_cost_usd,
+                        "model": fallback_model,
+                    }
+
+                    # Record to BudgetTracker
+                    try:
+                        budget_tracker = get_budget_tracker()
+                        budget_tracker.record_usage(fallback_model, fb_tokens_in, fb_tokens_out, actual_cost=fb_cost_usd)
+                    except Exception:
+                        pass
+
                     if use_cache:
                         cache = get_cache()
-                        cache.set(messages, fallback_result, tools=tools, tool_choice=tool_choice)
+                        cache_result = {k: v for k, v in fallback_result.items() if k != "usage"}
+                        cache.set(messages, cache_result, tools=tools, tool_choice=tool_choice)
                     return fallback_result
                 except Exception as fallback_error:
                     logger.error(f"Fallback model {fallback_model} also failed: {fallback_error}")
