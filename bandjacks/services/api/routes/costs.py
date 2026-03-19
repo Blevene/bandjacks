@@ -1,7 +1,7 @@
 """LLM cost statistics endpoint."""
 
-from fastapi import APIRouter
 from bandjacks.llm.token_utils import get_budget_tracker
+from fastapi import APIRouter
 
 router = APIRouter(tags=["costs"])
 
