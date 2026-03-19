@@ -717,6 +717,12 @@ def _do_upsert_entities(session, entities, report_id, stats):
                 stats["updated"] += 1
                 logger.info(f"Updated entity {record['stix_id']} in Neo4j")
 
+        # Clean up transient marker property
+        session.run(f"""
+            MATCH (n:{label}) WHERE n._just_created IS NOT NULL
+            REMOVE n._just_created
+        """)
+
         # Batch 2: Create generic EXTRACTED_ENTITY relationships
         session.run(f"""
             UNWIND $entities AS e
@@ -912,6 +918,13 @@ def _do_create_technique_rels(session, techniques, report_id, stats):
         else:
             stats["updated"] += 1
 
+    # Clean up transient marker property from relationships
+    session.run("""
+        MATCH (:Report)-[rel:EXTRACTED_TECHNIQUE]->(:AttackPattern)
+        WHERE rel._just_created IS NOT NULL
+        REMOVE rel._just_created
+    """)
+
     # Count skipped (techniques not found in graph)
     matched_count = stats["created"] + stats["updated"]
     stats["skipped"] = len(technique_params) - matched_count
@@ -984,6 +997,12 @@ def _do_create_attack_flow(session, flow_steps, report_id, stats):
         logger.info(f"Created AttackEpisode {episode_id}")
     else:
         logger.info(f"Updated existing AttackEpisode {episode_id}")
+
+    # Clean up transient marker on episode
+    session.run("""
+        MATCH (ep:AttackEpisode {episode_id: $episode_id})
+        REMOVE ep._just_created
+    """, episode_id=episode_id)
 
     # Ensure Report node exists and create HAS_FLOW relationship (combined into single query)
     session.run("""
@@ -1073,6 +1092,12 @@ def _do_create_attack_flow(session, flow_steps, report_id, stats):
         else:
             logger.info(f"Updated AttackAction {record['action_id']}")
 
+    # Clean up transient marker on actions
+    session.run("""
+        MATCH (aa:AttackAction) WHERE aa._just_created IS NOT NULL
+        REMOVE aa._just_created
+    """)
+
     # Batch 2: Link all AttackActions to AttackEpisode with CONTAINS
     session.run("""
         UNWIND $actions AS a
@@ -1141,6 +1166,12 @@ def _do_create_attack_flow(session, flow_steps, report_id, stats):
             if record["was_created"]:
                 stats["edges"] += 1
                 logger.info(f"Created NEXT edge from {record['current_ref']} to {record['next_ref']}")
+
+        # Clean up transient marker on NEXT edges
+        session.run("""
+            MATCH ()-[r:NEXT]->() WHERE r._just_created IS NOT NULL
+            REMOVE r._just_created
+        """)
 
     logger.info(f"Attack flow graph creation complete. Stats: {stats}")
     return stats
