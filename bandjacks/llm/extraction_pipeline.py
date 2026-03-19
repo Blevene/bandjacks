@@ -106,13 +106,18 @@ class ExtractionPipeline:
         )
         
         # Add metrics
+        tracker_snap = tracker.snapshot()
         review_package["metrics"] = {
             "extraction_duration_ms": (time.time() - tracker.started_at) * 1000 if hasattr(tracker, 'started_at') else 0,
             "spans_found": tracker.spans_total,
             "techniques_extracted": len(extraction_result.get("techniques", {})),
             "confidence_avg": self._calculate_avg_confidence(extraction_result),
             "entity_extraction_status": extraction_result.get("entities", {}).get("extraction_status", "unknown"),
-            "extraction_errors": extraction_result.get("extraction_errors", [])
+            "extraction_errors": extraction_result.get("extraction_errors", []),
+            "cost_usd": tracker_snap["cost_usd"],
+            "llm_calls": tracker_snap["counters"]["llm_calls"],
+            "tokens_in": sum(s.tokens_in for s in tracker.llm_stats),
+            "tokens_out": sum(s.tokens_out for s in tracker.llm_stats),
         }
         
         # Add techniques_count at top level for API compatibility
