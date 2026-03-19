@@ -18,9 +18,100 @@ from bandjacks.services.technique_cache import technique_cache
 from bandjacks.llm.flow_exporter import AttackFlowExporter
 from bandjacks.loaders.opensearch_index import upsert_flow_embedding
 from bandjacks.loaders.embedder import encode
+from bandjacks.store.opensearch_report_store import OpenSearchReportStore
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/flows", tags=["flows"])
+
+# --- Post-query filter helpers for /flows/dump ---
+
+_FLOW_TYPE_ALIASES = {
+    "deterministic": {"deterministic", "deterministic_full"},
+    "llm_synthesized": {"llm_synthesized", "sequential"},
+    "co-occurrence": {"co-occurrence"},
+}
+
+VALID_FLOW_TYPES = set(_FLOW_TYPE_ALIASES.keys())
+
+
+def _filter_by_flow_type(flows: List[Dict[str, Any]], flow_type: str) -> List[Dict[str, Any]]:
+    """Filter flows by flow_type, matching aliases."""
+    allowed = _FLOW_TYPE_ALIASES.get(flow_type, {flow_type})
+    return [f for f in flows if f.get("flow_type") in allowed]
+
+
+def _filter_by_technique(flows: List[Dict[str, Any]], technique: str) -> List[Dict[str, Any]]:
+    """Filter flows containing a technique (ATT&CK ID suffix match with boundary)."""
+    suffix = technique if technique.startswith("T") else f"T{technique}"
+    # Use boundary delimiter to prevent partial matches (T156 matching T1566)
+    boundary_suffix = f"--{suffix}"
+    result = []
+    for flow in flows:
+        for step in flow.get("steps", []):
+            ref = step.get("attack_pattern_ref", "")
+            if ref.endswith(boundary_suffix):
+                result.append(flow)
+                break
+    return result
+
+
+def _build_stix_response(
+    flows: List[Dict[str, Any]],
+    total: int,
+    limit: int,
+    offset: int,
+    neo4j_session,
+) -> Dict[str, Any]:
+    """Build STIX format response, exporting Neo4j-backed flows."""
+    if not flows:
+        return {"flows": [], "total": total, "exported_count": 0, "limit": limit, "offset": offset}
+
+    # Check which flow_ids exist in Neo4j
+    flow_ids = [f.get("flow_id") for f in flows if f.get("flow_id")]
+    check_query = """
+        MATCH (e:AttackEpisode)
+        WHERE e.flow_id IN $flow_ids
+        RETURN e.flow_id AS flow_id
+    """
+    result = neo4j_session.run(check_query, flow_ids=flow_ids)
+    neo4j_flow_ids = {r["flow_id"] for r in result}
+
+    # Use from_driver to respect DI and avoid closing shared driver
+    from bandjacks.services.api.deps import get_neo4j_driver
+    driver = get_neo4j_driver()
+    exporter = AttackFlowExporter.from_driver(driver)
+
+    stix_flows = []
+    for flow in flows:
+        fid = flow.get("flow_id")
+        if fid not in neo4j_flow_ids:
+            continue
+        try:
+            bundle = exporter.export_to_attack_flow(fid)
+            stix_flows.append({
+                "flow_id": fid,
+                "source_id": flow.get("source_id", ""),
+                "stix_bundle": bundle,
+            })
+        except Exception as e:
+            logger.error(f"STIX export failed for flow {fid}: {e}")
+            stix_flows.append({
+                "flow_id": fid,
+                "source_id": flow.get("source_id", ""),
+                "stix_bundle": None,
+                "error": str(e),
+            })
+
+    return {
+        "flows": stix_flows,
+        "total": total,
+        "exported_count": len([f for f in stix_flows if f.get("stix_bundle")]),
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.post("/build",
@@ -179,6 +270,147 @@ async def build_flow(
         raise HTTPException(status_code=500, detail=f"Flow build failed: {str(e)}")
     finally:
         builder.close()
+
+
+@router.get("/dump",
+    summary="Dump All Flows",
+    description="Export full flow data (steps, edges, stats) with filtering and pagination.",
+    responses={
+        200: {"description": "Flows retrieved successfully"},
+        400: {"description": "Invalid filter parameters"},
+    }
+)
+async def dump_flows_route(
+    os_client: OpenSearch = Depends(get_opensearch_client),
+    neo4j_session=Depends(get_neo4j_session),
+    report_id: Optional[str] = Query(None, description="Filter by source report STIX ID"),
+    actor: Optional[str] = Query(None, description="Filter by threat actor name (case-insensitive substring)"),
+    actor_id: Optional[str] = Query(None, description="Filter by intrusion set STIX ID"),
+    campaign: Optional[str] = Query(None, description="Filter by campaign name (case-insensitive substring)"),
+    campaign_id: Optional[str] = Query(None, description="Filter by campaign STIX ID"),
+    flow_type: Optional[str] = Query(None, description="Filter by flow type: deterministic, llm_synthesized, co-occurrence"),
+    technique: Optional[str] = Query(None, description="Filter flows containing ATT&CK technique ID (e.g. T1566.001)"),
+    ingested_after: Optional[str] = Query(None, description="Filter reports ingested after this date (ISO 8601)"),
+    ingested_before: Optional[str] = Query(None, description="Filter reports ingested before this date (ISO 8601)"),
+    fmt: str = Query("json", alias="format", description="Response format: json or stix"),
+    limit: int = Query(50, ge=1, description="Results per page"),
+    offset: int = Query(0, ge=0, description="Number of results to skip"),
+) -> Dict[str, Any]:
+    """Export flows with full step/edge data."""
+
+    # Validate parameters
+    if fmt not in ("json", "stix"):
+        raise HTTPException(status_code=400, detail=f"Invalid format '{fmt}'. Use 'json' or 'stix'.")
+
+    from datetime import datetime as dt
+    for date_param, date_val in [("ingested_after", ingested_after), ("ingested_before", ingested_before)]:
+        if date_val:
+            try:
+                dt.fromisoformat(date_val.replace("Z", "+00:00"))
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid {date_param} date format. Use ISO 8601.")
+
+    if flow_type and flow_type not in VALID_FLOW_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid flow_type '{flow_type}'. Allowed: {', '.join(sorted(VALID_FLOW_TYPES))}"
+        )
+
+    limit = min(limit, 200)
+
+    # Resolve actor/campaign to report IDs via Neo4j
+    report_ids = None
+    if report_id:
+        report_ids = [report_id]
+
+    if actor or actor_id:
+        if actor_id:
+            query = """
+                MATCH (r:Report)-[:IDENTIFIED_ACTOR]->(g:IntrusionSet)
+                WHERE g.stix_id = $actor_id
+                RETURN r.stix_id AS report_id
+            """
+            result = neo4j_session.run(query, actor_id=actor_id)
+        else:
+            query = """
+                MATCH (r:Report)-[:IDENTIFIED_ACTOR]->(g:IntrusionSet)
+                WHERE toLower(g.name) CONTAINS toLower($actor)
+                RETURN r.stix_id AS report_id
+            """
+            result = neo4j_session.run(query, actor=actor)
+        actor_report_ids = [r["report_id"] for r in result]
+        if report_ids:
+            report_ids = list(set(report_ids) & set(actor_report_ids))
+        else:
+            report_ids = actor_report_ids
+        if not report_ids:
+            return {"flows": [], "total": 0, "limit": limit, "offset": offset, "filters_applied": {}}
+
+    if campaign or campaign_id:
+        if campaign_id:
+            query = """
+                MATCH (r:Report)-[:DESCRIBES_CAMPAIGN]->(c:Campaign)
+                WHERE c.stix_id = $campaign_id
+                RETURN r.stix_id AS report_id
+            """
+            result = neo4j_session.run(query, campaign_id=campaign_id)
+        else:
+            query = """
+                MATCH (r:Report)-[:DESCRIBES_CAMPAIGN]->(c:Campaign)
+                WHERE toLower(c.name) CONTAINS toLower($campaign)
+                RETURN r.stix_id AS report_id
+            """
+            result = neo4j_session.run(query, campaign=campaign)
+        campaign_report_ids = [r["report_id"] for r in result]
+        if report_ids:
+            report_ids = list(set(report_ids) & set(campaign_report_ids))
+        else:
+            report_ids = campaign_report_ids
+        if not report_ids:
+            return {"flows": [], "total": 0, "limit": limit, "offset": offset, "filters_applied": {}}
+
+    # Fetch flows from OpenSearch
+    store = OpenSearchReportStore(os_client)
+    all_flows, truncated = store.dump_flows(
+        report_ids=report_ids,
+        ingested_after=ingested_after,
+        ingested_before=ingested_before,
+    )
+
+    # Apply post-query filters
+    if flow_type:
+        all_flows = _filter_by_flow_type(all_flows, flow_type)
+    if technique:
+        all_flows = _filter_by_technique(all_flows, technique)
+
+    # Build filters_applied for response
+    filters_applied = {}
+    for key, val in [("report_id", report_id), ("actor", actor), ("actor_id", actor_id),
+                     ("campaign", campaign), ("campaign_id", campaign_id),
+                     ("flow_type", flow_type), ("technique", technique),
+                     ("ingested_after", ingested_after), ("ingested_before", ingested_before)]:
+        if val:
+            filters_applied[key] = val
+
+    # Paginate
+    total = len(all_flows)
+    page = all_flows[offset:offset + limit]
+
+    # Handle STIX format
+    if fmt == "stix":
+        return _build_stix_response(page, total, limit, offset, neo4j_session)
+
+    response = {
+        "flows": page,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "filters_applied": filters_applied,
+    }
+    if truncated:
+        response["total_truncated"] = True
+
+    return response
 
 
 @router.get("/{flow_id}",

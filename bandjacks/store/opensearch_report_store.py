@@ -438,6 +438,82 @@ class OpenSearchReportStore:
             logger.error(f"Failed to list reports: {e}")
             raise
     
+    def dump_flows(
+        self,
+        report_ids: Optional[List[str]] = None,
+        ingested_after: Optional[str] = None,
+        ingested_before: Optional[str] = None,
+        max_reports: int = 10000,
+    ) -> tuple:
+        """
+        Fetch flows from report documents, unnested into a flat list.
+
+        Returns:
+            Tuple of (list of flow dicts with report metadata attached, truncated bool)
+        """
+        must_clauses: List[Dict[str, Any]] = []
+
+        if report_ids:
+            must_clauses.append({"terms": {"report_id": report_ids}})
+
+        if ingested_after or ingested_before:
+            range_filter: Dict[str, str] = {}
+            if ingested_after:
+                range_filter["gte"] = ingested_after
+            if ingested_before:
+                range_filter["lte"] = ingested_before
+            must_clauses.append({"range": {"ingested_at": range_filter}})
+
+        query = {"bool": {"must": must_clauses}} if must_clauses else {"match_all": {}}
+
+        search_body = {
+            "query": query,
+            "sort": [{"ingested_at": {"order": "desc"}}, {"report_id": {"order": "asc"}}],
+            "size": max_reports,
+            "track_total_hits": True,
+            "_source": {
+                "includes": ["report_id", "name", "ingested_at", "extraction.flows"],
+                "excludes": ["raw_text", "text_chunks", "chunk_embeddings", "extraction.bundle", "extraction.claims"],
+            },
+        }
+
+        try:
+            response = self.client.search(index=self.index_name, body=search_body)
+        except Exception as e:
+            if "index_not_found_exception" in str(e):
+                logger.warning("Reports index does not exist")
+                return [], False
+            logger.error(f"Failed to dump flows: {e}")
+            raise
+
+        hits = response["hits"]["hits"]
+        total_reports = response["hits"]["total"]["value"]
+        truncated = total_reports > max_reports
+
+        flows: List[Dict[str, Any]] = []
+        for hit in hits:
+            source = hit["_source"]
+            report_id = source.get("report_id", "")
+            report_name = source.get("name", "")
+            ingested_at = source.get("ingested_at", "")
+            report_flows = source.get("extraction", {}).get("flows", [])
+
+            for flow in report_flows:
+                if not isinstance(flow, dict):
+                    continue
+                # Shallow copy — safe to add/overwrite top-level keys without
+                # mutating the OpenSearch response.  Nested objects (steps,
+                # edges) are still shared references.
+                enriched = {**flow}
+                enriched["source_id"] = report_id
+                enriched["report_name"] = report_name
+                enriched["ingested_at"] = ingested_at
+                if "confidence" not in enriched or enriched["confidence"] is None:
+                    enriched["confidence"] = 0.5
+                flows.append(enriched)
+
+        return flows, truncated
+
     def search_reports(
         self,
         query: str,
