@@ -235,6 +235,39 @@ class TestRecordUsageToTracker:
         assert tracker.cost_usd == 0.0
         assert tracker.counters["llm_calls"] == 0
 
+    def test_malformed_usage_does_not_raise(self):
+        """A malformed usage dict (missing keys) should not propagate exceptions."""
+        tracker = ExtractionTracker()
+        response = {"content": "test", "usage": {"tokens_in": 100}}  # missing model, tokens_out, cost_usd
+        record_usage_to_tracker(response, tracker, 0)  # should not raise
+        assert tracker.counters["llm_calls"] == 0  # call failed, not recorded
+
+
+class TestBudgetTrackerResilience:
+    """Test that BudgetTracker failures don't break LLM calls."""
+
+    @patch("bandjacks.llm.client.completion")
+    @patch("bandjacks.llm.client.completion_cost", return_value=0.001)
+    @patch("bandjacks.llm.client.get_rate_limiter")
+    @patch("bandjacks.llm.client.get_circuit_breaker")
+    @patch("bandjacks.llm.client.get_cache")
+    @patch("bandjacks.llm.client.get_budget_tracker")
+    def test_call_succeeds_when_budget_tracker_raises(self, mock_bt, mock_cache, mock_cb, mock_rl, mock_cost, mock_completion):
+        """client.call() should succeed even if BudgetTracker.record_usage raises."""
+        mock_cache.return_value.get.return_value = None
+        mock_cb.return_value.is_open.return_value = False
+        mock_rl.return_value.wait_if_needed.return_value = None
+        mock_completion.return_value = _mock_litellm_response()
+        mock_bt.return_value.record_usage.side_effect = RuntimeError("BudgetTracker broken")
+
+        from bandjacks.llm.client import LLMClient
+        client = LLMClient()
+        result = client.call([{"role": "user", "content": "test"}], use_cache=False)
+
+        assert "usage" in result
+        assert result["usage"]["tokens_in"] == 100
+        assert result["usage"]["cost_usd"] == 0.001
+
 
 from fastapi.testclient import TestClient
 

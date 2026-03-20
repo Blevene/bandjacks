@@ -529,10 +529,11 @@ Text: {doc_text[:2000]}"""
     def _extract_from_chunk(self, text_chunk: str, tracker=None) -> List[Dict[str, Any]]:
         """
         Extract entities from a single text chunk.
-        
+
         Args:
             text_chunk: Portion of document text
-            
+            tracker: Optional ExtractionTracker for per-report cost tracking
+
         Returns:
             List of extracted entities
         """

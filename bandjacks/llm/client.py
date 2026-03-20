@@ -121,7 +121,8 @@ class LLMClient:
         tokens_out = usage.completion_tokens if usage else 0
         try:
             cost_usd = completion_cost(completion_response=response)
-        except Exception:
+        except Exception as exc:
+            logger.warning(f"[{request_id}] completion_cost() failed, defaulting to $0: {exc}")
             cost_usd = 0.0
         result["usage"] = {
             "tokens_in": tokens_in,
@@ -639,21 +640,30 @@ def repair_truncated_json(json_text: str) -> str:
     return text
 
 
-def record_usage_to_tracker(response: Dict[str, Any], tracker, elapsed_ms: int = 0) -> None:
-    """Record usage from a client.call() response to an ExtractionTracker."""
+def record_usage_to_tracker(response: Dict[str, Any], tracker: Optional[Any] = None, elapsed_ms: int = 0) -> None:
+    """Record usage from a client.call() response to an ExtractionTracker.
+
+    Args:
+        response: Return value from LLMClient.call() containing optional 'usage' key.
+        tracker: ExtractionTracker instance, or None to skip.
+        elapsed_ms: Elapsed time in milliseconds for the call.
+    """
     if tracker is None:
         return
     usage = response.get("usage")
     if not usage:
         return
-    tracker.add_llm_call(
-        model=usage["model"],
-        ms=elapsed_ms,
-        tokens_in=usage["tokens_in"],
-        tokens_out=usage["tokens_out"],
-        tool_calls=len(response.get("tool_calls", [])),
-        cost_usd=usage["cost_usd"],
-    )
+    try:
+        tracker.add_llm_call(
+            model=usage["model"],
+            ms=elapsed_ms,
+            tokens_in=usage["tokens_in"],
+            tokens_out=usage["tokens_out"],
+            tool_calls=len(response.get("tool_calls", [])),
+            cost_usd=usage["cost_usd"],
+        )
+    except Exception as exc:
+        logger.debug(f"record_usage_to_tracker failed: {exc}")
 
 
 def validate_json_response(response: str, schema: Dict[str, Any]) -> Dict[str, Any]:
