@@ -110,6 +110,43 @@ class LLMClient:
 
         return result
 
+    def _extract_usage_and_record(self, result: Dict[str, Any], response, model: str, request_id: str = "") -> None:
+        """Extract usage/cost from an LLM response and record to BudgetTracker.
+
+        Populates ``result["usage"]`` with token counts, cost, and model name,
+        then persists the data via :func:`get_budget_tracker`.
+        """
+        usage = response.usage if hasattr(response, 'usage') and response.usage else None
+        tokens_in = usage.prompt_tokens if usage else 0
+        tokens_out = usage.completion_tokens if usage else 0
+        try:
+            cost_usd = completion_cost(completion_response=response)
+        except Exception:
+            cost_usd = 0.0
+        result["usage"] = {
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
+            "model": model,
+        }
+
+        logger.info(
+            f"[{request_id}] Usage: tokens_in={tokens_in}, tokens_out={tokens_out}, "
+            f"cost=${cost_usd:.6f}, model={model}"
+        )
+
+        # Record to BudgetTracker (never break extraction for cost tracking)
+        try:
+            budget_tracker = get_budget_tracker()
+            budget_tracker.record_usage(model, tokens_in, tokens_out, actual_cost=cost_usd)
+        except Exception as exc:
+            logger.debug(f"[{request_id}] BudgetTracker.record_usage failed: {exc}")
+
+    @staticmethod
+    def _strip_usage(result: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a copy of *result* without the ``usage`` key (for caching)."""
+        return {k: v for k, v in result.items() if k != "usage"}
+
     def _should_retry(self, exception):
         """Determine if we should retry based on the exception."""
         # Check for specific error codes
@@ -287,33 +324,12 @@ class LLMClient:
             else:
                 logger.warning(f"[{request_id}] Empty response content")
 
-            # Extract usage and cost from response
-            usage = response.usage if hasattr(response, 'usage') and response.usage else None
-            tokens_in = usage.prompt_tokens if usage else 0
-            tokens_out = usage.completion_tokens if usage else 0
-            try:
-                cost_usd = completion_cost(completion_response=response)
-            except Exception:
-                cost_usd = 0.0
-            result["usage"] = {
-                "tokens_in": tokens_in,
-                "tokens_out": tokens_out,
-                "cost_usd": cost_usd,
-                "model": effective_model,
-            }
-
-            # Record to BudgetTracker (never break extraction for cost tracking)
-            try:
-                budget_tracker = get_budget_tracker()
-                budget_tracker.record_usage(effective_model, tokens_in, tokens_out, actual_cost=cost_usd)
-            except Exception:
-                pass
+            self._extract_usage_and_record(result, response, effective_model, request_id)
 
             # Cache the response if enabled (strip usage to prevent double-counting)
             if use_cache:
                 cache = get_cache()
-                cache_result = {k: v for k, v in result.items() if k != "usage"}
-                cache.set(messages, cache_result, tools=tools, tool_choice=tool_choice)
+                cache.set(messages, self._strip_usage(result), tools=tools, tool_choice=tool_choice)
 
             return result
             
@@ -373,32 +389,11 @@ class LLMClient:
                     fallback_result = self._extract_response(fallback_response, request_id)
                     logger.info(f"[{request_id}] Fallback model {fallback_model} succeeded")
 
-                    # Extract usage and cost from fallback response
-                    fb_usage = fallback_response.usage if hasattr(fallback_response, 'usage') and fallback_response.usage else None
-                    fb_tokens_in = fb_usage.prompt_tokens if fb_usage else 0
-                    fb_tokens_out = fb_usage.completion_tokens if fb_usage else 0
-                    try:
-                        fb_cost_usd = completion_cost(completion_response=fallback_response)
-                    except Exception:
-                        fb_cost_usd = 0.0
-                    fallback_result["usage"] = {
-                        "tokens_in": fb_tokens_in,
-                        "tokens_out": fb_tokens_out,
-                        "cost_usd": fb_cost_usd,
-                        "model": fallback_model,
-                    }
-
-                    # Record to BudgetTracker
-                    try:
-                        budget_tracker = get_budget_tracker()
-                        budget_tracker.record_usage(fallback_model, fb_tokens_in, fb_tokens_out, actual_cost=fb_cost_usd)
-                    except Exception:
-                        pass
+                    self._extract_usage_and_record(fallback_result, fallback_response, fallback_model, request_id)
 
                     if use_cache:
                         cache = get_cache()
-                        cache_result = {k: v for k, v in fallback_result.items() if k != "usage"}
-                        cache.set(messages, cache_result, tools=tools, tool_choice=tool_choice)
+                        cache.set(messages, self._strip_usage(fallback_result), tools=tools, tool_choice=tool_choice)
                     return fallback_result
                 except Exception as fallback_error:
                     logger.error(f"Fallback model {fallback_model} also failed: {fallback_error}")
