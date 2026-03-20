@@ -777,6 +777,7 @@ cd ui && npm test
 - `GET /health/live` - Kubernetes liveness probe
 - `GET /health/ready` - Kubernetes readiness probe
 - `GET /health/components/{component}` - Individual component health
+- `GET /v1/costs/stats` - LLM cost tracking (daily aggregate by model)
 - `GET /v1/cache/stats` - Get LLM cache statistics
 - `POST /v1/cache/clear` - Clear LLM cache
 - `GET /v1/compliance/report` - Compliance metrics
@@ -991,10 +992,36 @@ The system uses a single high-performance async pipeline with configurable optio
     "single_pass_threshold": 500,        # Max words for single-pass (default: 500)
     "early_termination_confidence": 90,  # Skip verification above this (default: 90)
     "disable_discovery": False,          # Disable LLM discovery agent
-    "max_spans": 20,                    # Maximum spans to process
-    "span_score_threshold": 0.7,        # Minimum span quality
-    "top_k": 5                          # Candidates per span
+    "max_spans": 20,                     # Maximum spans to process
+    "span_score_threshold": 0.7,         # Minimum span quality
+    "top_k": 5,                          # Candidates per span
+
+    # Cost optimization options
+    "max_spans_per_technique": 2,        # Pre-filter: max spans per candidate technique (0=disable, default=2)
+    "enable_span_dedup": False,          # Text-based span dedup before mapping (default=False)
 }
+```
+
+### Cost Optimization
+
+The extraction pipeline tracks LLM costs via `litellm.completion_cost()` with per-report metrics and a daily aggregate endpoint.
+
+**Cost controls:**
+
+| Option | Default | Effect | Quality Impact |
+|--------|---------|--------|----------------|
+| `MAX_MAPPER_BATCH_SIZE` (env var) | 25 | Spans per LLM mapper call | None |
+| `max_spans_per_technique` (config) | 2 | Pre-filter: best N spans per candidate technique | ~19% fewer techniques, higher confidence |
+| `enable_span_dedup` (config) | false | Remove duplicate span text before mapping | ~15% fewer techniques |
+
+**Monitoring:**
+
+```bash
+# Daily cost aggregate by model
+curl http://localhost:8000/v1/costs/stats
+
+# Per-report cost in extraction metrics
+curl http://localhost:8000/v1/reports/{id}  # -> extraction.metrics.cost_usd
 ```
 
 ### Confidence Thresholds
