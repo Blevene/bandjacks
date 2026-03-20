@@ -359,31 +359,51 @@ The Bandjacks extraction pipeline uses a multi-agent architecture to extract str
 
 ### Pipeline Components
 
-#### 1. **SpanFinderAgent** - Behavioral Text Detection
-- Detects text spans containing threat behaviors using pattern matching
+The extraction pipeline uses 9 specialized agents in sequence:
+
+#### 1. **EntityExtractionAgent** - Entity Recognition
+- Extracts threat actors, malware, tools, and campaigns
+- Runs first to provide context for technique extraction
+- Uses few-shot prompting with JSON schema validation
+- Handles chunked documents with progressive windowed extraction
+
+#### 2. **SpanFinderAgent** - Behavioral Text Detection
+- Detects text spans containing threat behaviors using 14 tactic-specific regex patterns
 - Identifies explicit technique IDs (T1566.001) and behavioral patterns
-- Scores spans by confidence and deduplicates overlapping detections
-- Processes documents in chunks for scalability
+- Scores spans by confidence with keyword index boosting
+- No LLM calls — pure pattern matching for speed
 
-#### 2. **BatchMapperAgent** - Technique Mapping
-- Uses vector search (OpenSearch KNN) to find candidate techniques
-- Batch processes all spans in a single LLM call for efficiency
-- Extracts ALL relevant techniques per span (not just best match)
-- Provides confidence scores and evidence for each mapping
+#### 3. **BatchRetrieverAgent** - Candidate Retrieval
+- Uses OpenSearch KNN vector search to find candidate techniques per span
+- Deduplicates identical span texts before encoding to avoid redundant embeddings
+- Returns top-k candidates with similarity scores for each span
 
-#### 3. **ConsolidatorAgent** - Evidence Consolidation
+#### 4. **Pre-filter** - Span Reduction
+- Limits spans to `max_spans_per_technique` (default 2) per candidate technique
+- Keeps highest-scoring spans per candidate to maintain evidence quality
+- Reduces mapper LLM calls by ~46% with minimal technique loss
+
+#### 5. **DiscoveryAgent** - LLM Discovery (conditional)
+- Triggered when retriever confidence is low (<0.7 average)
+- Uses LLM to discover techniques the vector search missed
+- Single batch call for all low-confidence spans
+
+#### 6. **BatchMapperAgent** - Technique Mapping (LLM)
+- Batch processes spans in groups of up to 25 (`MAX_MAPPER_BATCH_SIZE`)
+- Extracts ALL relevant techniques per span with confidence scores
+- Uses JSON schema validation for structured output
+
+#### 7. **EvidenceVerifierAgent** - Evidence Validation
+- Pattern-based verification of quotes and line references
+- Scores evidence quality on 40-100 point scale
+- No LLM calls — regex and text matching
+
+#### 8. **ConsolidatorAgent** - Evidence Consolidation
 - Merges duplicate techniques found across multiple spans
-- Aggregates evidence from different text locations
-- Tracks line references for provenance
+- Aggregates evidence using Jaccard similarity (>85% threshold)
 - Produces final technique list with consolidated confidence scores
 
-#### 4. **EntityExtractor** - Entity Recognition
-- Extracts threat actors, malware, tools, and campaigns
-- Uses few-shot prompting with examples for consistency
-- Tracks entity mentions with line references
-- Identifies aliases and coreferences
-
-#### 5. **AttackFlowSynthesizer** - Sequence Generation
+#### 9. **AttackFlowSynthesizer** - Sequence Generation (LLM)
 - Analyzes temporal markers ("first", "then", "after")
 - Infers causal relationships from narrative
 - Creates STIX Attack Flow objects with probabilistic edges
@@ -392,11 +412,16 @@ The Bandjacks extraction pipeline uses a multi-agent architecture to extract str
 ### Performance Optimizations
 
 - **Smart Chunking**: Documents split into 2KB chunks with overlap
-- **Batch Processing**: Multiple operations combined in single LLM calls
-- **Parallel Processing**: Chunks processed concurrently
-- **Response Caching**: LLM responses cached for 15 minutes
+- **Batch Processing**: Mapper processes up to 25 spans per LLM call
+- **Parallel Processing**: Chunks processed concurrently across worker threads
+- **Response Caching**: LLM responses cached to avoid duplicate calls
 - **Early Termination**: High-confidence extractions skip verification
 - **TechniqueCache**: All ATT&CK techniques loaded at startup for O(1) lookups
+- **Pre-filter**: Limits spans per candidate technique before LLM mapper (46% fewer calls)
+- **Batch Embedding**: Technique embeddings generated in batches (2-5x faster)
+- **Connection Pooling**: Shared Neo4j/OpenSearch connections across requests
+- **UNWIND Batches**: Neo4j writes batched via UNWIND (30-40 queries → 6-7)
+- **Model Pre-warming**: Embedding model loaded at startup to avoid cold-start latency
 
 ### Processing Times
 
@@ -756,6 +781,7 @@ cd ui && npm test
 - `POST /v1/flows/build` - Generate AttackFlow co-occurrence models
 - `GET /v1/flows/{flow_id}` - Retrieve specific AttackFlow details
 - `POST /v1/flows/search` - Search for similar attack flows
+- `GET /v1/flows/dump` - Bulk export flows with pagination and filtering
 
 ### Analytics
 
@@ -1185,6 +1211,20 @@ quality_config = {
     "top_k": 10
 }
 ```
+
+## Security
+
+### Input Validation
+
+- **Cypher Injection Prevention**: All graph query endpoints validate user-supplied `relationship_types` parameters against an allowlist of known relationship types (USES, MITIGATES, HAS_TACTIC, etc.) plus a strict regex pattern (`^[A-Z][A-Z0-9_]*$`). Invalid input returns 400 before query construction.
+- **JSON Schema Validation**: LLM responses validated against JSON schemas to prevent malformed data from entering the pipeline.
+- **ADM Validation**: All STIX content must pass ATT&CK Data Model validation before ingestion.
+
+### Authentication & Authorization
+
+- **JWT Authentication**: Optional middleware for API authentication (`JWTAuthMiddleware`)
+- **Rate Limiting**: Per-endpoint rate limiting with configurable thresholds
+- **CORS**: Configurable cross-origin resource sharing
 
 ## Advanced Features
 
