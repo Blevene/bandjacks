@@ -171,12 +171,18 @@ class ExtractionPipeline:
         if progress_callback:
             progress_callback(35, "Finding technique spans in text...")
         SpanFinderAgent().run(mem, config)
+
+        # Deduplicate spans by text to reduce mapper batches
+        pre_dedup = len(mem.spans)
+        mem.spans = self._deduplicate_spans(mem.spans)
+        if pre_dedup != len(mem.spans):
+            logger.info(f"Span dedup: {pre_dedup} -> {len(mem.spans)} ({pre_dedup - len(mem.spans)} duplicates removed)")
         tracker.set_spans_total(len(mem.spans))
-        
+
         # Apply span limits if configured
         if config.get("max_spans", 0) > 0:
             mem.spans = mem.spans[:config["max_spans"]]
-        
+
         tracker.set_stage("Retriever")
         if progress_callback:
             progress_callback(40, f"Retrieving candidates for {len(mem.spans)} spans...")
@@ -282,6 +288,20 @@ class ExtractionPipeline:
         
         return text
     
+    @staticmethod
+    def _deduplicate_spans(spans: list) -> list:
+        """Remove duplicate spans by normalized text, merging tactics and keeping highest score."""
+        seen = {}
+        for s in spans:
+            key = s["text"][:200].strip().lower()
+            if key not in seen:
+                seen[key] = s.copy()
+            else:
+                existing = seen[key]
+                existing["score"] = max(existing.get("score", 0), s.get("score", 0))
+                existing["tactics"] = list(set(existing.get("tactics", []) + s.get("tactics", [])))
+        return list(seen.values())
+
     def _calculate_retrieval_confidence(self, mem: WorkingMemory) -> float:
         """Calculate average confidence of retrieval results."""
         total = 0
