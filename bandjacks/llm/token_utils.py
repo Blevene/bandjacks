@@ -423,13 +423,16 @@ class BudgetTracker:
 
 # Global budget tracker instance
 _budget_tracker = None
+_budget_tracker_lock = threading.Lock()
 
 
 def get_budget_tracker(config: Optional[BudgetConfig] = None) -> BudgetTracker:
     """Get or create global budget tracker instance."""
     global _budget_tracker
     if _budget_tracker is None:
-        _budget_tracker = BudgetTracker(config)
+        with _budget_tracker_lock:
+            if _budget_tracker is None:
+                _budget_tracker = BudgetTracker(config)
     return _budget_tracker
 
 
