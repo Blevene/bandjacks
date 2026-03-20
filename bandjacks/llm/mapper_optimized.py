@@ -65,7 +65,7 @@ class BatchMapperAgent:
         batch_size = config.get("mapper_batch_size", config.get("batch_size", default_batch_size))
         
         # Apply maximum batch size limit from environment
-        max_batch_size = int(os.getenv("MAX_MAPPER_BATCH_SIZE", "10"))  # Reduced to 10 to prevent timeouts
+        max_batch_size = int(os.getenv("MAX_MAPPER_BATCH_SIZE", "25"))  # Gemini 3 Flash handles 25+ spans per batch
         if batch_size > max_batch_size:
             logger.info(f"Capping batch size from {batch_size} to max {max_batch_size}")
             batch_size = max_batch_size
