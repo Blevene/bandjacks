@@ -172,11 +172,13 @@ class ExtractionPipeline:
             progress_callback(35, "Finding technique spans in text...")
         SpanFinderAgent().run(mem, config)
 
-        # Deduplicate spans by text to reduce mapper batches
-        pre_dedup = len(mem.spans)
-        mem.spans = self._deduplicate_spans(mem.spans)
-        if pre_dedup != len(mem.spans):
-            logger.info(f"Span dedup: {pre_dedup} -> {len(mem.spans)} ({pre_dedup - len(mem.spans)} duplicates removed)")
+        # Optional: deduplicate spans by text to reduce mapper batches (~40% fewer spans,
+        # but may lose ~15% of techniques). Disabled by default to preserve extraction quality.
+        if config.get("enable_span_dedup", False):
+            pre_dedup = len(mem.spans)
+            mem.spans = self._deduplicate_spans(mem.spans)
+            if pre_dedup != len(mem.spans):
+                logger.info(f"Span dedup: {pre_dedup} -> {len(mem.spans)} ({pre_dedup - len(mem.spans)} duplicates removed)")
         tracker.set_spans_total(len(mem.spans))
 
         # Apply span limits if configured

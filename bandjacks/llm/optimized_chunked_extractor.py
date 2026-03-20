@@ -192,19 +192,21 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
         span_finder = SpanFinderAgent()
         span_finder.run(mem, config)
 
-        # Deduplicate spans by text before processing
-        pre_dedup = len(mem.spans)
-        seen = {}
-        for s in mem.spans:
-            key = s["text"][:200].strip().lower()
-            if key not in seen:
-                seen[key] = s.copy()
-            else:
-                seen[key]["score"] = max(seen[key].get("score", 0), s.get("score", 0))
-                seen[key]["tactics"] = list(set(seen[key].get("tactics", []) + s.get("tactics", [])))
-        mem.spans = list(seen.values())
-        if pre_dedup != len(mem.spans):
-            logger.info(f"Span dedup: {pre_dedup} -> {len(mem.spans)} ({pre_dedup - len(mem.spans)} duplicates removed)")
+        # Optional: deduplicate spans by text to reduce mapper batches (~40% fewer spans,
+        # but may lose ~15% of techniques). Disabled by default to preserve extraction quality.
+        if config.get("enable_span_dedup", False):
+            pre_dedup = len(mem.spans)
+            seen = {}
+            for s in mem.spans:
+                key = s["text"][:200].strip().lower()
+                if key not in seen:
+                    seen[key] = s.copy()
+                else:
+                    seen[key]["score"] = max(seen[key].get("score", 0), s.get("score", 0))
+                    seen[key]["tactics"] = list(set(seen[key].get("tactics", []) + s.get("tactics", [])))
+            mem.spans = list(seen.values())
+            if pre_dedup != len(mem.spans):
+                logger.info(f"Span dedup: {pre_dedup} -> {len(mem.spans)} ({pre_dedup - len(mem.spans)} duplicates removed)")
 
         # Convert to DetectedSpan objects with position tracking
         detected_spans = []
