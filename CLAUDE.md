@@ -733,9 +733,26 @@ if (useAsync) {
 ### Performance Optimizations
 
 - **Chunked Processing**: Handles 15KB+ PDFs without timeouts
-- **Parallel Workers**: Batch CLI supports concurrent processing  
+- **Parallel Workers**: Batch CLI supports concurrent processing
 - **Caching**: Common technique lookups cached for efficiency
 - **Progressive Results**: Techniques displayed as they're found
+- **LLM Cost Tracking**: Every LLM call records tokens and cost via `litellm.completion_cost()`. Per-report costs in extraction metrics, daily aggregates at `GET /v1/costs/stats`
+- **Mapper Batch Size**: `MAX_MAPPER_BATCH_SIZE` env var (default 25) controls spans per LLM call. Higher = fewer calls but larger prompts
+- **Pre-filter**: Before the LLM mapper, spans are limited to `max_spans_per_technique` (default 2) per candidate technique. Reduces mapper calls ~46% with minimal technique loss. Set to 0 to disable
+- **Span Dedup** (opt-in): `enable_span_dedup: true` in config removes exact-duplicate span text before mapping. Saves ~40% spans but may lose ~15% of techniques. Disabled by default
+
+### Extraction Config Options
+
+```python
+config = {
+    "max_spans_per_technique": 2,     # Pre-filter: max spans per candidate technique (0=disabled, default=2)
+    "enable_span_dedup": False,       # Text-based span deduplication (default=False)
+    "max_spans": 0,                   # Hard cap on total spans (0=unlimited)
+    "skip_entity_extraction": False,  # Skip entity extraction phase
+    "disable_discovery": False,       # Skip LLM discovery for low-confidence spans
+    "skip_verification": False,       # Skip evidence verification
+}
+```
 
 ## Important Notes
 
