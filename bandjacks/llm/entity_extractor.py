@@ -3,8 +3,9 @@
 import json
 import logging
 import re
+import time
 from typing import Dict, Any, List, Optional
-from bandjacks.llm.client import get_llm_client
+from bandjacks.llm.client import get_llm_client, record_usage_to_tracker
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.json_utils import parse_json_with_fallback, parse_llm_json
 from bandjacks.llm.consolidator_base import ConsolidatorBase
@@ -168,7 +169,8 @@ class EntityExtractionAgent:
             config: Configuration options
         """
         logger.info("Starting chunked entity extraction with LLM")
-        
+        tracker = config.get("_tracker") if config else None
+
         doc_text = mem.document_text
         doc_length = len(doc_text)
         
@@ -189,7 +191,7 @@ class EntityExtractionAgent:
                     all_claims = []
                     for i, chunk in enumerate(chunks):
                         logger.debug(f"Extracting entity claims from chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
-                        entities = self._extract_from_chunk(chunk)
+                        entities = self._extract_from_chunk(chunk, tracker=tracker)
                         
                         # Convert entities to claims
                         chunk_claims = self._entities_to_claims(entities, doc_text, chunk_id=i)
@@ -213,7 +215,7 @@ class EntityExtractionAgent:
                     chunk_entities = []
                     for i, chunk in enumerate(chunks):
                         logger.debug(f"Extracting entities from chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
-                        entities = self._extract_from_chunk(chunk)
+                        entities = self._extract_from_chunk(chunk, tracker=tracker)
                         # Enhance each entity with line references
                         for entity in entities:
                             self._enhance_entity_with_line_refs(entity, doc_text)
@@ -243,6 +245,7 @@ class EntityExtractionAgent:
                 
                 # Try with structured output first, fall back to plain if needed
                 try:
+                    _start = time.time()
                     response = self.client.call(
                         messages=messages,
                         max_tokens=8000,  # Increased to 8000 to handle large entity lists
@@ -251,6 +254,7 @@ class EntityExtractionAgent:
                             "json_schema": self.entity_schema
                         }
                     )
+                    record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
                     content = response.get("content", "")
                 except Exception as e:
                     logger.warning(f"Structured output failed: {e}, retrying without schema")
@@ -259,10 +263,12 @@ class EntityExtractionAgent:
                         {"role": "system", "content": ENTITY_EXTRACTION_SYSTEM_PROMPT + "\n\nIMPORTANT: Return ONLY valid JSON, no markdown."},
                         {"role": "user", "content": user_prompt}
                     ]
+                    _start = time.time()
                     response = self.client.call(
                         messages=messages_with_json,
                         max_tokens=8000  # Increased to 8000 to handle large entity lists
                     )
+                    record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
                     content = response.get("content", "")
                 
                 if not content:
@@ -273,6 +279,7 @@ class EntityExtractionAgent:
 
 Text: {doc_text[:2000]}"""
                     
+                    _start = time.time()
                     response = self.client.call(
                         messages=[
                             {"role": "system", "content": "Extract entities and return JSON"},
@@ -280,6 +287,7 @@ Text: {doc_text[:2000]}"""
                         ],
                         max_tokens=8000  # Increased to 8000
                     )
+                    record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
                     content = response.get("content", "")
                 
                 if not content:
@@ -518,13 +526,14 @@ Text: {doc_text[:2000]}"""
         
         return merged_entities
     
-    def _extract_from_chunk(self, text_chunk: str) -> List[Dict[str, Any]]:
+    def _extract_from_chunk(self, text_chunk: str, tracker=None) -> List[Dict[str, Any]]:
         """
         Extract entities from a single text chunk.
-        
+
         Args:
             text_chunk: Portion of document text
-            
+            tracker: Optional ExtractionTracker for per-report cost tracking
+
         Returns:
             List of extracted entities
         """
@@ -538,6 +547,7 @@ Text: {doc_text[:2000]}"""
         try:
             # Try with schema first, fall back if needed
             try:
+                _start = time.time()
                 response = self.client.call(
                     messages=messages,
                     max_tokens=8000,  # Increased to 8000 to handle large entity lists
@@ -546,6 +556,7 @@ Text: {doc_text[:2000]}"""
                         "json_schema": self.entity_schema
                     }
                 )
+                record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
             except Exception as e:
                 logger.warning(f"Chunk extraction with schema failed: {e}, retrying without schema")
                 # Add explicit instruction to return valid JSON
@@ -553,10 +564,12 @@ Text: {doc_text[:2000]}"""
                     {"role": "system", "content": ENTITY_EXTRACTION_SYSTEM_PROMPT + "\n\nIMPORTANT: Return ONLY valid JSON, no markdown."},
                     {"role": "user", "content": user_prompt}
                 ]
+                _start = time.time()
                 response = self.client.call(
                     messages=messages_with_json,
                     max_tokens=8000  # Increased to 8000 to handle large entity lists
                 )
+                record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
             
             content = response.get("content", "")
             

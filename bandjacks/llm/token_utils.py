@@ -169,7 +169,8 @@ class TokenEstimator:
         return min(density, 2.5)  # Cap at 2.5x density
 
 
-# Cost models for different LLMs (per 1K tokens)
+# Fallback cost models for pre-call budget estimation only.
+# Primary cost calculation uses litellm.completion_cost() with up-to-date provider pricing.
 LLM_COSTS = {
     "gpt-4": {"input": 0.03, "output": 0.06},
     "gpt-4o": {"input": 0.005, "output": 0.015},
@@ -369,7 +370,8 @@ class BudgetTracker:
                 "limit_usd": limit,
                 "usage_percent": round((usage.total_cost_usd / limit) * 100, 1) if limit > 0 else 0,
                 "total_calls": usage.total_calls,
-                "total_tokens": usage.total_tokens_in + usage.total_tokens_out,
+                "total_tokens_in": usage.total_tokens_in,
+                "total_tokens_out": usage.total_tokens_out,
                 "avg_cost_per_call": round(usage.total_cost_usd / max(1, usage.total_calls), 4),
                 "calls_by_model": dict(usage.calls_by_model),
                 "cost_by_model": {k: round(v, 4) for k, v in usage.cost_by_model.items()},
@@ -421,13 +423,16 @@ class BudgetTracker:
 
 # Global budget tracker instance
 _budget_tracker = None
+_budget_tracker_lock = threading.Lock()
 
 
 def get_budget_tracker(config: Optional[BudgetConfig] = None) -> BudgetTracker:
     """Get or create global budget tracker instance."""
     global _budget_tracker
     if _budget_tracker is None:
-        _budget_tracker = BudgetTracker(config)
+        with _budget_tracker_lock:
+            if _budget_tracker is None:
+                _budget_tracker = BudgetTracker(config)
     return _budget_tracker
 
 

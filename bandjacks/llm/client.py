@@ -6,7 +6,7 @@ import time
 import logging
 from typing import List, Dict, Any, Optional
 import httpx
-from litellm import completion
+from litellm import completion, completion_cost
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -16,6 +16,7 @@ from tenacity import (
 )
 from bandjacks.llm.cache import get_cache
 from bandjacks.llm.rate_limiter import get_rate_limiter, get_circuit_breaker
+from bandjacks.llm.token_utils import get_budget_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,44 @@ class LLMClient:
 
         return result
 
+    def _extract_usage_and_record(self, result: Dict[str, Any], response, model: str, request_id: str = "") -> None:
+        """Extract usage/cost from an LLM response and record to BudgetTracker.
+
+        Populates ``result["usage"]`` with token counts, cost, and model name,
+        then persists the data via :func:`get_budget_tracker`.
+        """
+        usage = response.usage if hasattr(response, 'usage') and response.usage else None
+        tokens_in = usage.prompt_tokens if usage else 0
+        tokens_out = usage.completion_tokens if usage else 0
+        try:
+            cost_usd = completion_cost(completion_response=response)
+        except Exception as exc:
+            logger.warning(f"[{request_id}] completion_cost() failed, defaulting to $0: {exc}")
+            cost_usd = 0.0
+        result["usage"] = {
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "cost_usd": cost_usd,
+            "model": model,
+        }
+
+        logger.info(
+            f"[{request_id}] Usage: tokens_in={tokens_in}, tokens_out={tokens_out}, "
+            f"cost=${cost_usd:.6f}, model={model}"
+        )
+
+        # Record to BudgetTracker (never break extraction for cost tracking)
+        try:
+            budget_tracker = get_budget_tracker()
+            budget_tracker.record_usage(model, tokens_in, tokens_out, actual_cost=cost_usd)
+        except Exception as exc:
+            logger.debug(f"[{request_id}] BudgetTracker.record_usage failed: {exc}")
+
+    @staticmethod
+    def _strip_usage(result: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a copy of *result* without the ``usage`` key (for caching)."""
+        return {k: v for k, v in result.items() if k != "usage"}
+
     def _should_retry(self, exception):
         """Determine if we should retry based on the exception."""
         # Check for specific error codes
@@ -176,6 +215,7 @@ class LLMClient:
             cached_response = cache.get(messages, tools=tools, tool_choice=tool_choice)
             if cached_response:
                 logger.info(f"[{request_id}] Cache hit - returning cached response")
+                cached_response["usage"] = None
                 return cached_response
         
         start_time = time.time()
@@ -284,12 +324,14 @@ class LLMClient:
                 logger.debug(f"[{request_id}] Response preview: {content[:500]}...")
             else:
                 logger.warning(f"[{request_id}] Empty response content")
-            
-            # Cache the response if enabled
+
+            self._extract_usage_and_record(result, response, effective_model, request_id)
+
+            # Cache the response if enabled (strip usage to prevent double-counting)
             if use_cache:
                 cache = get_cache()
-                cache.set(messages, result, tools=tools, tool_choice=tool_choice)
-            
+                cache.set(messages, self._strip_usage(result), tools=tools, tool_choice=tool_choice)
+
             return result
             
         except Exception as e:
@@ -347,9 +389,12 @@ class LLMClient:
 
                     fallback_result = self._extract_response(fallback_response, request_id)
                     logger.info(f"[{request_id}] Fallback model {fallback_model} succeeded")
+
+                    self._extract_usage_and_record(fallback_result, fallback_response, fallback_model, request_id)
+
                     if use_cache:
                         cache = get_cache()
-                        cache.set(messages, fallback_result, tools=tools, tool_choice=tool_choice)
+                        cache.set(messages, self._strip_usage(fallback_result), tools=tools, tool_choice=tool_choice)
                     return fallback_result
                 except Exception as fallback_error:
                     logger.error(f"Fallback model {fallback_model} also failed: {fallback_error}")
@@ -593,6 +638,32 @@ def repair_truncated_json(json_text: str) -> str:
         open_braces -= 1
     
     return text
+
+
+def record_usage_to_tracker(response: Dict[str, Any], tracker: Optional[Any] = None, elapsed_ms: int = 0) -> None:
+    """Record usage from a client.call() response to an ExtractionTracker.
+
+    Args:
+        response: Return value from LLMClient.call() containing optional 'usage' key.
+        tracker: ExtractionTracker instance, or None to skip.
+        elapsed_ms: Elapsed time in milliseconds for the call.
+    """
+    if tracker is None:
+        return
+    usage = response.get("usage")
+    if not usage:
+        return
+    try:
+        tracker.add_llm_call(
+            model=usage["model"],
+            ms=elapsed_ms,
+            tokens_in=usage["tokens_in"],
+            tokens_out=usage["tokens_out"],
+            tool_calls=len(response.get("tool_calls", [])),
+            cost_usd=usage["cost_usd"],
+        )
+    except Exception as exc:
+        logger.debug(f"record_usage_to_tracker failed: {exc}")
 
 
 def validate_json_response(response: str, schema: Dict[str, Any]) -> Dict[str, Any]:

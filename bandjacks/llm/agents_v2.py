@@ -9,6 +9,7 @@ EvidenceVerifierAgent, ConsolidatorAgent, and AssemblerAgent.
 import re
 import json
 import logging
+import time
 from typing import Any, Dict, List
 
 from bandjacks.llm.memory import WorkingMemory
@@ -17,6 +18,7 @@ from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.llm.consolidator_base import ConsolidatorBase
 from bandjacks.llm.keyword_index import KeywordIndex
 from bandjacks.llm.technique_pairs import TechniquePairValidator
+from bandjacks.llm.client import record_usage_to_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -374,6 +376,8 @@ class DiscoveryAgent:
         }
 
         try:
+            tracker = config.get("_tracker")
+            _start = time.time()
             response = client.call(
                 messages,
                 model=discovery_model,
@@ -383,6 +387,7 @@ class DiscoveryAgent:
                 },
                 max_tokens=4000,
             )
+            record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
 
             content = response.get("content", "")
             if not content:

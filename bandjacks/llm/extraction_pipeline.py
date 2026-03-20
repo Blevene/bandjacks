@@ -26,6 +26,7 @@ from bandjacks.llm.batch_retriever import BatchRetrieverAgent
 from bandjacks.llm.entity_extractor import EntityExtractionAgent
 from bandjacks.llm.entity_consolidator import EntityConsolidatorAgent
 from bandjacks.llm.tracker import ExtractionTracker
+from bandjacks.llm.client import record_usage_to_tracker
 from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.llm.flow_deterministic import build_dual_flows
 from bandjacks.services.technique_cache import technique_cache
@@ -74,7 +75,8 @@ class ExtractionPipeline:
         """
         config = config or {}
         tracker = ExtractionTracker()
-        
+        config["_tracker"] = tracker
+
         logger.info("Starting extraction pipeline")
         
         # Step 1: Extract techniques
@@ -103,14 +105,19 @@ class ExtractionPipeline:
             config
         )
         
-        # Add metrics
+        # Add metrics (cost_usd excludes flow synthesis — tracked globally only)
+        tracker_snap = tracker.snapshot()
         review_package["metrics"] = {
             "extraction_duration_ms": (time.time() - tracker.started_at) * 1000 if hasattr(tracker, 'started_at') else 0,
             "spans_found": tracker.spans_total,
             "techniques_extracted": len(extraction_result.get("techniques", {})),
             "confidence_avg": self._calculate_avg_confidence(extraction_result),
             "entity_extraction_status": extraction_result.get("entities", {}).get("extraction_status", "unknown"),
-            "extraction_errors": extraction_result.get("extraction_errors", [])
+            "extraction_errors": extraction_result.get("extraction_errors", []),
+            "cost_usd": tracker_snap["cost_usd"],
+            "llm_calls": tracker_snap["counters"]["llm_calls"],
+            "tokens_in": sum(s.tokens_in for s in tracker.llm_stats),
+            "tokens_out": sum(s.tokens_out for s in tracker.llm_stats),
         }
         
         # Add techniques_count at top level for API compatibility
@@ -331,10 +338,12 @@ class ExtractionPipeline:
 
         found_count = 0
         try:
+            _start = time.time()
             response = client.call(
                 messages=[{"role": "user", "content": batch_prompt}],
                 max_tokens=1000,
             )
+            record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
             content = response.get("content", "")
             batch_result = parse_llm_json(content, default={"results": []})
 

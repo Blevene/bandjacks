@@ -3,9 +3,10 @@
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, List
 from bandjacks.llm.memory import WorkingMemory
-from bandjacks.llm.client import get_llm_client
+from bandjacks.llm.client import get_llm_client, record_usage_to_tracker
 from bandjacks.llm.tools import resolve_technique_by_external_id
 from bandjacks.services.technique_cache import technique_cache
 from bandjacks.llm.json_utils import parse_llm_json, validate_and_ensure_claims
@@ -182,7 +183,9 @@ class BatchMapperAgent:
         logger.info(f"BatchMapper LLM request: batch of {len(spans_data)} spans")
         client = get_llm_client()
 
+        tracker = config.get("_tracker") if config else None
         try:
+            _start = time.time()
             response = client.call(
                 messages,
                 response_format={
@@ -191,6 +194,7 @@ class BatchMapperAgent:
                 },
                 max_tokens=8000  # Doubled to prevent truncation issues
             )
+            record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
             content = response.get("content", "")
 
             logger.info(f"BatchMapper LLM response: {len(content)} chars")
