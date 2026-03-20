@@ -338,13 +338,12 @@ class ExtractionPipeline:
 
         found_count = 0
         try:
-            import time as _time
-            _start = _time.time()
+            _start = time.time()
             response = client.call(
                 messages=[{"role": "user", "content": batch_prompt}],
                 max_tokens=1000,
             )
-            record_usage_to_tracker(response, tracker, int((_time.time() - _start) * 1000))
+            record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
             content = response.get("content", "")
             batch_result = parse_llm_json(content, default={"results": []})
 
