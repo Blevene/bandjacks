@@ -18,6 +18,7 @@ from bandjacks.llm.flow_builder import FlowBuilder
 from bandjacks.llm.consolidator_base import ConsolidatorBase
 from bandjacks.llm.keyword_index import KeywordIndex
 from bandjacks.llm.technique_pairs import TechniquePairValidator
+from bandjacks.llm.client import record_usage_to_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -375,7 +376,6 @@ class DiscoveryAgent:
         }
 
         try:
-            from bandjacks.llm.client import record_usage_to_tracker
             tracker = config.get("_tracker")
             _start = time.time()
             response = client.call(
