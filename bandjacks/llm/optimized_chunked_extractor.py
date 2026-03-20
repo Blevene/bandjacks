@@ -664,8 +664,31 @@ class OptimizedChunkedExtractor(ChunkedExtractor):
             mem.candidates = pre_retrieved_candidates
             logger.debug(f"Injected {len(pre_retrieved_candidates)} pre-retrieved candidate sets")
         
+        # Pre-filter: limit spans per candidate technique to reduce mapper batches
+        max_spans_per_technique = config.get("max_spans_per_technique", 2)
+        if max_spans_per_technique > 0 and mem.candidates:
+            from collections import defaultdict
+            technique_buckets = defaultdict(list)
+            no_candidate = []
+            for i, s in enumerate(mem.spans):
+                cands = mem.candidates.get(i, [])
+                if cands:
+                    top_tid = cands[0].get("external_id", "unknown")
+                    technique_buckets[top_tid].append((i, s, cands[0].get("score", 0)))
+                else:
+                    no_candidate.append(s)
+            pre_filter = len(mem.spans)
+            kept = []
+            for tid, entries in technique_buckets.items():
+                entries.sort(key=lambda e: -e[2])
+                kept.extend(e[1] for e in entries[:max_spans_per_technique])
+            kept.extend(no_candidate)
+            if pre_filter != len(kept):
+                logger.info(f"Pre-filter: {pre_filter} -> {len(kept)} spans (max {max_spans_per_technique} per candidate technique)")
+            mem.spans = kept
+
         # Run mapper on pre-detected spans
-        if pre_detected_spans:
+        if mem.spans:
             BatchMapperAgent().run(mem, config)
 
         # Run consolidator only if not skipping for global consolidation

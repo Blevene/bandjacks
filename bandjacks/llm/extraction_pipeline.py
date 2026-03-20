@@ -200,6 +200,16 @@ class ExtractionPipeline:
                 tracker.set_stage("Discovery")
                 DiscoveryAgent().run(mem, config)
         
+        # Pre-filter: limit spans per top-candidate technique to reduce mapper batches.
+        # Many spans map to the same retriever candidate — sending all of them to the LLM
+        # is redundant. Keep the N best spans per candidate technique (default N=2).
+        max_spans_per_technique = config.get("max_spans_per_technique", 2)
+        if max_spans_per_technique > 0:
+            pre_filter = len(mem.spans)
+            mem.spans = self._limit_spans_per_technique(mem.spans, mem.candidates, max_spans_per_technique)
+            if pre_filter != len(mem.spans):
+                logger.info(f"Pre-filter: {pre_filter} -> {len(mem.spans)} spans (max {max_spans_per_technique} per candidate technique)")
+
         tracker.set_stage("Mapper")
         if progress_callback:
             progress_callback(50, "Mapping spans to ATT&CK techniques...")
@@ -290,6 +300,34 @@ class ExtractionPipeline:
         
         return text
     
+    @staticmethod
+    def _limit_spans_per_technique(spans: list, candidates: dict, max_per: int) -> list:
+        """Keep at most *max_per* spans per top-candidate technique.
+
+        After retrieval, many spans share the same top candidate. Sending all of
+        them to the mapper is redundant — the LLM will produce duplicate claims
+        that consolidation merges anyway. This keeps the highest-scoring spans
+        per candidate to maintain evidence diversity while cutting mapper batches.
+        """
+        from collections import defaultdict
+        technique_buckets = defaultdict(list)
+        no_candidate = []
+        for i, s in enumerate(spans):
+            cands = candidates.get(i, [])
+            if cands:
+                top_tid = cands[0].get("external_id", "unknown")
+                technique_buckets[top_tid].append((i, s, cands[0].get("score", 0)))
+            else:
+                no_candidate.append((i, s))
+
+        kept = []
+        for tid, entries in technique_buckets.items():
+            entries.sort(key=lambda e: -e[2])  # highest retriever score first
+            kept.extend(e[1] for e in entries[:max_per])
+        # Always keep no-candidate spans (they go to discovery)
+        kept.extend(s for _, s in no_candidate)
+        return kept
+
     @staticmethod
     def _deduplicate_spans(spans: list) -> list:
         """Remove duplicate spans by normalized text, merging tactics and keeping highest score."""
