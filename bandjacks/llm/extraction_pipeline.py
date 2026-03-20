@@ -105,7 +105,7 @@ class ExtractionPipeline:
             config
         )
         
-        # Add metrics
+        # Add metrics (cost_usd excludes flow synthesis — tracked globally only)
         tracker_snap = tracker.snapshot()
         review_package["metrics"] = {
             "extraction_duration_ms": (time.time() - tracker.started_at) * 1000 if hasattr(tracker, 'started_at') else 0,

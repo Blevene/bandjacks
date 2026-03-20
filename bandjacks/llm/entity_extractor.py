@@ -169,7 +169,7 @@ class EntityExtractionAgent:
             config: Configuration options
         """
         logger.info("Starting chunked entity extraction with LLM")
-        self._tracker = config.get("_tracker") if config else None
+        tracker = config.get("_tracker") if config else None
 
         doc_text = mem.document_text
         doc_length = len(doc_text)
@@ -191,7 +191,7 @@ class EntityExtractionAgent:
                     all_claims = []
                     for i, chunk in enumerate(chunks):
                         logger.debug(f"Extracting entity claims from chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
-                        entities = self._extract_from_chunk(chunk)
+                        entities = self._extract_from_chunk(chunk, tracker=tracker)
                         
                         # Convert entities to claims
                         chunk_claims = self._entities_to_claims(entities, doc_text, chunk_id=i)
@@ -215,7 +215,7 @@ class EntityExtractionAgent:
                     chunk_entities = []
                     for i, chunk in enumerate(chunks):
                         logger.debug(f"Extracting entities from chunk {i+1}/{len(chunks)} ({len(chunk)} chars)")
-                        entities = self._extract_from_chunk(chunk)
+                        entities = self._extract_from_chunk(chunk, tracker=tracker)
                         # Enhance each entity with line references
                         for entity in entities:
                             self._enhance_entity_with_line_refs(entity, doc_text)
@@ -254,7 +254,7 @@ class EntityExtractionAgent:
                             "json_schema": self.entity_schema
                         }
                     )
-                    record_usage_to_tracker(response, self._tracker, int((time.time() - _start) * 1000))
+                    record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
                     content = response.get("content", "")
                 except Exception as e:
                     logger.warning(f"Structured output failed: {e}, retrying without schema")
@@ -268,7 +268,7 @@ class EntityExtractionAgent:
                         messages=messages_with_json,
                         max_tokens=8000  # Increased to 8000 to handle large entity lists
                     )
-                    record_usage_to_tracker(response, self._tracker, int((time.time() - _start) * 1000))
+                    record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
                     content = response.get("content", "")
                 
                 if not content:
@@ -287,7 +287,7 @@ Text: {doc_text[:2000]}"""
                         ],
                         max_tokens=8000  # Increased to 8000
                     )
-                    record_usage_to_tracker(response, self._tracker, int((time.time() - _start) * 1000))
+                    record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
                     content = response.get("content", "")
                 
                 if not content:
@@ -526,7 +526,7 @@ Text: {doc_text[:2000]}"""
         
         return merged_entities
     
-    def _extract_from_chunk(self, text_chunk: str) -> List[Dict[str, Any]]:
+    def _extract_from_chunk(self, text_chunk: str, tracker=None) -> List[Dict[str, Any]]:
         """
         Extract entities from a single text chunk.
         
@@ -555,7 +555,7 @@ Text: {doc_text[:2000]}"""
                         "json_schema": self.entity_schema
                     }
                 )
-                record_usage_to_tracker(response, self._tracker, int((time.time() - _start) * 1000))
+                record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
             except Exception as e:
                 logger.warning(f"Chunk extraction with schema failed: {e}, retrying without schema")
                 # Add explicit instruction to return valid JSON
@@ -568,7 +568,7 @@ Text: {doc_text[:2000]}"""
                     messages=messages_with_json,
                     max_tokens=8000  # Increased to 8000 to handle large entity lists
                 )
-                record_usage_to_tracker(response, self._tracker, int((time.time() - _start) * 1000))
+                record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
             
             content = response.get("content", "")
             
