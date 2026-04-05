@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5"  # OpenAI model (backup)
     google_model: str = "gemini-2.5-flash"  # Primary Google model
     primary_llm: str = "gemini"  # Use Gemini as primary
+
+    # Local OpenAI-compatible API (e.g., vLLM, llama.cpp, Ollama, LocalAI, LM Studio)
+    local_llm_api_base: str = ""  # e.g., "http://192.168.1.100:8080/v1"
+    local_llm_api_key: str = "no-key"  # Most local servers accept any value
+    local_llm_model: str = ""  # Model name as the server expects it
     
     # Authentication settings
     enable_auth: bool = False  # Feature flag for JWT/OIDC

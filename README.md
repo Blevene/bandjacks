@@ -48,7 +48,7 @@ Bandjacks is a comprehensive cyber threat intelligence (CTI) system that:
 - OpenSearch 2.x (vector store)
 - Redis (optional, for caching)
 - Node.js 18+ (for frontend)
-- API keys for LLM access (Gemini or OpenAI)
+- LLM access: cloud API keys (Gemini or OpenAI) **or** a local OpenAI-compatible server
 
 ### Installation
 
@@ -94,11 +94,18 @@ OPENSEARCH_URL=http://localhost:9200
 OPENSEARCH_USER=admin
 OPENSEARCH_PASSWORD=your-opensearch-password  # Optional if security is disabled
 
-# LLM Configuration (Required for LLM features)
+# LLM Configuration — pick ONE of the options below:
+
+# Option A: Local OpenAI-compatible API (vLLM, llama.cpp, Ollama, LocalAI, LM Studio, etc.)
+LOCAL_LLM_API_BASE=http://192.168.1.100:8080/v1   # Base URL of your local server
+LOCAL_LLM_MODEL=mistral-nemo                        # Model name as the server reports it
+LOCAL_LLM_API_KEY=no-key                            # Most local servers accept any value
+
+# Option B: Cloud LLM providers
 PRIMARY_LLM=gemini
 GOOGLE_API_KEY=your-gemini-api-key
 
-# Optional: OpenAI as fallback
+# Optional: OpenAI as fallback (or primary if PRIMARY_LLM=openai)
 OPENAI_API_KEY=your-openai-api-key
 
 # ATT&CK Configuration
@@ -999,14 +1006,36 @@ bandjacks/
 
 ### Model Selection
 
-The system supports multiple LLMs:
+The system supports cloud LLMs and any local OpenAI-compatible API:
 
-```python
-# In your .env or config
-PRIMARY_LLM=gemini/gemini-2.5-flash  # Recommended
-# PRIMARY_LLM=gpt-4o-mini            # Alternative
-# PRIMARY_LLM=gpt-4-turbo            # Higher quality, higher cost
+```bash
+# In your .env file
+
+# --- Option A: Local inference (highest priority when set) ---
+# Works with vLLM, llama.cpp (server), Ollama, LocalAI, LM Studio,
+# text-generation-webui, or any server that exposes an /v1/chat/completions endpoint.
+LOCAL_LLM_API_BASE=http://192.168.1.100:8080/v1
+LOCAL_LLM_MODEL=mistral-nemo
+LOCAL_LLM_API_KEY=no-key          # optional — most local servers don't require a key
+
+# --- Option B: Cloud providers ---
+PRIMARY_LLM=gemini                # "gemini" (default) or "openai"
+GOOGLE_API_KEY=your-key           # Gemini
+OPENAI_API_KEY=your-key           # OpenAI (used as fallback when Gemini is primary)
 ```
+
+**Provider priority:** Local API > Gemini > OpenAI > LiteLLM proxy.
+When a local server is configured, cloud providers are automatically added as fallbacks.
+
+#### Common local server examples
+
+| Server | `LOCAL_LLM_API_BASE` | `LOCAL_LLM_MODEL` |
+|--------|---------------------|-------------------|
+| vLLM | `http://host:8000/v1` | `mistralai/Mistral-Nemo-Instruct-2407` |
+| llama.cpp | `http://host:8080/v1` | `mistral-nemo` |
+| Ollama | `http://host:11434/v1` | `mistral-nemo` |
+| LM Studio | `http://host:1234/v1` | `mistral-nemo` |
+| LocalAI | `http://host:8080/v1` | `mistral-nemo` |
 
 ### Extraction Configuration
 
