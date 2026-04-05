@@ -657,6 +657,11 @@ ADM_SPEC_MIN=3.3.0
 NEO4J_URI=bolt://neo4j:7687
 OPENSEARCH_URL=http://opensearch:9200
 BLOB_BASE=s3://world-model/
+
+# Local OpenAI-compatible API (vLLM, llama.cpp, Ollama, LocalAI, LM Studio)
+LOCAL_LLM_API_BASE=http://192.168.1.100:8080/v1
+LOCAL_LLM_API_KEY=no-key
+LOCAL_LLM_MODEL=mistral-nemo
 ```
 
 ## Performance Targets (Dev)

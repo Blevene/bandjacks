@@ -36,10 +36,15 @@ class LLMClient:
         self.openai_api_key = os.getenv("OPENAI_API_KEY", "")
         self.google_api_key = os.getenv("GOOGLE_API_KEY", "")
         self.primary_llm = os.getenv("PRIMARY_LLM", "gemini")  # Default to Gemini
-        
+
+        # Local OpenAI-compatible API configuration (e.g., vLLM, llama.cpp, Ollama, LocalAI)
+        self.local_api_base = os.getenv("LOCAL_LLM_API_BASE", "")
+        self.local_api_key = os.getenv("LOCAL_LLM_API_KEY", "no-key")
+        self.local_model = os.getenv("LOCAL_LLM_MODEL", "")
+
         # Fallback models list
         self.fallback_models = []
-        
+
         # LiteLLM configuration (fallback or proxy)
         self.base_url = os.getenv("LITELLM_BASE_URL", "http://localhost:4000")
         self.api_key = os.getenv("LITELLM_API_KEY", "")
@@ -48,12 +53,28 @@ class LLMClient:
         self.timeout = int(os.getenv("LITELLM_TIMEOUT_MS", os.getenv("LLM_TIMEOUT_MS", "120000"))) / 1000
         self.temperature = float(os.getenv("LITELLM_TEMPERATURE", "0.3"))  # Lower for more consistent output
         self.max_tokens = int(os.getenv("LITELLM_MAX_TOKENS", "8000"))  # Increased for comprehensive extraction
-        
+
         # Instance variable for the API key to pass directly to completion()
         self.api_key_for_completion = None
 
+        # Provider selection priority:
+        # 1. Local OpenAI-compatible API (if LOCAL_LLM_API_BASE is set)
+        # 2. Gemini (if GOOGLE_API_KEY set and PRIMARY_LLM=gemini)
+        # 3. OpenAI (if OPENAI_API_KEY set)
+        # 4. LiteLLM proxy
+        # 5. Fallback model name
+        if self.local_api_base and self.local_model:
+            # Use openai/ prefix so LiteLLM routes via the OpenAI provider
+            self.model = "openai/" + self.local_model
+            self.api_key_for_completion = self.local_api_key
+            logger.debug(f"Using local OpenAI-compatible API at {self.local_api_base} with model: {self.model}")
+            # Add cloud providers as fallback if available
+            if self.google_api_key:
+                self.fallback_models.append("gemini/" + os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"))
+            if self.openai_api_key:
+                self.fallback_models.append(os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
         # Prioritize Gemini as primary model
-        if self.google_api_key and self.primary_llm == "gemini":
+        elif self.google_api_key and self.primary_llm == "gemini":
             # Use gemini/ prefix to ensure LiteLLM uses Gemini API instead of Vertex
             self.model = "gemini/" + os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
             self.api_key_for_completion = self.google_api_key
@@ -75,7 +96,7 @@ class LLMClient:
             logger.debug(f"Using LiteLLM proxy with model: {self.model}")
         else:
             logger.debug(f"No API keys configured, using fallback model: {self.model}")
-        
+
         logger.info(f"Initialized LLM client with model: {self.model}, fallbacks: {self.fallback_models}")
     
     def _extract_response(self, response, request_id: str = "") -> Dict[str, Any]:
@@ -232,7 +253,10 @@ class LLMClient:
 
             if self.api_key_for_completion:
                 params["api_key"] = self.api_key_for_completion
-            if self.base_url and not self.google_api_key and not self.openai_api_key:
+            # Set api_base for local OpenAI-compatible API or LiteLLM proxy
+            if self.local_api_base and effective_model.startswith("openai/"):
+                params["api_base"] = self.local_api_base
+            elif self.base_url and not self.google_api_key and not self.openai_api_key:
                 params["api_base"] = self.base_url
 
             if tools:
@@ -369,8 +393,11 @@ class LLMClient:
                         "timeout": self.timeout
                     }
 
-                    # Pass the appropriate API key for the fallback model
-                    if "gemini" in fallback_model.lower() and self.google_api_key:
+                    # Pass the appropriate API key and base URL for the fallback model
+                    if fallback_model.startswith("openai/") and self.local_api_base:
+                        fallback_params["api_key"] = self.local_api_key
+                        fallback_params["api_base"] = self.local_api_base
+                    elif "gemini" in fallback_model.lower() and self.google_api_key:
                         fallback_params["api_key"] = self.google_api_key
                     elif self.openai_api_key:
                         fallback_params["api_key"] = self.openai_api_key
