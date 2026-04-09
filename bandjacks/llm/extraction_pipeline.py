@@ -420,6 +420,12 @@ class ExtractionPipeline:
                 if not tid or tid not in suggestion_map:
                     continue
 
+                # Skip revoked/deprecated techniques
+                from bandjacks.llm.tools import resolve_technique_by_external_id
+                if resolve_technique_by_external_id(tid) is None:
+                    logger.debug(f"Targeted extraction: skipping {tid} (not in cache or revoked)")
+                    continue
+
                 suggestion = suggestion_map[tid]
                 reason = suggestion.get("reason", "")
                 # Cap confidence at 60 — these are suggestions, not primary extractions

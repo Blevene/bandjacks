@@ -233,7 +233,7 @@ class LLMClient:
         # Check cache first if enabled
         if use_cache:
             cache = get_cache()
-            cached_response = cache.get(messages, tools=tools, tool_choice=tool_choice)
+            cached_response = cache.get(messages, tools=tools, tool_choice=tool_choice, model=effective_model)
             if cached_response:
                 logger.info(f"[{request_id}] Cache hit - returning cached response")
                 cached_response["usage"] = None
@@ -265,18 +265,41 @@ class LLMClient:
 
             # Add response_format if provided
             if response_format:
-                # Check if we're using Gemini which needs special handling
-                if "gemini" in effective_model.lower():
-                    # For Gemini, we used to enable JSON schema validation
-                    # but this causes the response content to be None
-                    # import litellm
-                    # litellm.enable_json_schema_validation = True
-                    pass
-                    
+                # Local OpenAI-compatible servers (LM Studio, etc.) require
+                # json_schema to be wrapped in {name, strict, schema} format.
+                if self.local_api_base and effective_model.startswith("openai/"):
+                    if response_format.get("type") == "json_schema" and "json_schema" in response_format:
+                        json_schema = response_format["json_schema"]
+                        # Wrap raw schema into the {name, strict, schema} envelope
+                        # if it isn't already wrapped.
+                        if isinstance(json_schema, dict) and "schema" not in json_schema:
+                            response_format = {
+                                "type": "json_schema",
+                                "json_schema": {
+                                    "name": "response_schema",
+                                    "strict": True,
+                                    "schema": json_schema,
+                                },
+                            }
+                            logger.debug(f"[{request_id}] Wrapped json_schema for local model")
                     # Ensure there's a system message mentioning JSON
                     has_json_instruction = any(
-                        "json" in msg.get("content", "").lower() 
-                        for msg in messages 
+                        "json" in msg.get("content", "").lower()
+                        for msg in messages
+                        if msg.get("role") == "system"
+                    )
+                    if not has_json_instruction:
+                        messages = [
+                            {"role": "system", "content": "You must output valid JSON. No markdown fences, no extra text."},
+                            *messages
+                        ]
+                        params["messages"] = messages
+                # Check if we're using Gemini which needs special handling
+                elif "gemini" in effective_model.lower():
+                    # Ensure there's a system message mentioning JSON
+                    has_json_instruction = any(
+                        "json" in msg.get("content", "").lower()
+                        for msg in messages
                         if msg.get("role") == "system"
                     )
                     if not has_json_instruction:
@@ -286,7 +309,7 @@ class LLMClient:
                             *messages
                         ]
                         params["messages"] = messages
-                    
+
                     # For Gemini with json_schema, check format
                     if response_format.get("type") == "json_schema" and "json_schema" in response_format:
                         json_schema = response_format["json_schema"]
@@ -301,7 +324,7 @@ class LLMClient:
                                 "strict": True,
                                 "schema": json_schema
                             }
-                
+
                 # Add response_format to params
                 params["response_format"] = response_format
             
@@ -354,7 +377,7 @@ class LLMClient:
             # Cache the response if enabled (strip usage to prevent double-counting)
             if use_cache:
                 cache = get_cache()
-                cache.set(messages, self._strip_usage(result), tools=tools, tool_choice=tool_choice)
+                cache.set(messages, self._strip_usage(result), tools=tools, tool_choice=tool_choice, model=effective_model)
 
             return result
             
@@ -421,7 +444,7 @@ class LLMClient:
 
                     if use_cache:
                         cache = get_cache()
-                        cache.set(messages, self._strip_usage(fallback_result), tools=tools, tool_choice=tool_choice)
+                        cache.set(messages, self._strip_usage(fallback_result), tools=tools, tool_choice=tool_choice, model=fallback_model)
                     return fallback_result
                 except Exception as fallback_error:
                     logger.error(f"Fallback model {fallback_model} also failed: {fallback_error}")

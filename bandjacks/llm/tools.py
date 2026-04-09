@@ -275,6 +275,11 @@ def resolve_technique_by_external_id(external_id: str) -> Optional[Dict[str, Any
     # First check the cache for O(1) lookup
     cached_tech = technique_cache.get(external_id)
     if cached_tech:
+        # Skip revoked or deprecated techniques — these are stale IDs
+        # that were replaced by newer technique numbers in ATT&CK.
+        if cached_tech.get("revoked") or cached_tech.get("deprecated"):
+            logger.debug(f"Skipping revoked/deprecated technique: {external_id}")
+            return None
         return {
             "stix_id": cached_tech.get("stix_id"),
             "name": cached_tech.get("name"),

@@ -98,13 +98,15 @@ class TechniqueCache:
                     WHERE ap.external_id IS NOT NULL
                     OPTIONAL MATCH (ap)-[:HAS_TACTIC]->(t:Tactic)
                     WITH ap, collect(DISTINCT t.shortname) as tactics
-                    RETURN 
+                    RETURN
                         ap.external_id as external_id,
                         ap.stix_id as stix_id,
                         ap.name as name,
                         ap.description as description,
                         ap.x_mitre_is_subtechnique as is_subtechnique,
                         ap.x_mitre_platforms as platforms,
+                        ap.revoked as revoked,
+                        ap.x_mitre_deprecated as deprecated,
                         tactics
                     ORDER BY ap.external_id
                 """)
@@ -125,7 +127,9 @@ class TechniqueCache:
                             "is_subtechnique": record["is_subtechnique"] or False,
                             "platforms": record["platforms"] or [],
                             "tactics": record["tactics"] or [],
-                            "tactic": record["tactics"][0] if record["tactics"] else None  # Primary tactic
+                            "tactic": record["tactics"][0] if record["tactics"] else None,  # Primary tactic
+                            "revoked": record["revoked"] or False,
+                            "deprecated": record["deprecated"] or False,
                         }
                         count += 1
                     
