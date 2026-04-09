@@ -6,7 +6,6 @@ from typing import Any, Optional, Dict, List
 from datetime import timedelta
 import redis
 from redis.exceptions import RedisError
-import pickle
 
 
 class CacheManager:
@@ -74,7 +73,7 @@ class CacheManager:
             data = self.client.get(key)
             
             if data:
-                return pickle.loads(data)
+                return json.loads(data)
             
         except Exception as e:
             print(f"Cache get error: {e}")
@@ -105,7 +104,7 @@ class CacheManager:
         
         try:
             key = self._make_key(prefix, params)
-            data = pickle.dumps(value)
+            data = json.dumps(value)
             ttl = ttl or self.default_ttl
             
             self.client.setex(key, ttl, data)

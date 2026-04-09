@@ -171,9 +171,9 @@ class TestVectorSearchCache:
         assert cache.l2_misses == 1
         
         # Simulate L2 hit
-        import pickle
+        import json
         test_vector = [0.1, 0.2]
-        mock_redis.get.return_value = pickle.dumps(test_vector)
+        mock_redis.get.return_value = json.dumps(test_vector)
         result = cache.get_embedding("test2")
         assert result == test_vector
         assert cache.l2_hits == 1

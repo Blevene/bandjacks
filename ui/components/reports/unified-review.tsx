@@ -380,17 +380,17 @@ export function UnifiedReview({ report, onSubmit, readOnly = false }: UnifiedRev
               await new Promise(resolve => setTimeout(resolve, 100 * (4 - retries))); // Exponential backoff
             } else {
               const text = await response.text();
-              console.error(`Failed to save bulk decision for ${itemId} after retries:`, text);
+              console.error('Failed to save bulk decision for', itemId, 'after retries:', text);
               failCount++;
             }
           } else {
             const text = await response.text();
-            console.error(`Failed to save bulk decision for ${itemId}:`, text);
+            console.error('Failed to save bulk decision for', itemId, ':', text);
             failCount++;
             break;
           }
         } catch (error) {
-          console.error(`Error saving bulk decision for ${itemId}:`, error);
+          console.error('Error saving bulk decision for', itemId, ':', error);
           failCount++;
           break;
         }

@@ -4,6 +4,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: bandjacks-redis
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "6379:6379"
     volumes:
