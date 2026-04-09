@@ -297,6 +297,8 @@ def resolve_technique_by_external_id(external_id: str) -> Optional[Dict[str, Any
             rec = session.run(
                 """
                 MATCH (ap:AttackPattern {external_id: $ext})
+                WHERE (ap.revoked IS NULL OR ap.revoked = false)
+                  AND (ap.x_mitre_deprecated IS NULL OR ap.x_mitre_deprecated = false)
                 OPTIONAL MATCH (ap)-[:HAS_TACTIC]->(t:Tactic)
                 RETURN ap.stix_id AS stix_id, ap.name AS name, ap.external_id AS external_id,
                        t.shortname AS tactic, ap.description AS description,

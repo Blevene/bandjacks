@@ -559,61 +559,72 @@ class EvidenceVerifierAgent:
         if config.get("skip_relevance_check", False):
             return {}  # returns empty → default 1.0 in caller
 
-        import numpy as np
-        from bandjacks.loaders.embedder import batch_encode
-        from bandjacks.services.technique_cache import technique_cache
-
-        # Collect (span_text, technique_text) pairs for each claim
-        pairs: list = []  # (claim_idx, span_text, technique_text)
-        for idx, claim in enumerate(claims):
-            span_text = " ".join(claim.get("quotes", []))[:500]
-            if not span_text.strip():
-                continue
-            tid = claim.get("external_id", "")
-            cached = technique_cache.get(tid)
-            if cached:
-                # Use technique name only — short keyword-like text gives much
-                # cleaner separation than name + long description against short
-                # behavioural span snippets.
-                tech_text = cached.get("name", tid)
-            else:
-                tech_text = claim.get("name", tid)
-            if tech_text.strip():
-                pairs.append((idx, span_text, tech_text))
-
-        if not pairs:
+        try:
+            import numpy as np
+            from bandjacks.loaders.embedder import batch_encode
+            from bandjacks.services.technique_cache import technique_cache
+        except ImportError:
+            logger.warning("Embedder or numpy not available, skipping relevance check")
             return {}
 
-        # Batch encode all texts at once (spans + technique descriptions)
-        span_texts = [p[1] for p in pairs]
-        tech_texts = [p[2] for p in pairs]
-        all_texts = span_texts + tech_texts
+        try:
+            # Collect (span_text, technique_text) pairs for each claim
+            pairs: list = []  # (claim_idx, span_text, technique_text)
+            for idx, claim in enumerate(claims):
+                span_text = " ".join(claim.get("quotes", []))[:500]
+                if not span_text.strip():
+                    continue
+                tid = claim.get("external_id", "")
+                cached = technique_cache.get(tid)
+                if cached:
+                    # Use technique name only — short keyword-like text gives much
+                    # cleaner separation than name + long description against short
+                    # behavioural span snippets.
+                    tech_text = cached.get("name", tid)
+                else:
+                    tech_text = claim.get("name", tid)
+                if tech_text.strip():
+                    pairs.append((idx, span_text, tech_text))
 
-        logger.debug(f"Computing semantic relevance for {len(pairs)} claims")
-        embeddings = batch_encode(all_texts)
+            if not pairs:
+                return {}
 
-        # Compute cosine similarity for each pair
-        scores: Dict[int, float] = {}
-        n = len(pairs)
-        for i, (claim_idx, _, _) in enumerate(pairs):
-            span_emb = embeddings[i]
-            tech_emb = embeddings[n + i]
-            if span_emb is None or tech_emb is None:
-                continue
-            a = np.array(span_emb)
-            b = np.array(tech_emb)
-            denom = np.linalg.norm(a) * np.linalg.norm(b)
-            if denom > 0:
-                sim = float(np.dot(a, b) / denom)
-                scores[claim_idx] = sim
+            # Batch encode all texts at once (spans + technique descriptions)
+            span_texts = [p[1] for p in pairs]
+            tech_texts = [p[2] for p in pairs]
+            all_texts = span_texts + tech_texts
 
-        logger.debug(
-            f"Semantic relevance: min={min(scores.values()):.3f}, "
-            f"max={max(scores.values()):.3f}, "
-            f"mean={sum(scores.values()) / len(scores):.3f}"
-            if scores else "Semantic relevance: no scores computed"
-        )
-        return scores
+            logger.debug(f"Computing semantic relevance for {len(pairs)} claims")
+            embeddings = batch_encode(all_texts)
+
+            # Compute cosine similarity for each pair
+            scores: Dict[int, float] = {}
+            n = len(pairs)
+            for i, (claim_idx, _, _) in enumerate(pairs):
+                span_emb = embeddings[i]
+                tech_emb = embeddings[n + i]
+                if span_emb is None or tech_emb is None:
+                    continue
+                a = np.array(span_emb)
+                b = np.array(tech_emb)
+                denom = np.linalg.norm(a) * np.linalg.norm(b)
+                if denom > 0:
+                    sim = float(np.dot(a, b) / denom)
+                    scores[claim_idx] = sim
+
+            if scores:
+                logger.debug(
+                    f"Semantic relevance: min={min(scores.values()):.3f}, "
+                    f"max={max(scores.values()):.3f}, "
+                    f"mean={sum(scores.values()) / len(scores):.3f}"
+                )
+            else:
+                logger.debug("Semantic relevance: no scores computed")
+            return scores
+
+        except Exception as e:
+            logger.warning(f"Semantic relevance check failed, skipping: {e}")
+            return {}
     
     def _score_evidence(self, quotes: list, lines: list, meta: dict, confidence: int) -> int:
         """Score evidence quality based on multiple factors."""
