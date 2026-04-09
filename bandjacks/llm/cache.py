@@ -32,13 +32,16 @@ class LLMCache:
         }
 
     def _generate_key(self, messages: List[Dict[str, str]], **kwargs) -> str:
-        """Generate cache key from messages and parameters."""
-        # Create stable hash from messages and params
+        """Generate cache key from messages and parameters.
+
+        The key includes all kwargs (tools, tool_choice, model, etc.) so
+        that different models with the same prompt never collide.
+        """
         content = {
             "messages": messages,
             "params": kwargs
         }
-        content_str = json.dumps(content, sort_keys=True)
+        content_str = json.dumps(content, sort_keys=True, default=str)
         return hashlib.sha256(content_str.encode()).hexdigest()
 
     def _redis_key(self, key: str) -> str:

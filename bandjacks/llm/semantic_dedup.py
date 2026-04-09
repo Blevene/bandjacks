@@ -378,10 +378,10 @@ class SemanticDeduplicator:
             
             # Merge similar techniques
             if len(similar_techs) > 1:
-                merged = self._merge_similar_techniques(similar_techs)
-                merged_techniques[tid1] = merged
+                merged, primary_key = self._merge_similar_techniques(similar_techs)
+                merged_techniques[primary_key] = merged
                 tech_ids_list = [t[0] for t in similar_techs]
-                logger.info(f"Merged techniques: {tech_ids_list} (semantic similarity)")
+                logger.info(f"Merged techniques: {tech_ids_list} → {primary_key} (semantic similarity)")
             else:
                 merged_techniques[tid1] = techniques[tid1]
             
@@ -445,17 +445,25 @@ class SemanticDeduplicator:
         
         return merged
     
-    def _merge_similar_techniques(self, tech_list: List[Tuple[str, Dict]]) -> Dict:
+    def _merge_similar_techniques(self, tech_list: List[Tuple[str, Dict]]) -> Tuple[Dict, str]:
         """
         Merge similar techniques, combining evidence.
-        
+
         Args:
             tech_list: List of (technique_id, technique_data) tuples
-            
+
         Returns:
-            Merged technique with combined evidence
+            (merged_technique_data, primary_technique_id)
         """
+        # Prefer a non-revoked technique as the primary ID when merging.
+        # Revoked/deprecated IDs should not survive as the representative.
+        from bandjacks.services.technique_cache import technique_cache
         primary_id, primary_data = tech_list[0]
+        for tid, tdata in tech_list:
+            cached = technique_cache.get(tid)
+            if cached and not cached.get("revoked") and not cached.get("deprecated"):
+                primary_id, primary_data = tid, tdata
+                break
         merged = dict(primary_data)
         
         # Combine all evidence
@@ -480,6 +488,6 @@ class SemanticDeduplicator:
         merged["confidence"] = max(t[1].get("confidence", 50) for t in tech_list)
         
         # Track what was merged
-        merged["merged_from"] = [t[0] for t in tech_list[1:]]
-        
-        return merged
+        merged["merged_from"] = [t[0] for t in tech_list if t[0] != primary_id]
+
+        return merged, primary_id

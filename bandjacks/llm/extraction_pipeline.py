@@ -412,12 +412,19 @@ class ExtractionPipeline:
             # Build a lookup from suggestion list for triggered_by / reason
             suggestion_map = {s["technique_id"]: s for s in pending}
 
+            from bandjacks.llm.tools import resolve_technique_by_external_id
+
             for item in results:
                 if not item.get("found"):
                     continue
 
                 tid = item.get("tid", "")
                 if not tid or tid not in suggestion_map:
+                    continue
+
+                # Skip revoked/deprecated techniques
+                if resolve_technique_by_external_id(tid) is None:
+                    logger.debug(f"Targeted extraction: skipping {tid} (not in cache or revoked)")
                     continue
 
                 suggestion = suggestion_map[tid]

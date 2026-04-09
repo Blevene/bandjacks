@@ -275,6 +275,11 @@ def resolve_technique_by_external_id(external_id: str) -> Optional[Dict[str, Any
     # First check the cache for O(1) lookup
     cached_tech = technique_cache.get(external_id)
     if cached_tech:
+        # Skip revoked or deprecated techniques — these are stale IDs
+        # that were replaced by newer technique numbers in ATT&CK.
+        if cached_tech.get("revoked") or cached_tech.get("deprecated"):
+            logger.debug(f"Skipping revoked/deprecated technique: {external_id}")
+            return None
         return {
             "stix_id": cached_tech.get("stix_id"),
             "name": cached_tech.get("name"),
@@ -292,6 +297,8 @@ def resolve_technique_by_external_id(external_id: str) -> Optional[Dict[str, Any
             rec = session.run(
                 """
                 MATCH (ap:AttackPattern {external_id: $ext})
+                WHERE (ap.revoked IS NULL OR ap.revoked = false)
+                  AND (ap.x_mitre_deprecated IS NULL OR ap.x_mitre_deprecated = false)
                 OPTIONAL MATCH (ap)-[:HAS_TACTIC]->(t:Tactic)
                 RETURN ap.stix_id AS stix_id, ap.name AS name, ap.external_id AS external_id,
                        t.shortname AS tactic, ap.description AS description,

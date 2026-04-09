@@ -436,15 +436,26 @@ from bandjacks.llm.tools import resolve_technique_by_external_id
 
 class EvidenceVerifierAgent:
     """Verify evidence quality and semantic relevance."""
-    
+
+    # Default minimum cosine similarity between span text and technique *name*
+    # for a claim to be considered semantically relevant.  Can be overridden
+    # via config["relevance_threshold"].  Cloud models (Gemini, GPT) produce
+    # richer span text that scores higher — use 0.20.  Local/smaller models
+    # produce shorter spans — use 0.10 or lower.
+    DEFAULT_RELEVANCE_THRESHOLD = 0.20
+
     def run(self, mem: WorkingMemory, config: Dict[str, Any]) -> None:
         logger.debug(f"EvidenceVerifierAgent: Starting with {len(mem.claims)} claims")
         valid = []
         rejected = []
         min_quotes = config.get("min_quotes", 2)
+        relevance_threshold = config.get("relevance_threshold", self.DEFAULT_RELEVANCE_THRESHOLD)
         WINDOW = 2
 
-        for claim in mem.claims:
+        # Pre-compute semantic relevance scores for all claims in one batch
+        relevance_scores = self._batch_relevance_scores(mem.claims, config)
+
+        for idx, claim in enumerate(mem.claims):
             # Check technique resolution
             meta = resolve_technique_by_external_id(claim["external_id"])
             if not meta:
@@ -478,29 +489,51 @@ class EvidenceVerifierAgent:
                 claim.get("confidence", 50),
             )
 
+            # Semantic relevance check: does the span text actually describe
+            # the claimed technique?  A low score means the LLM mapped a span
+            # to a technique whose description doesn't match the span content.
+            sem_score = relevance_scores.get(idx, 1.0)
+            if sem_score < relevance_threshold:
+                rejected.append({
+                    "id": claim["external_id"],
+                    "quotes": len(valid_quotes),
+                    "score": evidence_score,
+                    "conf": claim.get("confidence", 0),
+                    "reason": f"semantic_relevance={sem_score:.3f}",
+                })
+                logger.debug(
+                    f"  ✗ Rejected {claim['external_id']}: semantic relevance "
+                    f"{sem_score:.3f} < {relevance_threshold}"
+                )
+                continue
+
             # Accept if meets minimum quality - relaxed constraints
             if len(valid_quotes) >= min_quotes and evidence_score >= 40:
                 claim["quotes"] = valid_quotes
                 claim["line_refs"] = valid_lines
                 claim["evidence_score"] = evidence_score
+                claim["semantic_relevance"] = sem_score
                 claim["technique_meta"] = meta
                 valid.append(claim)
-                logger.debug(f"  ✓ Accepted {claim['external_id']}: {len(valid_quotes)} quotes, score={evidence_score}")
+                logger.debug(f"  ✓ Accepted {claim['external_id']}: {len(valid_quotes)} quotes, score={evidence_score}, rel={sem_score:.3f}")
             elif len(valid_quotes) >= 1 and evidence_score >= 50:  # Relaxed from 60
                 claim["quotes"] = valid_quotes
                 claim["line_refs"] = valid_lines
                 claim["evidence_score"] = evidence_score
+                claim["semantic_relevance"] = sem_score
                 claim["technique_meta"] = meta
                 valid.append(claim)
-                logger.debug(f"  ✓ Accepted (relaxed) {claim['external_id']}: 1 quote, score={evidence_score}")
-            elif claim.get("confidence", 0) >= 80 and len(valid_quotes) >= 1:
-                # High confidence fallback
+                logger.debug(f"  ✓ Accepted (relaxed) {claim['external_id']}: 1 quote, score={evidence_score}, rel={sem_score:.3f}")
+            elif claim.get("confidence", 0) >= 80 and len(valid_quotes) >= 1 and evidence_score >= 30:
+                # High confidence fallback — still require minimal evidence quality
+                # to prevent hallucinated techniques from passing on confidence alone
                 claim["quotes"] = valid_quotes
                 claim["line_refs"] = valid_lines
                 claim["evidence_score"] = evidence_score
+                claim["semantic_relevance"] = sem_score
                 claim["technique_meta"] = meta
                 valid.append(claim)
-                logger.debug(f"  ✓ Accepted (high conf) {claim['external_id']}: conf={claim['confidence']}")
+                logger.debug(f"  ✓ Accepted (high conf) {claim['external_id']}: conf={claim['confidence']}, score={evidence_score}, rel={sem_score:.3f}")
             else:
                 rejected.append({
                     "id": claim['external_id'],
@@ -514,6 +547,84 @@ class EvidenceVerifierAgent:
         if rejected:
             logger.debug(f"  Rejected details: {rejected[:5]}...")  # Show first 5
         mem.claims = valid
+
+    def _batch_relevance_scores(
+        self, claims: list, config: Dict[str, Any]
+    ) -> Dict[int, float]:
+        """Compute semantic relevance between each claim's span text and technique description.
+
+        Returns a dict mapping claim index → cosine similarity (0-1).
+        Scores are computed in a single batch for efficiency.
+        """
+        if config.get("skip_relevance_check", False):
+            return {}  # returns empty → default 1.0 in caller
+
+        try:
+            import numpy as np
+            from bandjacks.loaders.embedder import batch_encode
+            from bandjacks.services.technique_cache import technique_cache
+        except ImportError:
+            logger.warning("Embedder or numpy not available, skipping relevance check")
+            return {}
+
+        try:
+            # Collect (span_text, technique_text) pairs for each claim
+            pairs: list = []  # (claim_idx, span_text, technique_text)
+            for idx, claim in enumerate(claims):
+                span_text = " ".join(claim.get("quotes", []))[:500]
+                if not span_text.strip():
+                    continue
+                tid = claim.get("external_id", "")
+                cached = technique_cache.get(tid)
+                if cached:
+                    # Use technique name only — short keyword-like text gives much
+                    # cleaner separation than name + long description against short
+                    # behavioural span snippets.
+                    tech_text = cached.get("name", tid)
+                else:
+                    tech_text = claim.get("name", tid)
+                if tech_text.strip():
+                    pairs.append((idx, span_text, tech_text))
+
+            if not pairs:
+                return {}
+
+            # Batch encode all texts at once (spans + technique descriptions)
+            span_texts = [p[1] for p in pairs]
+            tech_texts = [p[2] for p in pairs]
+            all_texts = span_texts + tech_texts
+
+            logger.debug(f"Computing semantic relevance for {len(pairs)} claims")
+            embeddings = batch_encode(all_texts)
+
+            # Compute cosine similarity for each pair
+            scores: Dict[int, float] = {}
+            n = len(pairs)
+            for i, (claim_idx, _, _) in enumerate(pairs):
+                span_emb = embeddings[i]
+                tech_emb = embeddings[n + i]
+                if span_emb is None or tech_emb is None:
+                    continue
+                a = np.array(span_emb)
+                b = np.array(tech_emb)
+                denom = np.linalg.norm(a) * np.linalg.norm(b)
+                if denom > 0:
+                    sim = float(np.dot(a, b) / denom)
+                    scores[claim_idx] = sim
+
+            if scores:
+                logger.debug(
+                    f"Semantic relevance: min={min(scores.values()):.3f}, "
+                    f"max={max(scores.values()):.3f}, "
+                    f"mean={sum(scores.values()) / len(scores):.3f}"
+                )
+            else:
+                logger.debug("Semantic relevance: no scores computed")
+            return scores
+
+        except Exception as e:
+            logger.warning(f"Semantic relevance check failed, skipping: {e}")
+            return {}
     
     def _score_evidence(self, quotes: list, lines: list, meta: dict, confidence: int) -> int:
         """Score evidence quality based on multiple factors."""
