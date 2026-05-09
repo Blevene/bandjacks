@@ -66,6 +66,13 @@ def ttx_search_kb(os_url: str, index: str, text: str, top_k: int = 10, kb_types:
         exclude_revoked: When True (default), excludes documents with revoked=True.
             Pass False for migration/audit workflows that need revoked techniques.
 
+            Note: this filter only checks `revoked=True`. The `x_mitre_deprecated`
+            field is in the index mapping but is NOT populated for AttackPattern
+            docs by `attack_upsert.py`, so adding a deprecated clause here would
+            be a no-op. Cache consumers (`technique_cache.is_revoked`) check
+            `revoked OR deprecated` and act as the second layer for the rare
+            deprecated-only case.
+
     Returns:
         List of matching nodes with scores, filtered by kb_type if specified
     """

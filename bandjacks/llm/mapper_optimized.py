@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.client import get_llm_client, record_usage_to_tracker
 from bandjacks.llm.tools import resolve_technique_by_external_id
+from bandjacks.services.api.settings import settings
 from bandjacks.services.technique_cache import technique_cache
 from bandjacks.llm.json_utils import parse_llm_json, validate_and_ensure_claims
 from bandjacks.llm.token_utils import TokenEstimator
@@ -64,13 +65,13 @@ class BatchMapperAgent:
         # Override with config if provided - use mapper_batch_size key for clarity
         batch_size = config.get("mapper_batch_size", config.get("batch_size", default_batch_size))
         
-        # Apply maximum batch size limit from environment.
-        # Default lowered from 25 to 10 in 2026-05: the May diagnostic captured
-        # ~12% of cloud calls returning truncated JSON bodies on big batches
-        # (cloud responses cap at ~800 tokens per the diagnostic handoff doc).
-        # Smaller batches keep responses well below that cap. Override with
-        # MAX_MAPPER_BATCH_SIZE if you trust your model's output budget.
-        max_batch_size = int(os.getenv("MAX_MAPPER_BATCH_SIZE", "10"))
+        # Apply maximum batch size limit. Single source of truth is
+        # `settings.max_mapper_batch_size` (defaulted to 10 for the same
+        # reason: cloud LLM responses cap at ~800 tokens, causing ~12% of
+        # calls to return truncated JSON on bigger batches per the May
+        # diagnostic). MAX_MAPPER_BATCH_SIZE env var still overrides for
+        # operators with larger output budgets.
+        max_batch_size = int(os.getenv("MAX_MAPPER_BATCH_SIZE", str(settings.max_mapper_batch_size)))
         if batch_size > max_batch_size:
             logger.info(f"Capping batch size from {batch_size} to max {max_batch_size}")
             batch_size = max_batch_size
@@ -456,9 +457,14 @@ class BatchMapperAgent:
             min_batch = 3
             max_batch = 10  # Reduced to 10 to prevent timeouts
         
-        # Override with environment variable if set
+        # Override with environment variable if set. The MAX_MAPPER_BATCH_SIZE
+        # env var (or settings.max_mapper_batch_size) is the single source of
+        # truth — see _process_batch above for the same resolution.
         min_batch = int(os.getenv("MIN_BATCH_SIZE", str(min_batch)))
-        max_batch = int(os.getenv("MAX_MAPPER_BATCH_SIZE", str(max_batch)))
+        max_batch = int(os.getenv(
+            "MAX_MAPPER_BATCH_SIZE",
+            str(min(max_batch, settings.max_mapper_batch_size)),
+        ))
         
         optimal_batch_size = max(min_batch, min(optimal_batch_size, max_batch))
         

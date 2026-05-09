@@ -80,8 +80,12 @@ class Settings(BaseSettings):
     max_context_hints: int = 10
     
     # Mapper Batch Size Settings
+    # Lowered max from 25 to 10 in 2026-05: cloud LLM responses cap at ~800
+    # tokens, causing ~12% of BatchMapper calls to return truncated JSON on
+    # bigger batches. Override via MAX_MAPPER_BATCH_SIZE if your model has
+    # a larger output budget. See bandjacks/llm/mapper_optimized.py.
     mapper_batch_size: int = 20  # Default batch size for BatchMapperAgent
-    max_mapper_batch_size: int = 25  # Maximum allowed batch size
+    max_mapper_batch_size: int = 10  # Maximum allowed batch size
     
     # Vector Search Cache Settings
     vector_cache_enabled: bool = True  # Enable vector search caching

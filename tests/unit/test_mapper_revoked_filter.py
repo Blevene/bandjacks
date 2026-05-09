@@ -155,11 +155,45 @@ def test_parse_failure_counted(mock_get_client):
     assert tracker.counters.get("batchmapper_parse_failed") == 1
 
 
-def test_default_max_batch_size_is_ten(monkeypatch):
-    """The default cap dropped from 25 to 10 to limit truncation."""
+@patch("bandjacks.llm.mapper_optimized.get_llm_client")
+def test_max_batch_cap_clamps_actual_batch_size(mock_get_client, monkeypatch):
+    """End-to-end: with 25 spans and MAX_MAPPER_BATCH_SIZE unset, the LLM
+    must receive batches of at most 10 spans (the new default cap)."""
     monkeypatch.delenv("MAX_MAPPER_BATCH_SIZE", raising=False)
-    import os as _os
-    assert _os.getenv("MAX_MAPPER_BATCH_SIZE", "10") == "10"
+    _stub_cache(active=["T1059"], revoked=[])
+
+    captured_batch_sizes = []
+
+    def _capture(messages, **kwargs):
+        # Parse the user message to count spans in this batch
+        user_msg = next(m for m in messages if m["role"] == "user")
+        # The body is "Process these N spans:\n\n[..." — extract N
+        first_line = user_msg["content"].split("\n", 1)[0]
+        # "Process these 10 spans:" -> 10
+        n = int(first_line.split()[2])
+        captured_batch_sizes.append(n)
+        return _llm_response([])
+
+    client = MagicMock()
+    client.call.side_effect = _capture
+    mock_get_client.return_value = client
+
+    mem = WorkingMemory()
+    mem.spans = [{"text": f"span {i}", "line_refs": []} for i in range(25)]
+    mem.candidates = {i: [] for i in range(25)}
+    mem.line_index = []
+
+    BatchMapperAgent().run(
+        mem,
+        # Request batch_size=20 to ensure the cap (not the request) governs.
+        {"mapper_batch_size": 20, "enable_dynamic_batching": False},
+    )
+
+    assert captured_batch_sizes, "BatchMapper should have called the LLM"
+    assert max(captured_batch_sizes) <= 10, (
+        f"All batches must be <=10 (got {captured_batch_sizes}); "
+        f"the MAX_MAPPER_BATCH_SIZE cap is not being enforced."
+    )
 
 
 @patch("bandjacks.llm.agents_v2._call_llm_for_discovery", create=True)
