@@ -254,6 +254,16 @@ class BatchMapperAgent:
                         logger.warning(f"Invalid span ID {span_id} for technique {technique_id}")
                         continue
 
+                    # Defense in depth: drop revoked/deprecated TIDs the LLM
+                    # emitted from training-data memorization despite the
+                    # KNN candidate filter (Patch 1) scrubbing them upstream.
+                    # Unknown TIDs are kept (cache miss != confirmed revoked).
+                    if technique_cache.is_revoked(technique_id):
+                        logger.info(
+                            f"BatchMapper: dropping revoked TID {technique_id} from LLM output (span={span_id})"
+                        )
+                        continue
+
                     # Get span text and line refs for evidence
                     span_data = mem.spans[span_id]
                     span_text = span_data.get("text", "")[:500]
