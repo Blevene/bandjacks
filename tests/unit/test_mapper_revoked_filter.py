@@ -196,46 +196,49 @@ def test_max_batch_cap_clamps_actual_batch_size(mock_get_client, monkeypatch):
     )
 
 
-@patch("bandjacks.llm.agents_v2._call_llm_for_discovery", create=True)
-def test_discovery_agent_drops_revoked(_):
-    """DiscoveryAgent must not append revoked TIDs to mem.candidates.
+@patch("bandjacks.llm.tools.resolve_technique_by_external_id")
+@patch("bandjacks.llm.client.get_llm_client")
+def test_discovery_agent_drops_revoked(mock_get_client, mock_resolve):
+    """DiscoveryAgent.run() must not append revoked TIDs to mem.candidates.
 
-    We simulate the post-LLM portion of DiscoveryAgent.run() by directly
-    invoking the loop body that appends to mem.candidates after the LLM
-    has returned a list of techniques including a revoked one.
+    Drives the real production path: stubs the LLM to emit one revoked + one
+    active TID, runs DiscoveryAgent, asserts only the active one ends up in
+    mem.candidates and that resolve_technique_by_external_id is NOT called
+    for the revoked TID (it should be filtered before resolution).
     """
-    from bandjacks.llm.agents_v2 import TECH_ID_RE
-    from bandjacks.llm.tools import resolve_technique_by_external_id  # noqa: F401
+    from bandjacks.llm.agents_v2 import DiscoveryAgent
 
     _stub_cache(active=["T1059"], revoked=["T1128"])
 
+    client = MagicMock()
+    client.call.return_value = {
+        "content": json.dumps(
+            {"discoveries": [{"span": 0, "techniques": ["T1128", "T1059"]}]}
+        ),
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+        "finish_reason": "stop",
+    }
+    mock_get_client.return_value = client
+    mock_resolve.return_value = {"name": "Active Technique", "tactic": "execution"}
+
     mem = WorkingMemory()
-    mem.spans = [{"text": "x", "line_refs": []}]
+    mem.spans = [{"text": "powershell -enc ...", "line_refs": []}]
+    # Empty candidates so the span qualifies for discovery (line 316-317
+    # of agents_v2.py skips spans that already have >=5 candidates with
+    # any score >0.7).
     mem.candidates = {}
 
-    # This block mirrors the post-LLM loop in DiscoveryAgent.run() (agents_v2.py:413-428)
-    # The filter we add at line 414-area must drop T1128 before the append.
-    techniques = ["T1128", "T1059"]
-    orig_idx = 0
-    mem.candidates.setdefault(orig_idx, [])
-    seen = {c.get("external_id") for c in mem.candidates[orig_idx]}
+    DiscoveryAgent().run(mem, {"max_discovery_per_span": 3})
 
-    for tech_id in techniques[:5]:
-        if not isinstance(tech_id, str) or not TECH_ID_RE.match(tech_id):
-            continue
-        if tech_id in seen:
-            continue
-        if technique_cache.is_revoked(tech_id):
-            continue
-        mem.candidates[orig_idx].append({
-            "external_id": tech_id,
-            "name": tech_id,
-            "score": 0.5,
-            "meta": {},
-            "source": "discovery",
-        })
-        seen.add(tech_id)
-
-    cand_ids = [c["external_id"] for c in mem.candidates[0]]
-    assert "T1059" in cand_ids
-    assert "T1128" not in cand_ids
+    cand_ids = [c["external_id"] for c in mem.candidates.get(0, [])]
+    assert "T1059" in cand_ids, f"active T1059 should be appended; got {cand_ids}"
+    assert "T1128" not in cand_ids, (
+        f"revoked T1128 should be filtered before resolution; got {cand_ids}"
+    )
+    # The resolver should only be called for the active TID — proves the
+    # filter runs *before* resolution.
+    resolved_tids = [call.args[0] for call in mock_resolve.call_args_list]
+    assert "T1128" not in resolved_tids, (
+        "resolve_technique_by_external_id was called for a revoked TID; "
+        "the filter should short-circuit before resolution"
+    )
