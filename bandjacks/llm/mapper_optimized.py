@@ -64,8 +64,13 @@ class BatchMapperAgent:
         # Override with config if provided - use mapper_batch_size key for clarity
         batch_size = config.get("mapper_batch_size", config.get("batch_size", default_batch_size))
         
-        # Apply maximum batch size limit from environment
-        max_batch_size = int(os.getenv("MAX_MAPPER_BATCH_SIZE", "25"))  # Gemini 3 Flash handles 25+ spans per batch
+        # Apply maximum batch size limit from environment.
+        # Default lowered from 25 to 10 in 2026-05: the May diagnostic captured
+        # ~12% of cloud calls returning truncated JSON bodies on big batches
+        # (cloud responses cap at ~800 tokens per the diagnostic handoff doc).
+        # Smaller batches keep responses well below that cap. Override with
+        # MAX_MAPPER_BATCH_SIZE if you trust your model's output budget.
+        max_batch_size = int(os.getenv("MAX_MAPPER_BATCH_SIZE", "10"))
         if batch_size > max_batch_size:
             logger.info(f"Capping batch size from {batch_size} to max {max_batch_size}")
             batch_size = max_batch_size
@@ -196,6 +201,29 @@ class BatchMapperAgent:
             )
             record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
             content = response.get("content", "")
+
+            # Detect truncation by token limit (LiteLLM/OpenAI pass through
+            # finish_reason='length' when max_tokens stops the response).
+            # Truncated bodies usually fail JSON parsing downstream, so we
+            # record both signals so on-call can correlate.
+            finish_reason = response.get("finish_reason", "")
+            if finish_reason == "length":
+                logger.warning(
+                    f"BatchMapper response truncated by token limit "
+                    f"(batch={len(spans_data)} spans, content={len(content)} chars). "
+                    f"Reduce MAX_MAPPER_BATCH_SIZE or raise max_tokens."
+                )
+                if tracker is not None:
+                    tracker.counters["batchmapper_truncated"] = (
+                        tracker.counters.get("batchmapper_truncated", 0) + 1
+                    )
+                    if hasattr(tracker, "log"):
+                        tracker.log(
+                            "warn",
+                            "batchmapper_truncated",
+                            batch_size=len(spans_data),
+                            content_chars=len(content),
+                        )
 
             logger.info(f"BatchMapper LLM response: {len(content)} chars")
             logger.debug(f"BatchMapper raw response preview: {content[:500]}...")
@@ -344,6 +372,17 @@ class BatchMapperAgent:
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error in technique extraction: {e}")
             logger.debug(f"Failed content preview: {content[:200] if content else 'Empty'}")
+            if tracker is not None:
+                tracker.counters["batchmapper_parse_failed"] = (
+                    tracker.counters.get("batchmapper_parse_failed", 0) + 1
+                )
+                if hasattr(tracker, "log"):
+                    tracker.log(
+                        "error",
+                        "batchmapper_parse_failed",
+                        batch_size=len(spans_data),
+                        content_chars=len(content) if content else 0,
+                    )
             return 0
                         
         except Exception as e:

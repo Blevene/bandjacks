@@ -90,6 +90,78 @@ def test_active_tid_kept_when_unknown_to_cache(mock_get_client):
     assert "T1128" not in tids   # revoked dropped
 
 
+@patch("bandjacks.llm.mapper_optimized.get_llm_client")
+def test_truncation_logged_and_counted(mock_get_client, caplog):
+    """finish_reason=length triggers a warning + tracker counter increment."""
+    _stub_cache(active=["T1059"], revoked=[])
+    client = MagicMock()
+    client.call.return_value = {
+        "content": '{"techniques": [{"span": 0, "tid": "T1059", "conf": 80}]}',
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+        "finish_reason": "length",
+    }
+    mock_get_client.return_value = client
+
+    from bandjacks.llm.tracker import ExtractionTracker
+    tracker = ExtractionTracker()
+
+    mem = WorkingMemory()
+    mem.spans = [{"text": "x", "line_refs": []}]
+    mem.candidates = {0: []}
+    mem.line_index = []
+
+    with caplog.at_level("WARNING"):
+        BatchMapperAgent().run(
+            mem,
+            {
+                "mapper_batch_size": 8,
+                "enable_dynamic_batching": False,
+                "_tracker": tracker,
+            },
+        )
+
+    assert any("truncated by token limit" in r.message for r in caplog.records)
+    assert tracker.counters.get("batchmapper_truncated") == 1
+
+
+@patch("bandjacks.llm.mapper_optimized.get_llm_client")
+def test_parse_failure_counted(mock_get_client):
+    """An unparseable response increments the parse-failed counter."""
+    _stub_cache(active=["T1059"], revoked=[])
+    client = MagicMock()
+    client.call.return_value = {
+        "content": '{"techniques": [{"span": 0, "tid": "T1059", "conf": 80',  # truncated, no closing
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+    }
+    mock_get_client.return_value = client
+
+    from bandjacks.llm.tracker import ExtractionTracker
+    tracker = ExtractionTracker()
+
+    mem = WorkingMemory()
+    mem.spans = [{"text": "x", "line_refs": []}]
+    mem.candidates = {0: []}
+    mem.line_index = []
+
+    BatchMapperAgent().run(
+        mem,
+        {
+            "mapper_batch_size": 8,
+            "enable_dynamic_batching": False,
+            "_tracker": tracker,
+        },
+    )
+
+    assert tracker.counters.get("batchmapper_parse_failed") == 1
+
+
+def test_default_max_batch_size_is_ten(monkeypatch):
+    """The default cap dropped from 25 to 10 to limit truncation."""
+    monkeypatch.delenv("MAX_MAPPER_BATCH_SIZE", raising=False)
+    import os as _os
+    assert _os.getenv("MAX_MAPPER_BATCH_SIZE", "10") == "10"
+
+
 @patch("bandjacks.llm.agents_v2._call_llm_for_discovery", create=True)
 def test_discovery_agent_drops_revoked(_):
     """DiscoveryAgent must not append revoked TIDs to mem.candidates.
