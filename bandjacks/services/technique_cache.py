@@ -203,6 +203,34 @@ class TechniqueCache:
         """Get all cached external IDs (for debugging/testing)."""
         return list(self._cache.keys())
 
+    def is_revoked(self, external_id: str) -> bool:
+        """Return True if the technique is revoked or deprecated.
+
+        Returns False for unknown TIDs — callers should treat unknown
+        as "don't filter" rather than "definitely revoked", because the
+        cache may not have loaded yet or may legitimately be missing
+        a freshly-published technique.
+        """
+        tech = self._cache.get(external_id)
+        if not tech:
+            return False
+        return bool(tech.get("revoked") or tech.get("deprecated"))
+
+    def is_active(self, external_id: str) -> bool:
+        """Return True if the technique exists and is not revoked/deprecated."""
+        tech = self._cache.get(external_id)
+        if not tech:
+            return False
+        return not (tech.get("revoked") or tech.get("deprecated"))
+
+    def revoked_ids(self) -> set:
+        """Return the set of all revoked or deprecated external_ids in the cache."""
+        return {
+            tid
+            for tid, tech in self._cache.items()
+            if tech.get("revoked") or tech.get("deprecated")
+        }
+
 
 # Global singleton instance
 technique_cache = TechniqueCache()
