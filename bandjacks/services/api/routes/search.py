@@ -99,7 +99,8 @@ async def search_ttx(q: TtxQuery) -> TtxSearchResponse:
             index=settings.os_index_nodes,
             text=q.text,
             top_k=q.top_k,
-            kb_types=q.kb_types
+            kb_types=q.kb_types,
+            exclude_revoked=q.exclude_revoked,
         )
         
         return TtxSearchResponse(

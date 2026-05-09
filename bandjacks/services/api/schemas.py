@@ -86,6 +86,7 @@ class TtxQuery(BaseModel):
     text: str
     top_k: int = Field(10, ge=1, le=50)
     kb_types: Optional[List[str]] = Field(None, description="Filter by kb_type, e.g., ['AttackPattern'] or ['IntrusionSet','Software']")
+    exclude_revoked: bool = Field(True, description="When True (default), exclude revoked AttackPatterns. Set False for migration/audit queries that need revoked TIDs.")
 
 
 class STIXObject(BaseModel):
