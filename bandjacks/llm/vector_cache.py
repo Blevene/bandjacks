@@ -70,20 +70,27 @@ class VectorSearchCache:
                 self.redis_client = None
                 self.redis_enabled = False
     
+    # Namespace version. Bump when the candidate-list shape or filtering
+    # semantics change (e.g., 2026-05: BatchRetriever started excluding
+    # revoked TIDs at the index layer, so v1 entries were no longer valid).
+    # Pre-existing entries in Redis / L1 are simply ignored after a bump
+    # — they expire naturally via their TTL with no migration needed.
+    _CACHE_NAMESPACE = "v2"
+
     def _make_key(self, text: str, top_k: int, cache_type: str = "result") -> str:
         """Generate cache key from text and parameters.
-        
+
         Args:
             text: The search text
             top_k: Number of results requested
             cache_type: Type of cache entry ("embedding" or "result")
-            
+
         Returns:
             Cache key string
         """
         # Create a hash of the text for the key
         text_hash = hashlib.sha256(text.encode('utf-8')).hexdigest()
-        return f"vector_cache:{cache_type}:{text_hash}:{top_k}"
+        return f"vector_cache:{self._CACHE_NAMESPACE}:{cache_type}:{text_hash}:{top_k}"
     
     def _is_expired(self, timestamp: float) -> bool:
         """Check if a cache entry has expired.
