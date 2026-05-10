@@ -116,7 +116,12 @@ class LLMClient:
         if content is None:
             content = ""
 
-        result = {"content": content, "tool_calls": []}
+        # Propagate finish_reason so consumers can detect truncation
+        # (LiteLLM/OpenAI set this to 'length' when max_tokens stops the response).
+        # Used by BatchMapperAgent to log + count truncations on big batches.
+        finish_reason = getattr(choice, "finish_reason", "") or ""
+
+        result = {"content": content, "tool_calls": [], "finish_reason": finish_reason}
 
         if hasattr(choice.message, 'tool_calls') and choice.message.tool_calls:
             for tool_call in choice.message.tool_calls:

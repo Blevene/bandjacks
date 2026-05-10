@@ -53,13 +53,18 @@ def vector_search_ttx(
         body["kb_types"] = kb_types
 
     try:
-        # Call search function directly to avoid HTTP deadlock
+        # Call search function directly to avoid HTTP deadlock.
+        # Resolver tools should resolve regardless of revocation status —
+        # audit/migration callers (e.g. "what was T1128 before it was revoked?")
+        # need the data. Filtering happens at downstream consumers via
+        # technique_cache.is_revoked() / is_active().
         results = ttx_search_kb(
             os_url=settings.opensearch_url,
             index=settings.os_index_nodes,
             text=text,
             top_k=top_k,
-            kb_types=kb_types
+            kb_types=kb_types,
+            exclude_revoked=False,
         )
         return results
     except Exception as e:

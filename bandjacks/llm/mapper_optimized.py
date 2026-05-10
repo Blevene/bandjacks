@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from bandjacks.llm.memory import WorkingMemory
 from bandjacks.llm.client import get_llm_client, record_usage_to_tracker
 from bandjacks.llm.tools import resolve_technique_by_external_id
+from bandjacks.services.api.settings import settings
 from bandjacks.services.technique_cache import technique_cache
 from bandjacks.llm.json_utils import parse_llm_json, validate_and_ensure_claims
 from bandjacks.llm.token_utils import TokenEstimator
@@ -64,8 +65,13 @@ class BatchMapperAgent:
         # Override with config if provided - use mapper_batch_size key for clarity
         batch_size = config.get("mapper_batch_size", config.get("batch_size", default_batch_size))
         
-        # Apply maximum batch size limit from environment
-        max_batch_size = int(os.getenv("MAX_MAPPER_BATCH_SIZE", "25"))  # Gemini 3 Flash handles 25+ spans per batch
+        # Apply maximum batch size limit. Single source of truth is
+        # `settings.max_mapper_batch_size` (defaulted to 10 for the same
+        # reason: cloud LLM responses cap at ~800 tokens, causing ~12% of
+        # calls to return truncated JSON on bigger batches per the May
+        # diagnostic). MAX_MAPPER_BATCH_SIZE env var still overrides for
+        # operators with larger output budgets.
+        max_batch_size = int(os.getenv("MAX_MAPPER_BATCH_SIZE", str(settings.max_mapper_batch_size)))
         if batch_size > max_batch_size:
             logger.info(f"Capping batch size from {batch_size} to max {max_batch_size}")
             batch_size = max_batch_size
@@ -197,6 +203,29 @@ class BatchMapperAgent:
             record_usage_to_tracker(response, tracker, int((time.time() - _start) * 1000))
             content = response.get("content", "")
 
+            # Detect truncation by token limit (LiteLLM/OpenAI pass through
+            # finish_reason='length' when max_tokens stops the response).
+            # Truncated bodies usually fail JSON parsing downstream, so we
+            # record both signals so on-call can correlate.
+            finish_reason = response.get("finish_reason", "")
+            if finish_reason == "length":
+                logger.warning(
+                    f"BatchMapper response truncated by token limit "
+                    f"(batch={len(spans_data)} spans, content={len(content)} chars). "
+                    f"Reduce MAX_MAPPER_BATCH_SIZE or raise max_tokens."
+                )
+                if tracker is not None:
+                    tracker.counters["batchmapper_truncated"] = (
+                        tracker.counters.get("batchmapper_truncated", 0) + 1
+                    )
+                    if hasattr(tracker, "log"):
+                        tracker.log(
+                            "warn",
+                            "batchmapper_truncated",
+                            batch_size=len(spans_data),
+                            content_chars=len(content),
+                        )
+
             logger.info(f"BatchMapper LLM response: {len(content)} chars")
             logger.debug(f"BatchMapper raw response preview: {content[:500]}...")
         except Exception as e:
@@ -252,6 +281,16 @@ class BatchMapperAgent:
 
                     if span_id < 0 or span_id >= len(mem.spans):
                         logger.warning(f"Invalid span ID {span_id} for technique {technique_id}")
+                        continue
+
+                    # Defense in depth: drop revoked/deprecated TIDs the LLM
+                    # emitted from training-data memorization despite the
+                    # KNN candidate filter (Patch 1) scrubbing them upstream.
+                    # Unknown TIDs are kept (cache miss != confirmed revoked).
+                    if technique_cache.is_revoked(technique_id):
+                        logger.info(
+                            f"BatchMapper: dropping revoked TID {technique_id} from LLM output (span={span_id})"
+                        )
                         continue
 
                     # Get span text and line refs for evidence
@@ -334,6 +373,17 @@ class BatchMapperAgent:
         except json.JSONDecodeError as e:
             logger.error(f"JSON parse error in technique extraction: {e}")
             logger.debug(f"Failed content preview: {content[:200] if content else 'Empty'}")
+            if tracker is not None:
+                tracker.counters["batchmapper_parse_failed"] = (
+                    tracker.counters.get("batchmapper_parse_failed", 0) + 1
+                )
+                if hasattr(tracker, "log"):
+                    tracker.log(
+                        "error",
+                        "batchmapper_parse_failed",
+                        batch_size=len(spans_data),
+                        content_chars=len(content) if content else 0,
+                    )
             return 0
                         
         except Exception as e:
@@ -407,9 +457,14 @@ class BatchMapperAgent:
             min_batch = 3
             max_batch = 10  # Reduced to 10 to prevent timeouts
         
-        # Override with environment variable if set
+        # Override with environment variable if set. The MAX_MAPPER_BATCH_SIZE
+        # env var (or settings.max_mapper_batch_size) is the single source of
+        # truth — see _process_batch above for the same resolution.
         min_batch = int(os.getenv("MIN_BATCH_SIZE", str(min_batch)))
-        max_batch = int(os.getenv("MAX_MAPPER_BATCH_SIZE", str(max_batch)))
+        max_batch = int(os.getenv(
+            "MAX_MAPPER_BATCH_SIZE",
+            str(min(max_batch, settings.max_mapper_batch_size)),
+        ))
         
         optimal_batch_size = max(min_batch, min(optimal_batch_size, max_batch))
         

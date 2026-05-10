@@ -52,7 +52,7 @@ def ttx_search(os_url: str, index: str, text: str, top_k: int = 10):
     return out
 
 
-def ttx_search_kb(os_url: str, index: str, text: str, top_k: int = 10, kb_types: Optional[List[str]] = None, client: Optional[OpenSearch] = None):
+def ttx_search_kb(os_url: str, index: str, text: str, top_k: int = 10, kb_types: Optional[List[str]] = None, client: Optional[OpenSearch] = None, exclude_revoked: bool = True):
     """
     Search for nodes similar to input text using KNN with optional kb_type filtering.
 
@@ -63,6 +63,15 @@ def ttx_search_kb(os_url: str, index: str, text: str, top_k: int = 10, kb_types:
         top_k: Number of results to return
         kb_types: Optional list of kb_types to filter (e.g., ['AttackPattern', 'IntrusionSet'])
         client: Optional pre-existing OpenSearch client to reuse (avoids creating a new one per call)
+        exclude_revoked: When True (default), excludes documents with revoked=True.
+            Pass False for migration/audit workflows that need revoked techniques.
+
+            Note: this filter only checks `revoked=True`. The `x_mitre_deprecated`
+            field is in the index mapping but is NOT populated for AttackPattern
+            docs by `attack_upsert.py`, so adding a deprecated clause here would
+            be a no-op. Cache consumers (`technique_cache.is_revoked`) check
+            `revoked OR deprecated` and act as the second layer for the rare
+            deprecated-only case.
 
     Returns:
         List of matching nodes with scores, filtered by kb_type if specified
@@ -70,21 +79,25 @@ def ttx_search_kb(os_url: str, index: str, text: str, top_k: int = 10, kb_types:
     if client is None:
         client = OpenSearch(os_url, timeout=30)
     qvec = encode(text)
-    
+
     if qvec is None:
         return []
-    
+
     # Fetch extra results to allow for filtering
     fetch_size = max(top_k, 20) if not kb_types else max(top_k * 2, 30)
-    
+
+    must_not = []
+    if exclude_revoked:
+        must_not.append({"term": {"revoked": True}})
+
     body = {
         "size": fetch_size,
         "query": {
-            "knn": {
-                "embedding": {
-                    "vector": qvec,
-                    "k": fetch_size
-                }
+            "bool": {
+                "must": [
+                    {"knn": {"embedding": {"vector": qvec, "k": fetch_size}}}
+                ],
+                "must_not": must_not,
             }
         },
         "_source": ["id", "kb_type", "attack_version", "text", "name", "external_id"]  # Include name and external_id

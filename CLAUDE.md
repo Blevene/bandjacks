@@ -742,7 +742,7 @@ if (useAsync) {
 - **Caching**: Common technique lookups cached for efficiency
 - **Progressive Results**: Techniques displayed as they're found
 - **LLM Cost Tracking**: Every LLM call records tokens and cost via `litellm.completion_cost()`. Per-report costs in extraction metrics, daily aggregates at `GET /v1/costs/stats`
-- **Mapper Batch Size**: `MAX_MAPPER_BATCH_SIZE` env var (default 25) controls spans per LLM call. Higher = fewer calls but larger prompts
+- **Mapper Batch Size**: `MAX_MAPPER_BATCH_SIZE` env var (default 10, mirrored in `settings.max_mapper_batch_size`) controls spans per LLM call. Lowered from 25 to 10 in 2026-05 because cloud LLM responses cap at ~800 tokens and ~12% of bigger-batch calls were returning truncated JSON. Override if your model has a larger output budget
 - **Pre-filter**: Before the LLM mapper, spans are limited to `max_spans_per_technique` (default 2) per candidate technique. Reduces mapper calls ~46% with minimal technique loss. Set to 0 to disable
 - **Span Dedup** (opt-in): `enable_span_dedup: true` in config removes exact-duplicate span text before mapping. Saves ~40% spans but may lose ~15% of techniques. Disabled by default
 

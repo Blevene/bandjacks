@@ -175,16 +175,19 @@ class BatchRetrieverAgent:
             
             # Add index specification
             msearch_body.append({"index": settings.os_index_nodes})
-            
-            # Add search query
+
+            # Add search query — wrap KNN in a bool query so the must_not
+            # clause excludes revoked AttackPatterns at retrieval time.
+            # Mirrors the filter in ttx_search_kb (loaders/search_nodes.py)
+            # so the production extraction path doesn't see revoked candidates.
             msearch_body.append({
                 "size": max(top_k, 20),  # Fetch extra for filtering
                 "query": {
-                    "knn": {
-                        "embedding": {
-                            "vector": vec,
-                            "k": max(top_k, 20)
-                        }
+                    "bool": {
+                        "must": [
+                            {"knn": {"embedding": {"vector": vec, "k": max(top_k, 20)}}}
+                        ],
+                        "must_not": [{"term": {"revoked": True}}],
                     }
                 },
                 "_source": ["id", "stix_id", "external_id", "name", "kb_type", "attack_version", "text"]

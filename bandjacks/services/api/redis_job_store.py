@@ -541,7 +541,11 @@ class RedisJobStore:
                     if status == "processing":
                         claimed_at = job.get("claimed_at")
                         if claimed_at:
-                            claimed_time = datetime.fromisoformat(claimed_at)
+                            # Strip trailing 'Z' so fromisoformat returns a naive
+                            # datetime that matches utcnow() below. Python 3.11+
+                            # parses 'Z' as tz-aware, which TypeErrors when
+                            # subtracted from a naive utcnow().
+                            claimed_time = datetime.fromisoformat(claimed_at.rstrip("Z"))
                             elapsed = (datetime.utcnow() - claimed_time).total_seconds()
                             
                             # Reclaim if older than heartbeat TTL * 2
@@ -682,7 +686,10 @@ class RedisJobStore:
             
             job = self.get(job_id)
             if job and job.get("completed_at"):
-                completed_time = datetime.fromisoformat(job["completed_at"])
+                # Same Z-suffix fix as in the recovery loop (line 544): keep
+                # the parsed datetime naive so .timestamp() doesn't apply a
+                # spurious tz offset.
+                completed_time = datetime.fromisoformat(job["completed_at"].rstrip("Z"))
                 if completed_time.timestamp() < cutoff:
                     # Delete job
                     job_key = f"{self.JOB_PREFIX}{job_id}"

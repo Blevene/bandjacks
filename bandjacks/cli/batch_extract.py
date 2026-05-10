@@ -577,18 +577,13 @@ class BatchExtractor:
             print(f"🌐 Using API at {self.api_url}")
             
             async def process_all():
-                tasks = []
-                for file_path in file_paths:
-                    task = self.process_file_api_async(file_path)
-                    tasks.append(task)
-                
                 # Process with limited concurrency
                 sem = asyncio.Semaphore(self.workers)
-                
+
                 async def process_with_sem(file_path):
                     async with sem:
                         return await self.process_file_api_async(file_path)
-                
+
                 tasks = [process_with_sem(fp) for fp in file_paths]
                 return await asyncio.gather(*tasks)
             

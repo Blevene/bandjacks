@@ -415,6 +415,13 @@ class DiscoveryAgent:
                         continue
                     if tech_id in seen:
                         continue
+                    # Drop revoked/deprecated TIDs before resolving — keeps
+                    # them out of mem.candidates (and out of any downstream
+                    # mapper prompt that draws from candidates).
+                    from bandjacks.services.technique_cache import technique_cache
+                    if technique_cache.is_revoked(tech_id):
+                        logger.debug(f"DiscoveryAgent: skipping revoked TID {tech_id}")
+                        continue
 
                     meta = resolve_technique_by_external_id(tech_id)
                     mem.candidates[orig_idx].append({

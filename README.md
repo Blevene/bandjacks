@@ -396,7 +396,7 @@ The extraction pipeline uses 9 specialized agents in sequence:
 - Single batch call for all low-confidence spans
 
 #### 6. **BatchMapperAgent** - Technique Mapping (LLM)
-- Batch processes spans in groups of up to 25 (`MAX_MAPPER_BATCH_SIZE`)
+- Batch processes spans in groups of up to 10 (`MAX_MAPPER_BATCH_SIZE`, default lowered from 25 in 2026-05 to limit cloud-LLM truncation)
 - Extracts ALL relevant techniques per span with confidence scores
 - Uses JSON schema validation for structured output
 
@@ -1065,7 +1065,7 @@ The extraction pipeline tracks LLM costs via `litellm.completion_cost()` with pe
 
 | Option | Default | Effect | Quality Impact |
 |--------|---------|--------|----------------|
-| `MAX_MAPPER_BATCH_SIZE` (env var) | 25 | Spans per LLM mapper call | None |
+| `MAX_MAPPER_BATCH_SIZE` (env var) | 10 | Spans per LLM mapper call (lowered from 25 in 2026-05; cloud responses cap at ~800 tokens, ~12% of larger batches were returning truncated JSON) | None |
 | `max_spans_per_technique` (config) | 2 | Pre-filter: best N spans per candidate technique | ~19% fewer techniques, higher confidence |
 | `enable_span_dedup` (config) | false | Remove duplicate span text before mapping | ~15% fewer techniques |
 
