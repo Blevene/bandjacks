@@ -756,8 +756,19 @@ config = {
     "skip_entity_extraction": False,  # Skip entity extraction phase
     "disable_discovery": False,       # Skip LLM discovery for low-confidence spans
     "skip_verification": False,       # Skip evidence verification
+    "replace_revoked": False,         # Remap revoked TIDs to their REVOKED_BY successor instead of dropping (default=False)
 }
 ```
+
+### Revoked-TID Handling
+
+Bandjacks runs a three-layer defense against revoked/deprecated MITRE TIDs reaching the graph:
+
+1. **KNN candidate filter** (`bandjacks/loaders/search_nodes.py:ttx_search_kb`, `bandjacks/llm/batch_retriever.py`): both retrieval paths apply `must_not: revoked=True` against the OpenSearch index, so the LLM never sees revoked AttackPatterns as candidates.
+2. **Defense-in-depth post-LLM filter** (`bandjacks/llm/mapper_optimized.py`, `bandjacks/llm/agents_v2.py`): `BatchMapperAgent` and `DiscoveryAgent` consult `technique_cache.is_revoked()` on each emitted TID and either drop it or, when `config.replace_revoked=True`, remap to the active successor via `technique_cache.replacement_for()`.
+3. **Vector-cache namespace** (`bandjacks/llm/vector_cache.py:_CACHE_NAMESPACE`): bumped to `v2` when filter semantics change, so post-fix lookups can't read pre-fix cached candidate lists. Bump again on any future filter-semantics change.
+
+`replace_revoked` requires the STIX upsert to have run with `revoked-by` relationship support (added 2026-05). Existing deploys must re-run `POST /v1/stix/load/attack` to populate `REVOKED_BY` edges in Neo4j; the upsert is idempotent. Verify via Cypher: `MATCH ()-[r:REVOKED_BY]->() RETURN count(r)` should return ~157 for enterprise-attack v19.
 
 ## Important Notes
 
