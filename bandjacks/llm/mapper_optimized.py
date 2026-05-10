@@ -283,15 +283,30 @@ class BatchMapperAgent:
                         logger.warning(f"Invalid span ID {span_id} for technique {technique_id}")
                         continue
 
-                    # Defense in depth: drop revoked/deprecated TIDs the LLM
+                    # Defense in depth: handle revoked/deprecated TIDs the LLM
                     # emitted from training-data memorization despite the
-                    # KNN candidate filter (Patch 1) scrubbing them upstream.
+                    # KNN candidate filter scrubbing them upstream.
                     # Unknown TIDs are kept (cache miss != confirmed revoked).
                     if technique_cache.is_revoked(technique_id):
-                        logger.info(
-                            f"BatchMapper: dropping revoked TID {technique_id} from LLM output (span={span_id})"
+                        replacement = (
+                            technique_cache.replacement_for(technique_id)
+                            if config.get("replace_revoked", False)
+                            else None
                         )
-                        continue
+                        if replacement:
+                            logger.info(
+                                f"BatchMapper: remapping revoked TID {technique_id} -> {replacement} (span={span_id})"
+                            )
+                            if tracker is not None:
+                                tracker.counters["batchmapper_remapped"] = (
+                                    tracker.counters.get("batchmapper_remapped", 0) + 1
+                                )
+                            technique_id = replacement
+                        else:
+                            logger.info(
+                                f"BatchMapper: dropping revoked TID {technique_id} from LLM output (span={span_id})"
+                            )
+                            continue
 
                     # Get span text and line refs for evidence
                     span_data = mem.spans[span_id]

@@ -415,13 +415,27 @@ class DiscoveryAgent:
                         continue
                     if tech_id in seen:
                         continue
-                    # Drop revoked/deprecated TIDs before resolving — keeps
-                    # them out of mem.candidates (and out of any downstream
-                    # mapper prompt that draws from candidates).
+                    # Handle revoked/deprecated TIDs before resolving — keeps
+                    # them out of mem.candidates. When `replace_revoked` is
+                    # set, walk the REVOKED_BY chain to an active successor
+                    # instead of dropping.
                     from bandjacks.services.technique_cache import technique_cache
                     if technique_cache.is_revoked(tech_id):
-                        logger.debug(f"DiscoveryAgent: skipping revoked TID {tech_id}")
-                        continue
+                        replacement = (
+                            technique_cache.replacement_for(tech_id)
+                            if config.get("replace_revoked", False)
+                            else None
+                        )
+                        if replacement:
+                            logger.debug(
+                                f"DiscoveryAgent: remapping revoked TID {tech_id} -> {replacement}"
+                            )
+                            tech_id = replacement
+                            if tech_id in seen:
+                                continue  # Successor already a candidate
+                        else:
+                            logger.debug(f"DiscoveryAgent: skipping revoked TID {tech_id}")
+                            continue
 
                     meta = resolve_technique_by_external_id(tech_id)
                     mem.candidates[orig_idx].append({
