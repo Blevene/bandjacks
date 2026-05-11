@@ -60,6 +60,7 @@ class IngestRequest(BaseModel):
     name: Optional[str] = Field(None, description="Report name")
     use_batch_mapper: bool = Field(True, description="Use batch mapper for extraction")
     skip_verification: bool = Field(False, description="Skip verification")
+    replace_revoked: bool = Field(False, description="Remap revoked MITRE TIDs to their REVOKED_BY successor instead of dropping. Requires the STIX bundle to have been re-loaded since 2026-05 so REVOKED_BY edges exist in Neo4j.")
     webhook_url: Optional[str] = Field(None, description="Webhook URL for async notifications")
 
 
@@ -320,6 +321,7 @@ async def ingest_report(request: IngestRequest):
         config={
             "use_batch_mapper": request.use_batch_mapper,
             "skip_verification": request.skip_verification,
+            "replace_revoked": request.replace_revoked,
             "auto_generate_flow": True,
             "webhook_url": request.webhook_url,
         },
@@ -342,7 +344,8 @@ async def ingest_report(request: IngestRequest):
 async def ingest_report_upload(
     file: UploadFile = File(...),
     use_batch_mapper: bool = Form(True),
-    skip_verification: bool = Form(False)
+    skip_verification: bool = Form(False),
+    replace_revoked: bool = Form(False),
 ):
     """Synchronous report ingestion from file upload.
 
@@ -392,6 +395,7 @@ async def ingest_report_upload(
         config={
             "use_batch_mapper": use_batch_mapper,
             "skip_verification": skip_verification,
+            "replace_revoked": replace_revoked,
             "auto_generate_flow": True,
         },
     )
@@ -460,6 +464,7 @@ async def ingest_report_async(request: IngestRequest):
         config={
             "use_batch_mapper": request.use_batch_mapper,
             "skip_verification": request.skip_verification,
+            "replace_revoked": request.replace_revoked,
             "auto_generate_flow": True,
             "webhook_url": request.webhook_url
         }
@@ -484,6 +489,7 @@ async def ingest_file_async(
     file: UploadFile = File(...),
     use_batch_mapper: bool = Form(True),
     skip_verification: bool = Form(False),
+    replace_revoked: bool = Form(False),
     auto_generate_flow: bool = Form(True),
     webhook_url: Optional[str] = Form(None)
 ):
@@ -543,6 +549,7 @@ async def ingest_file_async(
         config={
             "use_batch_mapper": use_batch_mapper,
             "skip_verification": skip_verification,
+            "replace_revoked": replace_revoked,
             "auto_generate_flow": auto_generate_flow,
             "webhook_url": webhook_url
         },

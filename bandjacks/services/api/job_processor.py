@@ -495,6 +495,7 @@ class JobProcessor:
                 "use_batch_mapper": True,
                 "use_batch_retriever": True,
                 "skip_verification": config.get("skip_verification", False),
+                "replace_revoked": config.get("replace_revoked", False),
                 "max_spans": 30,  # Increased for better coverage
                 "disable_discovery": False,
                 "disable_targeted_extraction": True,
@@ -557,6 +558,7 @@ class JobProcessor:
                 "use_batch_mapper": True,
                 "use_batch_retriever": True,
                 "skip_verification": config.get("skip_verification", False),
+                "replace_revoked": config.get("replace_revoked", False),
                 "disable_discovery": False,
                 "disable_targeted_extraction": True,
                 "max_spans": spans_per_chunk,  # Dynamic spans per chunk
