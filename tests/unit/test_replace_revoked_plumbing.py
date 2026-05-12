@@ -26,54 +26,47 @@ def test_ingest_request_openapi_documents_replace_revoked():
     schema = IngestRequest.model_json_schema()
     assert "replace_revoked" in schema["properties"]
     descr = schema["properties"]["replace_revoked"].get("description", "")
-    # Anchor on REVOKED_BY so a future doc change can't silently drop the
-    # operational note about re-running the STIX load.
+    # Anchor on BOTH the REVOKED_BY relationship name AND the "re-loaded"
+    # instruction. A doc rewrite that drops the operational requirement
+    # (re-run POST /v1/stix/load/attack) while keeping the relationship
+    # name would silently pass on the single anchor — pin both.
     assert "REVOKED_BY" in descr
+    assert "re-loaded" in descr
 
 
-def test_job_processor_forwards_replace_revoked_in_extraction_config(monkeypatch):
-    """The extraction_config dict (passed to OptimizedChunkedExtractor) must
-    carry replace_revoked. Build the dict the same way job_processor does at
-    lines 494 and 557 and assert the key is present and forwarded from the
-    incoming job config (not silently defaulted)."""
-    from bandjacks.services.api.settings import settings
+def test_pass_through_config_forwards_replace_revoked_true():
+    """The helper used by both _process_job paths must forward replace_revoked
+    from the incoming job config. Calls real production code instead of
+    mirroring the dict literal — a refactor that drops the key from
+    job_processor.py will now fail this test."""
+    from bandjacks.services.api.job_processor import _build_pass_through_config
 
-    # Simulate the job config the route would have built.
-    job_config = {
+    out = _build_pass_through_config({
         "use_batch_mapper": True,
         "skip_verification": False,
         "replace_revoked": True,
         "auto_generate_flow": True,
-    }
-
-    # Mirror the extraction_config construction at job_processor.py:494
-    extraction_config = {
-        "use_batch_mapper": True,
-        "use_batch_retriever": True,
-        "skip_verification": job_config.get("skip_verification", False),
-        "replace_revoked": job_config.get("replace_revoked", False),
-        "max_spans": 30,
-        "disable_discovery": False,
-        "disable_targeted_extraction": True,
-        "use_entity_claims": settings.use_entity_claims,
-        "mapper_batch_size": min(settings.mapper_batch_size, settings.max_mapper_batch_size),
-        "enable_sentence_evidence": settings.enable_sentence_evidence,
-        "context_sentences": settings.context_sentences,
-    }
-    assert extraction_config["replace_revoked"] is True
-
-    # And mirror chunk_config at job_processor.py:557
-    chunk_config = {
-        "use_batch_mapper": True,
-        "use_batch_retriever": True,
-        "skip_verification": job_config.get("skip_verification", False),
-        "replace_revoked": job_config.get("replace_revoked", False),
-    }
-    assert chunk_config["replace_revoked"] is True
+    })
+    assert out["replace_revoked"] is True
+    assert out["skip_verification"] is False
 
 
-def test_job_processor_default_when_request_omits_flag():
-    """A job whose config dict has no replace_revoked key must default to False,
+def test_pass_through_config_default_when_request_omits_flag():
+    """A job config dict with no replace_revoked key must default to False,
     not raise KeyError. Pins the drop-by-default invariant."""
-    job_config = {"use_batch_mapper": True, "skip_verification": False}
-    assert job_config.get("replace_revoked", False) is False
+    from bandjacks.services.api.job_processor import _build_pass_through_config
+
+    out = _build_pass_through_config({"use_batch_mapper": True})
+    assert out["replace_revoked"] is False
+    assert out["skip_verification"] is False
+
+
+def test_pass_through_config_round_trip_skip_verification():
+    """Both pass-through keys should round-trip independently."""
+    from bandjacks.services.api.job_processor import _build_pass_through_config
+
+    out = _build_pass_through_config({
+        "skip_verification": True,
+        "replace_revoked": False,
+    })
+    assert out == {"skip_verification": True, "replace_revoked": False}

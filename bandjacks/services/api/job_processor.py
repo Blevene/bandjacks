@@ -21,6 +21,20 @@ from bandjacks.services.api.settings import settings
 logger = logging.getLogger(__name__)
 
 
+def _build_pass_through_config(job_config: dict) -> dict:
+    """Extract the keys that pass through from the job-level config into
+    the per-extraction config dicts (extraction_config and chunk_config).
+
+    Centralizing forwarding here makes it testable in isolation without
+    spinning up Redis or a real job — and ensures both code paths in
+    _process_job stay in sync if a new pass-through key is added.
+    """
+    return {
+        "skip_verification": job_config.get("skip_verification", False),
+        "replace_revoked": job_config.get("replace_revoked", False),
+    }
+
+
 class JobProcessor:
     """Processes queued jobs asynchronously in the background."""
     
@@ -494,8 +508,7 @@ class JobProcessor:
             extraction_config = {
                 "use_batch_mapper": True,
                 "use_batch_retriever": True,
-                "skip_verification": config.get("skip_verification", False),
-                "replace_revoked": config.get("replace_revoked", False),
+                **_build_pass_through_config(config),
                 "max_spans": 30,  # Increased for better coverage
                 "disable_discovery": False,
                 "disable_targeted_extraction": True,
@@ -557,8 +570,7 @@ class JobProcessor:
             chunk_config = {
                 "use_batch_mapper": True,
                 "use_batch_retriever": True,
-                "skip_verification": config.get("skip_verification", False),
-                "replace_revoked": config.get("replace_revoked", False),
+                **_build_pass_through_config(config),
                 "disable_discovery": False,
                 "disable_targeted_extraction": True,
                 "max_spans": spans_per_chunk,  # Dynamic spans per chunk

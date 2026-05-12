@@ -345,7 +345,10 @@ async def ingest_report_upload(
     file: UploadFile = File(...),
     use_batch_mapper: bool = Form(True),
     skip_verification: bool = Form(False),
-    replace_revoked: bool = Form(False),
+    replace_revoked: bool = Form(
+        False,
+        description="Remap revoked MITRE TIDs to their REVOKED_BY successor instead of dropping. Requires the STIX bundle to have been re-loaded since 2026-05 so REVOKED_BY edges exist in Neo4j.",
+    ),
 ):
     """Synchronous report ingestion from file upload.
 
@@ -489,7 +492,10 @@ async def ingest_file_async(
     file: UploadFile = File(...),
     use_batch_mapper: bool = Form(True),
     skip_verification: bool = Form(False),
-    replace_revoked: bool = Form(False),
+    replace_revoked: bool = Form(
+        False,
+        description="Remap revoked MITRE TIDs to their REVOKED_BY successor instead of dropping. Requires the STIX bundle to have been re-loaded since 2026-05 so REVOKED_BY edges exist in Neo4j.",
+    ),
     auto_generate_flow: bool = Form(True),
     webhook_url: Optional[str] = Form(None)
 ):
