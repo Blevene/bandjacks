@@ -13,19 +13,30 @@ from bandjacks.llm.memory import WorkingMemory
 from bandjacks.services.technique_cache import technique_cache
 
 
-def _stub_cache(active=(), revoked=()):
+def _stub_cache(active=(), revoked=(), revoked_with_replacement=()):
+    """Seed the cache. revoked_with_replacement is a list of (revoked_tid, replacement_tid) pairs.
+    The replacement_tid must also appear in `active` for the chain to walk."""
     technique_cache._cache.clear()
     for tid in active:
         technique_cache._cache[tid] = {
             "external_id": tid, "name": tid, "description": "",
             "is_subtechnique": False, "platforms": [], "tactics": [],
             "tactic": None, "revoked": False, "deprecated": False,
+            "replacement": None,
         }
     for tid in revoked:
         technique_cache._cache[tid] = {
             "external_id": tid, "name": tid, "description": "",
             "is_subtechnique": False, "platforms": [], "tactics": [],
             "tactic": None, "revoked": True, "deprecated": False,
+            "replacement": None,
+        }
+    for revoked_tid, replacement_tid in revoked_with_replacement:
+        technique_cache._cache[revoked_tid] = {
+            "external_id": revoked_tid, "name": revoked_tid, "description": "",
+            "is_subtechnique": False, "platforms": [], "tactics": [],
+            "tactic": None, "revoked": True, "deprecated": False,
+            "replacement": replacement_tid,
         }
     technique_cache._loaded = True
 

@@ -128,16 +128,47 @@ def main():
     ap.add_argument("--strip-revoked", action="store_true",
                     help="Simulate post-patch behavior by dropping revoked "
                          "TIDs from predictions before scoring/counting.")
+    ap.add_argument("--replace-revoked", type=Path, default=None,
+                    help="Path to a JSON object mapping revoked TID -> "
+                         "replacement TID. When supplied, predicted revoked "
+                         "TIDs are rewritten to their replacement before "
+                         "scoring (mutually exclusive with --strip-revoked). "
+                         "Generate via: python -c 'import json; from "
+                         "bandjacks.services.technique_cache import "
+                         "technique_cache; technique_cache.load_from_neo4j(...); "
+                         "json.dump({t: technique_cache.replacement_for(t) "
+                         "for t in technique_cache.revoked_ids() "
+                         "if technique_cache.replacement_for(t)}, ...)'")
     ap.add_argument("--out", required=True, type=Path)
     args = ap.parse_args()
 
     revoked_set = set(json.loads(args.revoked.read_text()))
 
+    if args.strip_revoked and args.replace_revoked:
+        ap.error("--strip-revoked and --replace-revoked are mutually exclusive")
+
+    replacement_map = {}
+    if args.replace_revoked:
+        replacement_map = json.loads(args.replace_revoked.read_text())
+
     pred = list(extract_predicted_pairs(load_jsonl(args.captured)))
     pred_total = len(pred)
     pred_revoked = [(co, sid, tid) for co, sid, tid in pred if tid in revoked_set]
 
-    if args.strip_revoked:
+    remapped_count = 0
+    if args.replace_revoked:
+        rewritten = []
+        for co, sid, tid in pred:
+            if tid in revoked_set:
+                replacement = replacement_map.get(tid)
+                if replacement:
+                    rewritten.append((co, sid, replacement))
+                    remapped_count += 1
+                # else: drop (no successor)
+            else:
+                rewritten.append((co, sid, tid))
+        pred_for_scoring = rewritten
+    elif args.strip_revoked:
         pred_for_scoring = [t for t in pred if t[2] not in revoked_set]
     else:
         pred_for_scoring = pred
@@ -149,6 +180,9 @@ def main():
         "predictions_revoked": len(pred_revoked),
         "predictions_after_strip": len(pred_for_scoring),
         "strip_revoked": args.strip_revoked,
+        "replace_revoked": bool(args.replace_revoked),
+        "remapped_count": remapped_count,
+        "replacement_map_size": len(replacement_map),
         "top_revoked_emitted": _top_n(pred_revoked, key=lambda t: t[2], n=10),
     }
 

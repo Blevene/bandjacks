@@ -488,6 +488,24 @@ def upsert_to_graph_and_vectors(
                     "text": txt,
                 })
 
+            elif rtype == "revoked-by":
+                # Bridge revoked AttackPatterns to their successor so post-LLM
+                # remap can preserve signal instead of dropping. Only meaningful
+                # between AttackPatterns; intrusion-set/software revocations
+                # are out of scope here.
+                s.run(
+                    """
+                    MATCH (src:AttackPattern {stix_id:$src})
+                    MATCH (tgt:AttackPattern {stix_id:$tgt})
+                    MERGE (src)-[r:REVOKED_BY]->(tgt)
+                    SET r.modified=$modified, r.source_collection=$collection,
+                        r.source_version=$version
+                    """,
+                    src=src, tgt=tgt,
+                    modified=r.get("modified", ""),
+                    collection=collection, version=version,
+                )
+
             # IMPLIES_TECHNIQUE is our derived edge from Software→Technique (optional)
             elif rtype in ("uses-against", "delivers", "drops"):  # rare; keep for future
                 pass

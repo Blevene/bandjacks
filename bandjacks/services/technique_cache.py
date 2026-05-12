@@ -93,11 +93,14 @@ class TechniqueCache:
             
             with driver.session() as session:
                 # Query all AttackPattern nodes with their tactics
+                # and (where present) their revoked-by replacement.
                 result = session.run("""
                     MATCH (ap:AttackPattern)
                     WHERE ap.external_id IS NOT NULL
                     OPTIONAL MATCH (ap)-[:HAS_TACTIC]->(t:Tactic)
-                    WITH ap, collect(DISTINCT t.shortname) as tactics
+                    OPTIONAL MATCH (ap)-[:REVOKED_BY]->(repl:AttackPattern)
+                    WITH ap, collect(DISTINCT t.shortname) as tactics,
+                         head(collect(DISTINCT repl.external_id)) as replacement
                     RETURN
                         ap.external_id as external_id,
                         ap.stix_id as stix_id,
@@ -107,7 +110,8 @@ class TechniqueCache:
                         ap.x_mitre_platforms as platforms,
                         ap.revoked as revoked,
                         ap.x_mitre_deprecated as deprecated,
-                        tactics
+                        tactics,
+                        replacement
                     ORDER BY ap.external_id
                 """)
                 
@@ -130,6 +134,7 @@ class TechniqueCache:
                             "tactic": record["tactics"][0] if record["tactics"] else None,  # Primary tactic
                             "revoked": record["revoked"] or False,
                             "deprecated": record["deprecated"] or False,
+                            "replacement": record["replacement"],  # Optional[str] external_id
                         }
                         count += 1
                     
@@ -230,6 +235,37 @@ class TechniqueCache:
             for tid, tech in self._cache.items()
             if tech.get("revoked") or tech.get("deprecated")
         }
+
+    def replacement_for(self, external_id: str) -> Optional[str]:
+        """Return the active replacement for a revoked TID, walking the chain.
+
+        Walks REVOKED_BY edges (loaded as `replacement` on each cache entry)
+        until reaching an active technique or a dead end. Returns:
+          - the active replacement's external_id, OR
+          - None if there is no replacement, the chain dead-ends in another
+            revoked TID with no successor, or a cycle is detected.
+
+        Returning None for the input itself when it is already active is
+        intentional — callers should check `is_revoked()` first; this method
+        only resolves successors.
+        """
+        seen = set()
+        current = external_id
+        while current and current not in seen:
+            seen.add(current)
+            tech = self._cache.get(current)
+            if not tech:
+                return None
+            if not (tech.get("revoked") or tech.get("deprecated")):
+                # Reached an active technique. Only return it if we walked
+                # at least one step — caller asked about a revoked input.
+                return current if current != external_id else None
+            replacement = tech.get("replacement")
+            if not replacement:
+                return None
+            current = replacement
+        # Hit a cycle (current already in seen) — give up.
+        return None
 
 
 # Global singleton instance
