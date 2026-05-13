@@ -175,9 +175,15 @@ class LLMClient:
         return {k: v for k, v in result.items() if k != "usage"}
 
     def _should_retry(self, exception):
-        """Determine if we should retry based on the exception."""
-        # Check for specific error codes
-        error_str = str(exception)
+        """Determine if we should retry based on the exception.
+
+        Walks tenacity RetryError wrapping and the __cause__/__context__
+        chain so that an inner 503/timeout/etc. is still recognized after
+        the inner @retry decorator gives up and re-raises as
+        ``RetryError[<Future ... raised ServiceUnavailableError>]``. Without
+        this walk, fallback-on-503 never fires for inner-retry-exhausted
+        failures because the wrapper's str() doesn't contain "503".
+        """
         retryable_errors = [
             "503",  # Service Unavailable
             "429",  # Too Many Requests
@@ -187,7 +193,26 @@ class LLMClient:
             "timeout",  # Timeout
             "connection",  # Connection error
         ]
-        return any(err in error_str.lower() for err in retryable_errors)
+        seen: set[int] = set()
+        err = exception
+        while err is not None and id(err) not in seen:
+            seen.add(id(err))
+            if any(k in str(err).lower() for k in retryable_errors):
+                return True
+            # tenacity.RetryError stores the inner failure on `last_attempt`
+            # (a Future); .exception() pulls it out. Falls back to standard
+            # Python exception chaining (__cause__/__context__).
+            inner = None
+            last_attempt = getattr(err, "last_attempt", None)
+            if last_attempt is not None:
+                try:
+                    inner = last_attempt.exception()
+                except Exception:
+                    inner = None
+            if inner is None:
+                inner = getattr(err, "__cause__", None) or getattr(err, "__context__", None)
+            err = inner
+        return False
     
     def call(
         self,
