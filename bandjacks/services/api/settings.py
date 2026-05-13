@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     google_api_key: str = ""
     openai_model: str = "gpt-5"  # OpenAI model (backup)
-    google_model: str = "gemini-2.5-flash"  # Primary Google model
+    google_model: str = "gemini-flash-latest"  # Primary Google model
     primary_llm: str = "gemini"  # Use Gemini as primary
 
     # Local OpenAI-compatible API (e.g., vLLM, llama.cpp, Ollama, LocalAI, LM Studio)

@@ -349,7 +349,7 @@ def document(ctx, file_path, confidence_threshold, show_evidence):
             from bandjacks.llm.stix_builder import STIXBuilder
             
             # Initialize processor
-            processor = LLMProcessor(model_name="gemini/gemini-2.0-flash-exp")
+            processor = LLMProcessor(model_name="gemini/gemini-flash-latest")
             
             # Read file
             with open(file_path, 'r') as f:

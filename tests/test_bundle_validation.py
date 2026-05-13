@@ -126,7 +126,7 @@ def test_agentic_v2_bundle():
         "neo4j_password": "password",
         "title": "Test Report",
         "url": "https://example.com/report",
-        "model": "gemini/gemini-2.5-flash",
+        "model": "gemini/gemini-flash-latest",
         "build_flow": False
     }
     

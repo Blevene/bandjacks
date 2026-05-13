@@ -77,7 +77,7 @@ def mock_llm_client():
                 "rationale_summary": "Evidence shows spearphishing typically precedes command execution in attack sequences."
             })
         }
-        mock_instance.model = "gemini/gemini-2.5-flash"
+        mock_instance.model = "gemini/gemini-flash-latest"
         
         yield mock_instance
 
@@ -86,7 +86,7 @@ def test_judge_config_defaults():
     """Test default configuration values."""
     config = JudgeConfig()
     
-    assert config.model_name == "gemini/gemini-2.5-flash"
+    assert config.model_name == "gemini/gemini-flash-latest"
     assert config.fallback_model == "gpt-4o-mini"
     assert config.temperature == 0.1
     assert config.require_evidence_citations == True
@@ -111,7 +111,7 @@ def test_judge_verdict_creation():
         confidence=0.85,
         evidence_ids=["evidence-1"],
         rationale_summary="Clear temporal sequence in evidence.",
-        model_name="gemini/gemini-2.5-flash"
+        model_name="gemini/gemini-flash-latest"
     )
     
     assert verdict.verdict == VerdictType.FORWARD
@@ -270,7 +270,7 @@ def test_judgment_with_fallback_model(sample_evidence_pack):
     with patch('bandjacks.llm.judge_client.LLMClient') as mock_client_class:
         mock_client = Mock()
         mock_client_class.return_value = mock_client
-        mock_client.model = "gemini/gemini-2.5-flash"
+        mock_client.model = "gemini/gemini-flash-latest"
         
         # First call fails, second succeeds
         mock_client.call.side_effect = [

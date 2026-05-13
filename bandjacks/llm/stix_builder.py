@@ -486,7 +486,7 @@ class STIXBuilder:
             "extraction": {
                 "timestamp": extraction_metadata.get("timestamp"),
                 "method": extraction_metadata.get("method", "llm"),
-                "model": extraction_metadata.get("model", "gemini-2.5-flash"),
+                "model": extraction_metadata.get("model", "gemini-flash-latest"),
                 "confidence": claim.get("confidence", 50)
             },
             "evidence": {

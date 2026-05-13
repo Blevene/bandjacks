@@ -33,7 +33,7 @@ Content-Type: application/json
   - Default: auto-generated UUID
 - **model** (optional): LLM model to use
   - Default: `"gpt-5"`
-  - Options: `"gpt-5"`, `"gemini-2.5-flash"`
+  - Options: `"gpt-5"`, `"gemini-flash-latest"`
 - **temperature** (optional): Model temperature for creativity
   - Default: `0.2`
   - Range: 0.0-1.0 (lower = more deterministic)
@@ -166,7 +166,7 @@ curl -X POST http://localhost:8000/v1/llm/extract \
   -H "Content-Type: application/json" \
   -d '{
     "text": "Advanced persistent threat uses novel techniques...",
-    "model": "gemini-2.5-flash",
+    "model": "gemini-flash-latest",
     "temperature": 0.5
   }'
 

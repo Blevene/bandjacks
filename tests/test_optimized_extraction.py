@@ -71,7 +71,7 @@ def run_optimized_extraction(text: str, title: str) -> Dict[str, Any]:
         "neo4j_uri": os.getenv("NEO4J_URI", "bolt://localhost:7687"),
         "neo4j_user": os.getenv("NEO4J_USER", "neo4j"),
         "neo4j_password": os.getenv("NEO4J_PASSWORD", ""),
-        "model": "gemini/gemini-2.5-flash",
+        "model": "gemini/gemini-flash-latest",
         "title": title,
         "url": "test",
         "ts": time.time()

@@ -55,7 +55,7 @@ def test_simple_adk():
     # Initialize extractor
     print("\n[2] Initializing simplified ADK extractor...")
     try:
-        extractor = SimpleADKExtractor(model="gemini-2.5-flash")
+        extractor = SimpleADKExtractor(model="gemini-flash-latest")
         print("  ✓ ADK agent created")
     except Exception as e:
         print(f"  ✗ Failed: {e}")

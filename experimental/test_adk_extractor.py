@@ -46,7 +46,7 @@ def test_adk_extraction():
     # Initialize extractor
     print("\n[2] Initializing ADK multi-agent system...")
     try:
-        extractor = ADKTTPExtractor(model="gemini-2.0-flash")
+        extractor = ADKTTPExtractor(model="gemini-flash-latest")
         print("  ✓ ADK agents created successfully")
     except Exception as e:
         print(f"  ✗ Failed to initialize: {e}")

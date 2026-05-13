@@ -68,19 +68,19 @@ def test_agentic_v2_direct():
         "neo4j_uri": os.getenv("NEO4J_URI", "bolt://localhost:7687"),
         "neo4j_user": os.getenv("NEO4J_USER", "neo4j"),
         "neo4j_password": os.getenv("NEO4J_PASSWORD", ""),
-        "model": "gemini/gemini-2.5-flash",
+        "model": "gemini/gemini-flash-latest",
         "title": "DarkCloud Stealer Analysis",
         "url": "https://unit42.paloaltonetworks.com/darkcloud-stealer",
         "ts": time.time(),
-        "discovery_model": "gemini/gemini-2.5-flash",
-        "mapper_model": "gemini/gemini-2.5-flash",
+        "discovery_model": "gemini/gemini-flash-latest",
+        "mapper_model": "gemini/gemini-flash-latest",
         "min_quotes": 1,  # Relax for testing
         "max_discovery_per_span": 10,  # Allow more proposals
         "top_k": 10  # More retrieval candidates
     }
     
     print("\n1. Running agentic_v2 extraction pipeline...")
-    print("   - Using Gemini 2.5 Flash model")
+    print("   - Using Gemini Flash (latest) model")
     print("   - Multi-pass extraction enabled")
     print("   - Enhanced behavioral patterns")
     

@@ -1415,7 +1415,7 @@ The following stub features have been removed from the API:
 3. **Low extraction recall**
    - Ensure you're using `agentic_v2` method
    - Check LLM API key is valid
-   - Verify model name is correct (gemini-2.5-flash)
+   - Verify model name is correct (gemini-flash-latest)
 
 4. **Timeout errors**
    - Increase timeout settings for large documents

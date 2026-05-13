@@ -24,7 +24,7 @@ def sample_verdicts():
             confidence=0.85,
             evidence_ids=["evidence-1", "evidence-2"],
             rationale_summary="Clear temporal sequence observed in evidence.",
-            model_name="gemini/gemini-2.5-flash"
+            model_name="gemini/gemini-flash-latest"
         ),
         JudgeVerdict(
             from_technique="attack-pattern--789",
@@ -33,7 +33,7 @@ def sample_verdicts():
             confidence=0.70,
             evidence_ids=["evidence-3"],
             rationale_summary="Evidence suggests reverse temporal ordering.",
-            model_name="gemini/gemini-2.5-flash"
+            model_name="gemini/gemini-flash-latest"
         ),
         JudgeVerdict(
             from_technique="attack-pattern--def",
@@ -42,7 +42,7 @@ def sample_verdicts():
             confidence=0.60,
             evidence_ids=["evidence-4", "evidence-5"],
             rationale_summary="Both directions are valid based on context.",
-            model_name="gemini/gemini-2.5-flash"
+            model_name="gemini/gemini-flash-latest"
         ),
         JudgeVerdict(
             from_technique="attack-pattern--jkl",
@@ -51,7 +51,7 @@ def sample_verdicts():
             confidence=0.0,
             evidence_ids=[],
             rationale_summary="Insufficient evidence to determine relationship.",
-            model_name="gemini/gemini-2.5-flash"
+            model_name="gemini/gemini-flash-latest"
         )
     ]
 

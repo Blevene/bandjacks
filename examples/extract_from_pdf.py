@@ -72,7 +72,7 @@ def main():
         "neo4j_uri": os.getenv("NEO4J_URI", "bolt://localhost:7687"),
         "neo4j_user": os.getenv("NEO4J_USER", "neo4j"),
         "neo4j_password": os.getenv("NEO4J_PASSWORD", ""),
-        "model": os.getenv("PRIMARY_LLM", "gemini/gemini-2.5-flash"),
+        "model": os.getenv("PRIMARY_LLM", "gemini/gemini-flash-latest"),
         "title": pdf_path.stem,  # Use filename without extension as title
     }
     

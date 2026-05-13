@@ -70,13 +70,13 @@ class LLMClient:
             logger.debug(f"Using local OpenAI-compatible API at {self.local_api_base} with model: {self.model}")
             # Add cloud providers as fallback if available
             if self.google_api_key:
-                self.fallback_models.append("gemini/" + os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"))
+                self.fallback_models.append("gemini/" + os.getenv("GOOGLE_MODEL", "gemini-flash-latest"))
             if self.openai_api_key:
                 self.fallback_models.append(os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
         # Prioritize Gemini as primary model
         elif self.google_api_key and self.primary_llm == "gemini":
             # Use gemini/ prefix to ensure LiteLLM uses Gemini API instead of Vertex
-            self.model = "gemini/" + os.getenv("GOOGLE_MODEL", "gemini-2.5-flash")
+            self.model = "gemini/" + os.getenv("GOOGLE_MODEL", "gemini-flash-latest")
             self.api_key_for_completion = self.google_api_key
             logger.debug(f"Using Google Gemini as primary with model: {self.model}")
             # Add OpenAI as fallback if available
@@ -89,7 +89,7 @@ class LLMClient:
             logger.debug(f"Using OpenAI with model: {self.model}")
             # Add Gemini as fallback if available
             if self.google_api_key:
-                self.fallback_models.append("gemini/" + os.getenv("GOOGLE_MODEL", "gemini-2.5-flash"))
+                self.fallback_models.append("gemini/" + os.getenv("GOOGLE_MODEL", "gemini-flash-latest"))
         # Configure LiteLLM proxy as fallback
         elif self.base_url and self.api_key:
             self.api_key_for_completion = self.api_key
@@ -539,7 +539,7 @@ def execute_tool_loop(
         tools: Tool definitions for the LLM
         tool_functions: Dict mapping tool names to Python functions
         max_iterations: Maximum tool-calling iterations
-        model: Optional model override (e.g., "gemini/gemini-2.5-flash")
+        model: Optional model override (e.g., "gemini/gemini-flash-latest")
         response_format: Optional response format (e.g., {"type": "json_object"})
         
     Returns:

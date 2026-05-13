@@ -371,7 +371,7 @@ class TestEpic1Epic2Integration:
                 
                 config = JudgeConfig(
                     enable_caching=True,
-                    models=["gemini/gemini-2.5-flash", "gpt-4o-mini"],
+                    models=["gemini/gemini-flash-latest", "gpt-4o-mini"],
                     max_retries=1,
                     budget_limit_usd=10.0
                 )

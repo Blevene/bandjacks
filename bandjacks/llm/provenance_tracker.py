@@ -64,7 +64,7 @@ class ProvenanceTracker:
         self,
         source_id: str,
         method: str = "llm",
-        model: str = "gemini-2.5-flash",
+        model: str = "gemini-flash-latest",
         parameters: Optional[Dict[str, Any]] = None
     ) -> str:
         """

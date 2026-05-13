@@ -42,7 +42,7 @@ class JudgeVerdict:
 @dataclass
 class JudgeConfig:
     """Configuration for LLM judge."""
-    model_name: str = "gemini/gemini-2.5-flash"  # Primary model
+    model_name: str = "gemini/gemini-flash-latest"  # Primary model
     fallback_model: str = "gpt-4o-mini"  # Fallback if primary fails
     temperature: float = 0.1  # Low temperature for consistent results
     max_tokens: int = 2000  # Sufficient for structured responses
@@ -78,7 +78,7 @@ class JudgeClient:
         self.cache = cache
         
         # Override model if specified in config
-        if self.config.model_name != "gemini/gemini-2.5-flash":
+        if self.config.model_name != "gemini/gemini-flash-latest":
             self.llm_client.model = self.config.model_name
         
         # Judgment schema for validation

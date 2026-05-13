@@ -92,7 +92,7 @@ def main():
         print("✅ Component test passed")
         print("\nNote: Full pipeline may be timing out due to:")
         print("  • Too many LLM calls per span")
-        print("  • Model latency with Gemini 2.5 Flash")
+        print("  • Model latency with Gemini Flash (latest)")
         print("  • Large document sizes")
         print("\nRecommendations:")
         print("  • Reduce max_discovery_per_span to 3")

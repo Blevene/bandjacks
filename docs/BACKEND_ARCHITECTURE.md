@@ -111,7 +111,7 @@ def get_opensearch_client() -> OpenSearch:
 def get_llm_client() -> LLMClient:
     """LLM client with fallback configuration."""
     return LLMClient(
-        primary_model="gemini-2.5-flash",
+        primary_model="gemini-flash-latest",
         fallback_model="gpt-4o-mini",
         cache_enabled=True
     )
@@ -331,7 +331,7 @@ class BatchMapperAgent:
         # Single LLM call for all spans
         response = await self.client.complete(
             prompt=prompt,
-            model="gemini-2.5-flash",
+            model="gemini-flash-latest",
             temperature=0.1,
             max_tokens=2000
         )

@@ -106,7 +106,7 @@ Each extracted object carries comprehensive provenance:
     "extraction": {
       "timestamp": "2025-08-17T...",
       "method": "llm",
-      "model": "gemini-2.5-flash",
+      "model": "gemini-flash-latest",
       "confidence": 95
     },
     "evidence": {

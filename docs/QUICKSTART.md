@@ -340,7 +340,7 @@ python --version  # Should be 3.11+
    ```bash
    # Use Gemini instead of GPT-5
    curl -X POST http://localhost:8000/v1/llm/extract \
-     -d '{"text": "...", "model": "gemini-2.5-flash"}'
+     -d '{"text": "...", "model": "gemini-flash-latest"}'
    ```
 
 ## Next Steps

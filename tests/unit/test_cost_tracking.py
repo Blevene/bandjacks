@@ -10,7 +10,7 @@ _tools_mock = MagicMock()
 sys.modules["bandjacks.llm.tools"] = _tools_mock
 
 
-def _mock_litellm_response(prompt_tokens=100, completion_tokens=50, model="gemini/gemini-2.5-flash"):
+def _mock_litellm_response(prompt_tokens=100, completion_tokens=50, model="gemini/gemini-flash-latest"):
     """Create a mock LiteLLM response with usage data."""
     response = MagicMock()
     response.choices = [MagicMock()]
@@ -175,8 +175,8 @@ class TestBudgetTrackerStats:
 
     def test_get_usage_stats_split_tokens(self):
         tracker = BudgetTracker(BudgetConfig(enforce_limits=False))
-        tracker.record_usage("gemini/gemini-2.5-flash", tokens_in=500, tokens_out=200, actual_cost=0.001)
-        tracker.record_usage("gemini/gemini-2.5-flash", tokens_in=300, tokens_out=100, actual_cost=0.0005)
+        tracker.record_usage("gemini/gemini-flash-latest", tokens_in=500, tokens_out=200, actual_cost=0.001)
+        tracker.record_usage("gemini/gemini-flash-latest", tokens_in=300, tokens_out=100, actual_cost=0.0005)
 
         stats = tracker.get_usage_stats()
         assert stats["total_tokens_in"] == 800
@@ -193,7 +193,7 @@ class TestExtractionTrackerCost:
 
     def test_add_llm_call_from_usage(self):
         tracker = ExtractionTracker()
-        usage = {"tokens_in": 500, "tokens_out": 200, "cost_usd": 0.001, "model": "gemini/gemini-2.5-flash"}
+        usage = {"tokens_in": 500, "tokens_out": 200, "cost_usd": 0.001, "model": "gemini/gemini-flash-latest"}
         tracker.add_llm_call(
             model=usage["model"], ms=150, tokens_in=usage["tokens_in"],
             tokens_out=usage["tokens_out"], tool_calls=0, cost_usd=usage["cost_usd"],
@@ -205,8 +205,8 @@ class TestExtractionTrackerCost:
 
     def test_snapshot_includes_cost(self):
         tracker = ExtractionTracker()
-        tracker.add_llm_call("gemini/gemini-2.5-flash", 100, 500, 200, 0, 0.001)
-        tracker.add_llm_call("gemini/gemini-2.5-flash", 120, 300, 100, 0, 0.0005)
+        tracker.add_llm_call("gemini/gemini-flash-latest", 100, 500, 200, 0, 0.001)
+        tracker.add_llm_call("gemini/gemini-flash-latest", 120, 300, 100, 0, 0.0005)
         snap = tracker.snapshot()
         assert snap["cost_usd"] == 0.0015
 
@@ -218,7 +218,7 @@ class TestRecordUsageToTracker:
         tracker = ExtractionTracker()
         response = {
             "content": "test", "tool_calls": [{"id": "1"}],
-            "usage": {"tokens_in": 500, "tokens_out": 200, "cost_usd": 0.001, "model": "gemini/gemini-2.5-flash"},
+            "usage": {"tokens_in": 500, "tokens_out": 200, "cost_usd": 0.001, "model": "gemini/gemini-flash-latest"},
         }
         record_usage_to_tracker(response, tracker, elapsed_ms=150)
         assert tracker.cost_usd == 0.001

@@ -112,7 +112,7 @@ OPENAI_MODEL=gpt-5  # Model to use
 
 # Option 2: Google
 GOOGLE_API_KEY=...  # Your Google API key
-GOOGLE_MODEL=gemini-2.5-flash  # Model to use
+GOOGLE_MODEL=gemini-flash-latest  # Model to use
 
 # === Optional: LiteLLM Proxy ===
 LITELLM_BASE_URL=http://localhost:4000

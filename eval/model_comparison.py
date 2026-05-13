@@ -16,7 +16,7 @@ Usage:
     python -m eval.model_comparison --local-model "nvidia-nemotron-3-nano-30b-a3b-mlx"
 
     # Override cloud model:
-    python -m eval.model_comparison --cloud-model "gemini/gemini-2.5-flash"
+    python -m eval.model_comparison --cloud-model "gemini/gemini-flash-latest"
 """
 
 import argparse

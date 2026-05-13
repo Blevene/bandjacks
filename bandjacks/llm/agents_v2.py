@@ -307,7 +307,7 @@ class DiscoveryAgent:
         from bandjacks.llm.client import get_llm_client
         from bandjacks.llm.tools import resolve_technique_by_external_id
         client = get_llm_client()
-        discovery_model = config.get("discovery_model", "gemini/gemini-2.5-flash")
+        discovery_model = config.get("discovery_model", "gemini/gemini-flash-latest")
 
         # Collect spans that need discovery (local index → original index)
         needs_discovery: List[tuple] = []  # (local_idx, original_idx, span)
@@ -929,7 +929,7 @@ class AssemblerAgent:
             },
             "x_bj_extraction": {
                 "method": "agentic_v2",
-                "model": config.get("model", "gemini/gemini-2.5-flash"),
+                "model": config.get("model", "gemini/gemini-flash-latest"),
                 "timestamp": datetime.utcnow().isoformat() + "Z"
             }
         }
@@ -969,7 +969,7 @@ class AssemblerAgent:
                     "report_id": report_id,
                     "extraction": {
                         "method": "agentic_v2",
-                        "model": config.get("model", "gemini/gemini-2.5-flash"),
+                        "model": config.get("model", "gemini/gemini-flash-latest"),
                         "confidence": info["confidence"]
                     },
                     "evidence": {

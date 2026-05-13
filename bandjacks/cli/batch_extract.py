@@ -143,7 +143,7 @@ class BatchExtractor:
                 "max_spans": 5,
                 "span_score_threshold": 0.85,
                 "confidence_threshold": 50.0,
-                "model": os.getenv("PRIMARY_LLM", "gemini/gemini-2.5-flash"),
+                "model": os.getenv("PRIMARY_LLM", "gemini/gemini-flash-latest"),
                 "skip_entity_extraction": getattr(self, 'skip_entity_extraction', False),
                 "auto_approve": getattr(self, 'auto_approve', False),
                 "auto_approve_threshold": getattr(self, 'auto_approve_threshold', 0.80),

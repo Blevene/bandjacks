@@ -18,7 +18,7 @@ def sample_verdict():
         confidence=0.85,
         evidence_ids=["evidence-1", "evidence-2"],
         rationale_summary="Clear temporal sequence observed in evidence.",
-        model_name="gemini/gemini-2.5-flash",
+        model_name="gemini/gemini-flash-latest",
         retrieval_hash="abc123def456",
         cost_tokens=150
     )
@@ -56,7 +56,7 @@ def test_verdict_to_neo4j_conversion(sample_verdict):
         assert props["verdict_type"] == "i->j"
         assert props["confidence"] == 0.85
         assert props["evidence_ids"] == ["evidence-1", "evidence-2"]
-        assert props["model_name"] == "gemini/gemini-2.5-flash"
+        assert props["model_name"] == "gemini/gemini-flash-latest"
         assert props["retrieval_hash"] == "abc123def456"
         assert props["cost_tokens"] == 150
 
@@ -125,7 +125,7 @@ def test_get_cached_verdict_hit(mock_neo4j_session, sample_verdict):
         "confidence": 0.85,
         "evidence_ids": ["evidence-1"],
         "rationale_summary": "Test rationale",
-        "model_name": "gemini/gemini-2.5-flash",
+        "model_name": "gemini/gemini-flash-latest",
         "retrieval_hash": "abc123",
         "judge_version": "1.0",
         "judged_at": datetime.utcnow().isoformat(),
@@ -255,7 +255,7 @@ def test_get_cache_statistics(mock_neo4j_session):
     ]
     
     mock_model_usage = [
-        {"model": "gemini/gemini-2.5-flash", "count": 70},
+        {"model": "gemini/gemini-flash-latest", "count": 70},
         {"model": "gpt-4o-mini", "count": 30}
     ]
     
